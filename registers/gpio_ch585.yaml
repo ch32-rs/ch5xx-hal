@@ -1,0 +1,170 @@
+block/GPIO:
+  description: General porpose intput output
+  items:
+  - name: PORT_INT_EN
+    description: RW, GPIO PA interrupt enable
+    byte_offset: 144
+    bit_size: 16
+    array:
+      len: 2
+      stride: 2
+    fieldset: INT_EN
+  - name: PORT_INT_MODE
+    description: 'RW, GPIO PA interrupt mode: 0=level action, 1=edge action'
+    byte_offset: 148
+    bit_size: 16
+    array:
+      len: 2
+      stride: 2
+    fieldset: INT_MODE
+  - name: PORT_INT_IF
+    description: RW1, GPIO PA interrupt flag
+    byte_offset: 156
+    bit_size: 16
+    array:
+      len: 2
+      stride: 2
+    fieldset: INT_IF
+  - name: PORT
+    description: GPIO port A and B
+    byte_offset: 160
+    array:
+      len: 2
+      stride: 32
+    block: PORT
+block/PORT:
+  items:
+  - name: DIR
+    description: 'RW, GPIO PA I/O direction: 0=in, 1=out'
+    byte_offset: 0x00
+    fieldset: DIR
+  - name: PIN
+    description: RO, GPIO PA input
+    byte_offset: 0x04
+    access: Read
+    fieldset: PIN
+  - name: OUT
+    description: RW, GPIO PA output
+    byte_offset: 0x08
+    fieldset: OUT
+  - name: CLR
+    description: 'WZ, GPIO PA clear output: 0=keep, 1=clear'
+    byte_offset: 0x0C
+    access: Write
+    fieldset: CLR
+  - name: PU
+    description: RW, GPIO PA pullup resistance enable
+    byte_offset: 0x10
+    fieldset: PU
+  - name: PD_DRV
+    description: RW, PA pulldown for input or PA driving capability for output
+    byte_offset: 0x14
+    fieldset: PD_DRV
+  - name: SET
+    description: RW, PA port output set register
+    byte_offset: 0x18
+    fieldset: SET
+
+fieldset/INT_EN:
+  description: RW, GPIO PA interrupt enable
+  bit_size: 16
+  fields:
+  - name: IE
+    description: GPIO PA interrupt enable
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 16
+      stride: 1
+fieldset/INT_MODE:
+  description: 'RW, GPIO PA interrupt mode: 0=level action, 1=edge action'
+  bit_size: 16
+  fields:
+  - name: EDGE
+    description: GPIO PA interrupt mode
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 16
+      stride: 1
+fieldset/INT_IF:
+  description: RW1, GPIO PA interrupt flag
+  bit_size: 16
+  fields:
+  - name: IF
+    description: GPIO PA interrupt flag
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 16
+      stride: 1
+fieldset/DIR:
+  description: 'RW, GPIO PA I/O direction: 0=in, 1=out'
+  fields:
+  - name: DIR
+    description: GPIO PA I/O direction byte 0
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 24 # for Port A, this is 16
+      stride: 1
+fieldset/OUT:
+  description: RW, GPIO PA output
+  fields:
+  - name: OUT
+    description: GPIO PA output byte 0
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 24
+      stride: 1
+fieldset/PIN:
+  description: RW, GPIO PA input
+  fields:
+  - name: PIN
+    description: GPIO PA input byte 0
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 24
+      stride: 1
+fieldset/CLR:
+  description: 'WZ, GPIO PA clear output: 0=keep, 1=clear'
+  fields:
+  - name: CLR
+    description: GPIO PA clear output byte 0
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 24
+      stride: 1
+fieldset/PU:
+  description: RW, GPIO PA pullup resistance enable
+  fields:
+  - name: PU
+    description: GPIO PA pullup resistance enable byte 0
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 24
+      stride: 1
+fieldset/PD_DRV:
+  description: RW, PA pulldown for input or PA driving capability for output
+  fields:
+  - name: PD_DRV
+    description: PA pulldown for input or PA driving capability for output byte 0
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 24
+      stride: 1
+fieldset/SET:
+  description: RW, PA port output set register
+  fields:
+  - name: SET
+    description: When the corresponding bit of the set register R3_2PA_SET is 0, the output of the PA pin remains unchanged; When it is 1, the PA pin outputs a high level
+    bit_offset: 0
+    bit_size: 1
+    array:
+      len: 24
+      stride: 1
