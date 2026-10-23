@@ -1,0 +1,150 @@
+//! Busy-wait delays on the core SysTick counter.
+//!
+//! CH5xx's SysTick is the WCH variant: `STK_CTLR` (`STE` bit 0, `STCLK` bit 2,
+//! `MODE` bit 4), `STK_SR.CNTIF`, and the 32-bit `STK_CNTL` / `STK_CMPLR` pair.
+//! There is no free-running 64-bit counter.
+//!
+//! The counter is started **once** by [`init`] and left running; each delay
+//! only reads `STK_CNT` and compares it against a target.
+//!
+//! # Why the rate is measured, not assumed
+//!
+//! The system clock comes out of reset configured by the boot ROM, not by the
+//! documented `CLK_CFG` reset value: on the CH585 measured here `CLK_CFG` reads
+//! `0x014D` (`CLK_SYS_MOD = 01`, i.e. PLL-sourced) rather than `0x0003`. The
+//! PLL divider therefore cannot be turned into a frequency without modelling
+//! the PLL, and a wrong constant makes every delay wrong by the same factor.
+//!
+//! So [`init`] calibrates the counter against the *independent* 32 kHz RTC
+//! counter instead. That is the same trick WCH's `OSC_CAL` uses, and it stays
+//! correct whatever the boot ROM left the PLL at. The calibrated value also
+//! backs [`crate::rcc::clocks`].
+
+use core::sync::atomic::Ordering;
+
+use crate::pac::SYSTICK;
+
+/// A delay backed by the SysTick counter.
+///
+/// Requires [`crate::init`] (or [`init`]) to have run, so the counter is
+/// started and its rate is known.
+pub struct Delay;
+
+/// SysTick ticks per second, measured against the RTC at init.
+static TICKS_PER_SEC: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(crate::rcc::DEFAULT_FREQUENCY.0);
+
+/// RTC block, whose `CNT_32K` counter is clocked by the independent 32 kHz
+/// oscillator and keeps running across anything the PLL does.
+const RTC_BASE: u32 = 0x4000_1000;
+
+/// RTC count used for the calibration window. 1024 counts at 32.768 kHz is
+/// 31.25 ms — long enough for a precise ratio, short enough not to stall boot.
+const CAL_COUNTS: u16 = 1024;
+
+/// RTC frequency, for turning counts into seconds.
+const RTC_HZ: u32 = 32_768;
+
+#[inline(always)]
+fn rtc_count() -> u16 {
+    // `CNT_32K` is the 16-bit register at 0x38. It wraps every 2 s, but the
+    // calibration window is only 31 ms, so the low half alone is enough —
+    // `wrapping_sub` handles the one wrap that could occur.
+    unsafe { core::ptr::read_volatile((RTC_BASE + 0x38) as *const u16) }
+}
+
+impl Delay {
+    /// Start SysTick and measure its rate.
+    ///
+    /// # Safety
+    ///
+    /// Must not be used alongside any other SysTick user (in particular an
+    /// embassy time driver).
+    pub(crate) unsafe fn init() {
+        // Free-running, up-count, HCLK source (`STCLK` set — clearing it
+        // would select HCLK/8). `STE` starts it.
+        SYSTICK.stk_sr().modify(|w| w.set_cntif(false));
+        SYSTICK.stk_cntl().write(|w| w.set_cntl(0));
+        SYSTICK.stk_cnth().write(|w| w.set_cnth(0));
+        SYSTICK.stk_ctlr().modify(|w| {
+            w.set_mode(false); // up-count
+            w.set_stclk(true); // source: HCLK (not HCLK/8)
+            w.set_stie(false); // poll, never interrupt
+            w.set_ste(true);
+        });
+
+        let hz = unsafe { calibrate() };
+        TICKS_PER_SEC.store(hz, Ordering::Relaxed);
+        crate::rcc::set_sysclk(hz);
+    }
+
+    /// Busy-wait for `us` microseconds.
+    ///
+    /// Panics in debug builds if called before [`crate::init`].
+    pub fn delay_us(&mut self, us: u32) {
+        let hz = TICKS_PER_SEC.load(Ordering::Relaxed);
+        debug_assert!(hz != 0, "delay used before `ch5xx_hal::init`");
+
+        // `us * hz / 1_000_000` in 64 bits: `us` up to ~4e6 here, `hz` ~3e7, so
+        // the product needs more than 32 bits.
+        let mut remaining = (us as u64 * hz as u64 / 1_000_000) as u32;
+
+        // The counter is 32 bits, so chase it in chunks to keep the
+        // wrapping comparison meaningful.
+        while remaining > 0 {
+            let chunk = remaining.min(u32::MAX / 2);
+            remaining -= chunk;
+
+            let start = SYSTICK.stk_cntl().read().cntl();
+            while SYSTICK.stk_cntl().read().cntl().wrapping_sub(start) < chunk {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    /// Busy-wait for `ms` milliseconds.
+    pub fn delay_ms(&mut self, ms: u32) {
+        // Split so a large `ms` cannot overflow the microsecond multiply.
+        let mut ms = ms;
+        while ms > 4_000 {
+            self.delay_us(4_000_000);
+            ms -= 4_000;
+        }
+        self.delay_us(ms * 1_000);
+    }
+}
+
+/// Measure SysTick against the RTC's 32 kHz counter.
+///
+/// Returns ticks per second, or the nominal frequency if the RTC never
+/// advances (it should always be running, but a hang here would brick boot).
+unsafe fn calibrate() -> u32 {
+    let rtc_start = rtc_count();
+    let stk_start = SYSTICK.stk_cntl().read().cntl();
+
+    // Bounded: at ~32 MHz this window is a few milliseconds of spinning.
+    let mut guard = 0u32;
+    while rtc_count().wrapping_sub(rtc_start) < CAL_COUNTS {
+        guard += 1;
+        if guard > 200_000_000 {
+            return crate::rcc::DEFAULT_FREQUENCY.0;
+        }
+        core::hint::spin_loop();
+    }
+
+    let stk_end = SYSTICK.stk_cntl().read().cntl();
+    let ticks = stk_end.wrapping_sub(stk_start) as u64;
+    let rtc_delta = CAL_COUNTS as u64;
+
+    // ticks per second = ticks * RTC_HZ / rtc_delta
+    let hz = (ticks * RTC_HZ as u64 / rtc_delta) as u32;
+    if hz == 0 {
+        crate::rcc::DEFAULT_FREQUENCY.0
+    } else {
+        hz
+    }
+}
+
+pub(crate) unsafe fn init() {
+    unsafe { Delay::init() }
+}

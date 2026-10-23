@@ -1,0 +1,12 @@
+target/
+Cargo.lock
+trash/
+.vscode/
+
+# merged firmware images / build output
+out/
+
+.DS_Store
+
+# Local agent instructions; not part of the repo.
+AGENTS.md

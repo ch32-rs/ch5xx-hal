@@ -1,0 +1,13 @@
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+runner = "wlink flash"
+rustflags = [
+    # Target features:
+    "-C",
+    "target-feature=+xwchc",
+]
+
+[unstable]
+build-std = ["core"]

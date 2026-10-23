@@ -1,0 +1,26 @@
+[package]
+name = "ch585-examples"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ch5xx-hal = { path = "../../", features = ["ch585", "rt", "memory-x"] }
+
+panic-halt = "1.0"
+embedded-hal = "1.0.0"
+
+qingke = "0.8.2"
+qingke-rt = "0.8.2"
+
+[profile.release]
+strip = false   # symbols are not flashed to the microcontroller, so don't strip them.
+lto = true
+opt-level = "s"
+
+[profile.dev]
+overflow-checks = false
+
+# `v3c` is on qingke's main but not in the 0.8.2 release yet.
+[patch.crates-io]
+qingke = { path = "../../../qingke" }
+qingke-rt = { path = "../../../qingke/qingke-rt" }
