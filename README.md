@@ -69,6 +69,27 @@ The runner is `wlink flash`; `probe-rs` works too (`--chip CH585`).
 > freeze the firmware. Read state once after waiting, or record a history into
 > RAM and read it afterwards.
 
+## Console output (defmt + RTT)
+
+CH5xx has no SDI printf (the debug-module `DATA0`/`DATA1` handshake is not
+present). Use `defmt` over SEGGER RTT instead — no special chip support is
+needed, and `probe-rs` handles it natively:
+
+```console
+cd examples/ch585
+cargo run --release --bin defmt_rtt
+```
+
+or, equivalently:
+
+```console
+probe-rs run --chip CH585 target/riscv32imac-unknown-none-elf/release/defmt_rtt
+```
+
+Add `defmt` and `defmt-rtt` to your binary's dependencies. The `DEFMT_LOG` env
+variable controls log level at compile time (default is `error`; `.cargo/config.toml`
+sets `info` for the examples).
+
 ## License
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your

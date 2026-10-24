@@ -1,14 +1,11 @@
 //! Debug output.
 //!
-//! ch32-hal's [`SDIPrint`] writes through the debug module's `DATA0`/`DATA1`
-//! registers (`qingke::dm`). The QingKe V3C leaf deliberately defines no
-//! `dm_dataaddr_*` capability — neither the CH585 nor the CH570 EVT ships an
-//! SDI printf, so the debug module data address is unknown — and `qingke::dm`
-//! does not exist on this core. There is consequently no SDI console here.
+//! CH5xx does not support SDI printf (WCH-Link debug-module virtual serial).
+//! The CH5xx datasheets document only the SWD/TWD debug interface and no SDI
+//! printf mechanism — there is no `DATA0`/`DATA1` handshake register.
 //!
-//! For a serial console use a UART; the CH585 UART driver is not ported yet.
-//!
-//! [`SDIPrint`]: https://docs.rs/ch32-hal
+//! For console output use `defmt` over SEGGER RTT (via `probe-rs` or
+//! `probe-rs run`), which requires no special chip support.
 
 /// Placeholder console that discards everything.
 ///

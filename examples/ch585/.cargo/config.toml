@@ -11,3 +11,6 @@ rustflags = [
 
 [unstable]
 build-std = ["core"]
+
+[env]
+DEFMT_LOG = "info"
