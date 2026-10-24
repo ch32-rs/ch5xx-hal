@@ -62,7 +62,9 @@ cd examples/ch585
 cargo run --release --bin blinky
 ```
 
-The runner is `wlink flash`; `probe-rs` works too (`--chip CH585`).
+The runner is `probe-rs run --chip CH585`, so `cargo run` flashes, resets, and
+streams `defmt` output in one step. A `wlink flash` runner is kept commented out
+in `.cargo/config.toml` if you only want to program the part.
 
 > **Careful when observing with a debugger:** every `wlink`/`probe-rs` memory
 > read halts the core and does not resume it, so polling a live counter will
@@ -80,10 +82,12 @@ cd examples/ch585
 cargo run --release --bin defmt_rtt
 ```
 
-or, equivalently:
+This uses the `probe-rs run --chip CH585` runner from `.cargo/config.toml`. If
+you want to flash and attach separately instead:
 
 ```console
-probe-rs run --chip CH585 target/riscv32imac-unknown-none-elf/release/defmt_rtt
+probe-rs download --chip CH585 target/riscv32imac-unknown-none-elf/release/defmt_rtt
+probe-rs attach --chip CH585 target/riscv32imac-unknown-none-elf/release/defmt_rtt
 ```
 
 Add `defmt` and `defmt-rtt` to your binary's dependencies. The `DEFMT_LOG` env
