@@ -70,12 +70,6 @@ async fn measure() {
 fn main() -> ! {
     let p = hal::init(Default::default());
 
-    match hal::embassy::time_driver_resource() {
-        hal::embassy::DriverResource::Tmr(irq) => info!("time driver: TMR ({=u8})", irq as u8),
-        hal::embassy::DriverResource::SysTick => {
-            info!("time driver: SysTick — `delay` is unavailable under this driver")
-        }
-    }
     info!("embassy sysclk = {} Hz", hal::rcc::clocks().sysclk.0);
 
     let led0 = Output::new(p.PB16, Level::Low, Speed::Low);

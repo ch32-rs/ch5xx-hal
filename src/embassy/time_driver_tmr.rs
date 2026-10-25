@@ -35,6 +35,7 @@
 //! — see [`super::reload_timer`].
 
 use super::reload_timer::{ReloadState, ReloadTimer};
+use crate::interrupt::InterruptExt;
 use crate::pac;
 
 // Which instance this file drives. Enabling two `time-driver-tmr*` features is
@@ -200,10 +201,10 @@ pub unsafe fn init() {
         w.set_count_en(true);
     });
 
-    unsafe {
-        qingke::pfic::set_priority(IRQ as u8, 0x80);
-        qingke::pfic::enable_interrupt(IRQ as u8);
-    }
+    // TMR interrupts *are* in the generated table, so this goes through the
+    // typelevel API like any other HAL driver would.
+    IRQ.set_priority(super::TIME_DRIVER_PRIORITY);
+    unsafe { IRQ.enable() };
 
     super::enable_interrupts();
 }

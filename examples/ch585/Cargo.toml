@@ -4,11 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-# Which peripheral the embassy time driver takes. The blocking `delay` driver
-# and `time-driver-systick` both own the counter, so the HAL compiles `Delay`
-# out under that feature — only the embassy examples can be built with it.
-# There is no default: `blinky`, `defmt_rtt` and `clk_probe` need `delay`, so a
-# default would break them.
+# Which peripheral the embassy time driver takes. Under `time-driver-systick`
+# the HAL's `Delay` reads that driver's timebase instead of polling the raw
+# counter, so the `delay`-based examples keep working.
+default = ["time-driver-systick"]
 time-driver-systick = ["ch5xx-hal/time-driver-systick"]
 time-driver-tmr0 = ["ch5xx-hal/time-driver-tmr0"]
 time-driver-tmr1 = ["ch5xx-hal/time-driver-tmr1"]

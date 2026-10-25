@@ -139,11 +139,21 @@ pub unsafe fn init() {
         w.set_ste(true);
     });
 
-    // SysTick is a core interrupt, so it is enabled through PFIC directly
-    // rather than through the external interrupt table.
+    // SysTick is a *core* interrupt, so it is not in the external interrupt
+    // table the generated `interrupt::typelevel` types come from, and there is
+    // no `interrupt::typelevel::SysTick` to call. qingke's PFIC API is the only
+    // route; the priority still goes through `Priority` rather than a magic
+    // number.
+    //
+    // The value matches ch32-hal's SysTick driver, which is the only reference
+    // for this part. Note that neither qingke nor the CH585 datasheet in this
+    // repo states whether a larger `Priority` means "more urgent" or "less";
+    // the HAL does not depend on the ordering (nothing else sets a priority),
+    // so keep this value when changing anything nearby.
+    let irq = qingke_rt::CoreInterrupt::SysTick as u8;
     unsafe {
-        qingke::pfic::set_priority(qingke_rt::CoreInterrupt::SysTick as u8, 0x80);
-        qingke::pfic::enable_interrupt(qingke_rt::CoreInterrupt::SysTick as u8);
+        qingke::pfic::set_priority(irq, super::TIME_DRIVER_PRIORITY as u8);
+        qingke::pfic::enable_interrupt(irq);
     }
 
     super::enable_interrupts();

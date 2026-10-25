@@ -14,10 +14,9 @@
 //!   interrupts.
 
 use std::collections::BTreeSet;
-use std::env;
 use std::fmt::Write as _;
-use std::fs;
 use std::path::PathBuf;
+use std::{env, fs};
 
 use ch5xx_metapac::metadata::METADATA;
 use proc_macro2::TokenStream;
@@ -50,6 +49,16 @@ fn main() {
         other => panic!("no GPIO port map for chip `{other}`"),
     };
 
+    // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
+    // the singletons so `init()` cannot hand the same peripheral to a second
+    // user; the driver reaches it through the PAC anyway. Exactly one such
+    // feature may be enabled (`embassy::mod` enforces that), so a lookup is
+    // enough.
+    let time_driver_peripheral: Option<String> = ["TMR0", "TMR1", "TMR2", "TMR3"]
+        .into_iter()
+        .find(|n| env::var_os(format!("CARGO_FEATURE_TIME_DRIVER_{n}")).is_some())
+        .map(str::to_owned);
+
     // Peripheral singletons. Skip the register-less placeholders (BLE) and the
     // core-internal blocks (PFIC, SysTick) — the HAL never hands those out.
     const SKIP_KINDS: &[&str] = &["pfic", "systick"];
@@ -65,7 +74,11 @@ fn main() {
             // Pins are the user-facing singletons; the port block itself is not.
             continue;
         }
-        singletons.push(normalize(&p.name));
+        let name = normalize(&p.name);
+        if time_driver_peripheral.as_deref() == Some(name.as_str()) {
+            continue;
+        }
+        singletons.push(name);
     }
 
     // One singleton per pin.
@@ -107,7 +120,11 @@ fn main() {
     let peripherals_table: Vec<Vec<String>> = METADATA
         .peripherals
         .iter()
-        .filter_map(|p| p.registers.as_ref().map(|r| vec![r.kind.to_string(), normalize(&p.name)]))
+        .filter_map(|p| {
+            p.registers
+                .as_ref()
+                .map(|r| vec![r.kind.to_string(), normalize(&p.name)])
+        })
         .collect();
     make_table(&mut m, "foreach_peripheral", &peripherals_table);
 

@@ -25,10 +25,8 @@
 extern crate portable_atomic as atomic;
 
 pub use ch5xx_metapac as pac;
-
 pub(crate) use embassy_hal_internal::{impl_peripheral, peripherals_definition, peripherals_struct};
 pub use embassy_hal_internal::{Peri, PeripheralType};
-
 #[cfg(feature = "rt")]
 pub use qingke_rt::{entry, interrupt};
 
@@ -67,9 +65,6 @@ pub mod rcc;
 pub mod debug;
 pub mod prelude;
 
-mod peripheral;
-pub use peripheral::Peripheral;
-
 mod interrupt_ext;
 
 // The `interrupt` module, generated because the interrupt list is per-chip.
@@ -100,7 +95,9 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { rcc: Default::default() }
+        Self {
+            rcc: Default::default(),
+        }
     }
 }
 

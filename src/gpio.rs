@@ -188,8 +188,14 @@ pub(crate) trait SealedPin {
             Port::B => self.block().pb_pu().modify(|w| w.set_pb_pu(n, pull == Pull::Up)),
         }
         match self._port() {
-            Port::A => self.block().pa_pd_drv().modify(|w| w.set_pa_pd_drv(n, matches!(pull, Pull::Down))),
-            Port::B => self.block().pb_pd_drv().modify(|w| w.set_pb_pd_drv(n, matches!(pull, Pull::Down))),
+            Port::A => self
+                .block()
+                .pa_pd_drv()
+                .modify(|w| w.set_pa_pd_drv(n, matches!(pull, Pull::Down))),
+            Port::B => self
+                .block()
+                .pb_pd_drv()
+                .modify(|w| w.set_pb_pd_drv(n, matches!(pull, Pull::Down))),
         }
     }
 

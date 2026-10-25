@@ -7,10 +7,20 @@
 //! | `time-driver-systick` | [`time_driver_systick`] | the core SysTick counter |
 //! | `time-driver-tmr0` … `time-driver-tmr3` | [`time_driver_tmr`] | that TMR instance |
 //!
-//! `time-driver-systick` is the default. It is the lowest-latency option, but it
-//! takes SysTick away from the blocking [`crate::delay`] driver. Pick a
-//! `time-driver-tmr*` feature instead when `delay` (or any other SysTick user)
-//! has to keep working; TMR0 is the least contended instance.
+//! `time-driver-systick` is the lowest-latency option and is what the examples
+//! use. It reprograms SysTick for its own reload model, which
+//! [`crate::delay::Delay`] copes with by reading this driver's timebase rather
+//! than the raw counter, so `delay` keeps working either way.
+//!
+//! Picking a `time-driver-tmr*` feature instead frees SysTick for anything else
+//! that wants a free-running counter, and keeps `delay` on it too. TMR0 is the
+//! least contended instance.
+//!
+//! # Ownership
+//!
+//! A TMR driver's peripheral is removed from [`crate::Peripherals`] by
+//! `build.rs`, so [`crate::init`] can never hand the same instance to a second
+//! user. SysTick is core-internal and was never in that struct.
 //!
 //! # Ticks per second
 //!
@@ -86,6 +96,14 @@ pub mod time_driver_impl;
 #[path = "time_driver_tmr.rs"]
 pub mod time_driver_impl;
 
+/// Priority given to the time driver's interrupt.
+///
+/// The TiMER is the clock the whole executor waits on, so it has to be able to
+/// preempt ordinary work. Neither qingke nor the CH585 datasheet in this repo
+/// documents whether a larger `qingke::interrupt::Priority` is more or less
+/// urgent, so this keeps the value the driver used before it was named.
+pub(crate) const TIME_DRIVER_PRIORITY: qingke::interrupt::Priority = qingke::interrupt::Priority::P8;
+
 /// Enable global interrupts and make them wake the core from `wfi`.
 ///
 /// On V3C the authoritative register is `gintenr` (CSR 0x800), which `corecfgr`'s
@@ -103,72 +121,13 @@ pub mod time_driver_impl;
 ///
 /// Shared by both drivers; called from their `init`.
 pub(crate) fn enable_interrupts() {
-    /// PFIC system control register; not modelled by the PAC.
-    const PFIC_SCTLR: *mut u32 = 0xE000_ED10 as *mut u32;
-    /// Send an event when an interrupt becomes pending.
-    const SEVONPEND: u32 = 1 << 4;
+    // `PFIC.sctlr()` also carries `SETEVENT` (bit 5), which the PAC marks as
+    // write-only. A `modify()` would read that bit back and write it, so the
+    // field is set directly instead: read, OR in just this bit, write.
+    let sctlr = pac::PFIC.sctlr().read();
+    let mut new = sctlr;
+    new.set_sevonpend(true);
+    pac::PFIC.sctlr().write_value(new);
 
-    unsafe {
-        PFIC_SCTLR.write_volatile(PFIC_SCTLR.read_volatile() | SEVONPEND);
-        qingke::register::gintenr::write(0x08);
-    }
-}
-
-/// Which peripheral the compiled-in driver owns, for callers that need to avoid
-/// it.
-///
-/// Always available: `super` already refuses to build with zero or two drivers,
-/// so there is no "neither" case to report.
-#[cfg(any(
-    feature = "time-driver-systick",
-    feature = "time-driver-tmr0",
-    feature = "time-driver-tmr1",
-    feature = "time-driver-tmr2",
-    feature = "time-driver-tmr3"
-))]
-pub const fn time_driver_resource() -> DriverResource {
-    #[cfg(feature = "time-driver-systick")]
-    {
-        DriverResource::SysTick
-    }
-    #[cfg(all(not(feature = "time-driver-systick"), feature = "time-driver-tmr0"))]
-    {
-        DriverResource::Tmr(pac::Interrupt::TMR0)
-    }
-    #[cfg(all(
-        not(feature = "time-driver-systick"),
-        not(feature = "time-driver-tmr0"),
-        feature = "time-driver-tmr1"
-    ))]
-    {
-        DriverResource::Tmr(pac::Interrupt::TMR1)
-    }
-    #[cfg(all(
-        not(feature = "time-driver-systick"),
-        not(feature = "time-driver-tmr0"),
-        not(feature = "time-driver-tmr1"),
-        feature = "time-driver-tmr2"
-    ))]
-    {
-        DriverResource::Tmr(pac::Interrupt::TMR2)
-    }
-    #[cfg(all(
-        not(feature = "time-driver-systick"),
-        not(feature = "time-driver-tmr0"),
-        not(feature = "time-driver-tmr1"),
-        not(feature = "time-driver-tmr2"),
-        feature = "time-driver-tmr3"
-    ))]
-    {
-        DriverResource::Tmr(pac::Interrupt::TMR3)
-    }
-}
-
-/// The peripheral owned by the compiled-in time driver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DriverResource {
-    /// The core SysTick counter.
-    SysTick,
-    /// The given TMR interrupt.
-    Tmr(pac::Interrupt),
+    unsafe { qingke::register::gintenr::write(0x08) };
 }

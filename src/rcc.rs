@@ -29,7 +29,6 @@
 //! [`DEFAULT_FREQUENCY`] is only a starting value, used if calibration fails.
 
 use crate::atomic::{AtomicU32, Ordering};
-
 use crate::time::Hertz;
 
 /// Starting value for the cache, used until calibration runs.

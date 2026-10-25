@@ -22,34 +22,35 @@
 //! Note that `probe-rs read` must not be used to check this: it halts the core
 //! and reports values the running firmware does not see.
 //!
-//! # This driver and the SysTick time driver are mutually exclusive
+//! # What it counts on
 //!
-//! With `STRE = 1` the counter reloads at `STK_CMPLR`, and the embassy SysTick
-//! time driver reprograms that register to whatever its next alarm needs. A
-//! [`Delay`] running at the same time then measures its interval against a
-//! counter that restarts underneath it. Measured on hardware with an alarm
-//! every 100 ms: `delay_ms(1000)` completed in **97 ms**, not 1000 ms. It
-//! silently returns early — no hang, no error.
+//! [`Delay`] polls the SysTick counter directly and turns microseconds into
+//! ticks with the calibrated rate. That is the cheapest option and it works
+//! with no other stack involved.
 //!
-//! It is easy to miss because an idle executor leaves `STK_CMPLR` at its
-//! initial `MAX_PERIOD - 1`, so the counter never reaches it and `delay` looks
-//! correct until the first task actually sleeps. To make the conflict a
-//! build-time error rather than a silent wrong answer, [`Delay`] is compiled
-//! out under `time-driver-systick`.
+//! Under `time-driver-systick` the embassy driver owns the counter and reloads
+//! it at a compare value it reprograms for every alarm, so a raw poll would
+//! measure an interval against a counter that restarts underneath it: measured
+//! on hardware with an alarm every 100 ms, `delay_ms(1000)` took **97 ms**.
+//! In that configuration [`Delay`] therefore reads the timebase through
+//! [`embassy_time_driver::now`] instead, which is monotonic by contract. The
+//! delay is no longer exactly calibrated — it is one embassy tick, rounded up —
+//! but it is correct, and that is the trade the feature makes.
 //!
-//! The rate measurement does **not** depend on this module: [`crate::rcc`]
-//! calibrates against the RTC in [`crate::init`] whether or not `Delay` exists.
+//! Note that an executor that never sleeps hides the problem: `STK_CMPLR` stays
+//! at its initial `MAX_PERIOD - 1`, the counter never reaches it, and raw
+//! polling looks fine until the first task actually sleeps.
+//!
+//! The rate measurement does **not** depend on any of this: [`init`] is a free
+//! function and is what fills [`crate::rcc::clocks`] under every feature.
 
 use crate::atomic::Ordering;
 use crate::pac::SYSTICK;
 
-/// A delay backed by the SysTick counter.
+/// A delay backed by the SysTick timebase.
 ///
-/// Requires [`crate::init`] (or [`init`]) to have run, so the counter is
-/// started and its rate is known.
-///
-/// Absent when the `time-driver-systick` feature is on — see the module docs.
-#[cfg(not(feature = "time-driver-systick"))]
+/// Requires [`crate::init`] to have run, so the counter is started and its rate
+/// is known.
 pub struct Delay;
 
 /// SysTick ticks per second, measured against the RTC at init.
@@ -148,7 +149,33 @@ impl Delay {
     }
 }
 
-#[cfg(not(feature = "time-driver-systick"))]
+/// Under the SysTick time driver the counter is reloaded at the driver's
+/// compare value, so it cannot be polled. Read the driver's timebase instead.
+///
+/// It is monotonic, so it carries the delay forward correctly; it just costs
+/// one tick of resolution instead of a raw counter read.
+#[cfg(feature = "time-driver-systick")]
+impl Delay {
+    /// Busy-wait for `us` microseconds.
+    pub fn delay_us(&mut self, us: u32) {
+        let ticks = embassy_time_driver::TICK_HZ as u128 * us as u128 / 1_000_000;
+        self.wait_ticks(ticks as u64);
+    }
+
+    /// Busy-wait for `ms` milliseconds.
+    pub fn delay_ms(&mut self, ms: u32) {
+        let ticks = embassy_time_driver::TICK_HZ as u128 * ms as u128 / 1_000;
+        self.wait_ticks(ticks as u64);
+    }
+
+    fn wait_ticks(&mut self, ticks: u64) {
+        let deadline = embassy_time_driver::now().saturating_add(ticks);
+        while embassy_time_driver::now() < deadline {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 impl embedded_hal::delay::DelayNs for Delay {
     #[inline]
     fn delay_ns(&mut self, ns: u32) {
