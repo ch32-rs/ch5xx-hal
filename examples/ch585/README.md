@@ -25,6 +25,7 @@ runner commented out for when you only want to program the part.
 | `defmt_rtt` | logging over SEGGER RTT |
 | `cpuid` | the core's identity CSRs: `misa`, `mvendorid`, `marchid`, `mimpid`, `mhartid` |
 | `bitmanip` | whether the `B` that `misa` reports is the ratified `Zb*` encoding, one instruction at a time |
+| `uart_loopback` | UART0 with `MCR.LOOP`, so the byte path is checked without external wiring |
 | `clk_probe` | the firmware's view of `SYS.CLK_CFG` and the measured SysTick rate |
 | `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
 | `embassy_time_tmr` | the same on a TMR driver, so `delay` keeps the raw SysTick counter |

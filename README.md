@@ -25,11 +25,13 @@ enabled.
 
 - `init()` — clock/frequency setup and GPIO bring-up
 - `gpio` — input, output, flex pins, internal pull up/down, drive strength
+- `uart` — blocking TX/RX for UART0–UART3, with pin selection checked against
+  the default or remapped pin set at compile time (async is not implemented yet)
 - `delay` — `embedded-hal` `DelayNs`, backed by the core SysTick (or by the
   time driver's timebase under `time-driver-systick`)
 - `rcc` — reports the measured system clock
 
-Everything else (UART, SPI, I2C, timers, BLE, USB, …) is not implemented yet.
+Everything else (SPI, I2C, timers, BLE, USB, …) is not implemented yet.
 There is also no clock-tree configuration yet — the clock the boot ROM leaves
 in place is used as-is. See [System clock](#system-clock).
 
