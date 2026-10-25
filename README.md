@@ -79,6 +79,7 @@ cargo run --release --bin blinky
 | --- | --- |
 | `blinky` | GPIO output and the blocking `delay` |
 | `defmt_rtt` | logging over SEGGER RTT |
+| `cpuid` | `misa` / `mvendorid` / `marchid` / `mimpid` / `mhartid` from the core |
 | `clk_probe` | the firmware's view of `SYS.CLK_CFG` and the measured SysTick rate |
 | `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
 | `embassy_time_tmr` | the same on a TMR driver, so `delay` keeps the raw SysTick counter |
@@ -121,6 +122,9 @@ The QingKe V3C core is **RV32IMBC — there is no A extension**, and executing
 `amoadd.w` / `amoswap.w` raises a hardware exception on real CH585 silicon.
 Building for the usual `riscv32imac-unknown-none-elf` therefore produces a
 binary that faults the first time any atomic read-modify-write runs.
+
+The core reports this itself: `cargo run --release --bin cpuid` prints
+`misa = 0x40901106`, decoding to RV32 with extensions `BCIMUX` and no `A`.
 
 The examples build for `riscv32imc-unknown-none-elf`, and every atomic in this
 crate goes through `portable-atomic` with the `critical-section` feature, which
