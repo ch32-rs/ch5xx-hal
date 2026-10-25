@@ -145,11 +145,7 @@ pub unsafe fn init() {
     // route; the priority still goes through `Priority` rather than a magic
     // number.
     //
-    // The value matches ch32-hal's SysTick driver, which is the only reference
-    // for this part. Note that neither qingke nor the CH585 datasheet in this
-    // repo states whether a larger `Priority` means "more urgent" or "less";
-    // the HAL does not depend on the ordering (nothing else sets a priority),
-    // so keep this value when changing anything nearby.
+    // The level and its meaning are documented on `TIME_DRIVER_PRIORITY`.
     let irq = qingke_rt::CoreInterrupt::SysTick as u8;
     unsafe {
         qingke::pfic::set_priority(irq, super::TIME_DRIVER_PRIORITY as u8);

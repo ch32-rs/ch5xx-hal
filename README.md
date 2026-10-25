@@ -54,7 +54,7 @@ route the system clock through it.
 > **Do not read clock registers with `probe-rs read`.** It halts the core, and a
 > 16-bit read of `0x4000_1008` returns `0x014D` (mixing in the neighbouring
 > `HFCK_PWR_CTRL` byte) rather than the `0x0003` the firmware sees. Read them
-> from firmware and print over RTT: `cargo run --release --bin clk_probe`.
+> from firmware and print over RTT — see `examples/ch585`'s `clk_probe`.
 
 `delay::init` measures SysTick against the RTC's 32 kHz counter at startup (the
 same idea as WCH's `OSC_CAL`) and publishes the result through `rcc::clocks()`.
@@ -66,70 +66,24 @@ for the same silicon (see "Embassy time driver" below). Runtime reconfiguration
 of the system clock (HSI/HSE presets, PLL) is not implemented; it needs the SAM
 handshake and Flash access timing.
 
-## Example
-
-`examples/ch585` blinks LED0 (PB16) and LED1 (PB17) in opposite phase:
-
-```console
-cd examples/ch585
-cargo run --release --bin blinky
-```
-
-| Binary | Shows |
-| --- | --- |
-| `blinky` | GPIO output and the blocking `delay` |
-| `defmt_rtt` | logging over SEGGER RTT |
-| `cpuid` | `misa` / `mvendorid` / `marchid` / `mimpid` / `mhartid` from the core |
-| `clk_probe` | the firmware's view of `SYS.CLK_CFG` and the measured SysTick rate |
-| `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
-| `embassy_time_tmr` | the same on a TMR driver, so `delay` keeps the raw SysTick counter |
-
-The runner is `probe-rs run --chip CH585`, so `cargo run` flashes, resets, and
-streams `defmt` output in one step. A `wlink flash` runner is kept commented out
-in `.cargo/config.toml` if you only want to program the part.
-
-> **Careful when observing with a debugger:** every `wlink`/`probe-rs` memory
-> read halts the core and does not resume it, so polling a live counter will
-> freeze the firmware. Read state once after waiting, or record a history into
-> RAM and read it afterwards.
-
-## Console output (defmt + RTT)
-
-CH5xx has no SDI printf (the debug-module `DATA0`/`DATA1` handshake is not
-present). Use `defmt` over SEGGER RTT instead — no special chip support is
-needed, and `probe-rs` handles it natively:
-
-```console
-cd examples/ch585
-cargo run --release --bin defmt_rtt
-```
-
-This uses the `probe-rs run --chip CH585` runner from `.cargo/config.toml`. If
-you want to flash and attach separately instead:
-
-```console
-probe-rs download --chip CH585 target/riscv32imc-unknown-none-elf/release/defmt_rtt
-probe-rs attach --chip CH585 target/riscv32imc-unknown-none-elf/release/defmt_rtt
-```
-
-Add `defmt` and `defmt-rtt` to your binary's dependencies. The `DEFMT_LOG` env
-variable controls log level at compile time (default is `error`; `.cargo/config.toml`
-sets `info` for the examples).
-
 ## Target: `riscv32imc`, not `riscv32imac`
 
 The QingKe V3C core is **RV32IMBC — there is no A extension**, and executing
 `amoadd.w` / `amoswap.w` raises a hardware exception on real CH585 silicon.
 Building for the usual `riscv32imac-unknown-none-elf` therefore produces a
-binary that faults the first time any atomic read-modify-write runs.
+binary that faults the first time any atomic read-modify-write runs. The core
+reports this itself: `misa` reads `0x40901106`, i.e. RV32 with `BCIMUX` and no
+`A`.
 
-The core reports this itself: `cargo run --release --bin cpuid` prints
-`misa = 0x40901106`, decoding to RV32 with extensions `BCIMUX` and no `A`.
+Every atomic in this crate therefore goes through `portable-atomic` with the
+`critical-section` feature, which supplies `fetch_add` / `compare_exchange` from
+a critical section. Enable the same feature in any binary crate that shares
+state with the HAL.
 
-The examples build for `riscv32imc-unknown-none-elf`, and every atomic in this
-crate goes through `portable-atomic` with the `critical-section` feature, which
-supplies `fetch_add` / `compare_exchange` from a critical section. Enable the
-same feature in any binary crate that shares state with the HAL.
+## Examples
+
+See [`examples/ch585`](examples/ch585) for the example binaries, how to run
+them, and the console/debugger notes that apply to all of them.
 
 ## Embassy time driver
 
@@ -141,9 +95,7 @@ same feature in any binary crate that shares state with the HAL.
 | `time-driver-tmr0` … `time-driver-tmr3` | that TMR instance | one of four general timers |
 
 Exactly one must be enabled; enabling none, or two, is a `compile_error!`. The
-HAL has no default. `examples/ch585` forwards the same feature names and
-defaults to `time-driver-systick`; switch with
-`--no-default-features --features time-driver-tmr0`, no manifest edit needed.
+HAL has no default.
 
 The SysTick driver has the shortest wake-up path. It reprograms SysTick
 (`STRE = 1` plus its own compare value), so the raw counter can no longer be
@@ -170,16 +122,6 @@ portable-atomic = { version = "1.11", features = ["critical-section"] }
 `ch5xx_hal::init()` then starts the driver, enables its interrupt and turns
 global interrupts on, so a `#[qingke_rt::entry]` `main` can spawn tasks on an
 `embassy_executor::Executor` straight away.
-
-```console
-cd examples/ch585
-cargo run --release --bin embassy_time --no-default-features --features time-driver-systick
-cargo run --release --bin embassy_time_tmr --no-default-features --features time-driver-tmr0
-# toggle 1 at 5 ms / elapsed 501 ms / toggle 2 at 512 ms / ...
-```
-
-`embassy_time_tmr` is the one that demonstrates the point of a TMR driver: it
-runs an async `Timer` and a blocking `Delay` side by side.
 
 Both counters are "reload at the end value" timers, so they share one state
 machine (`src/embassy/reload_timer.rs`): the hardware — not the ISR — decides when

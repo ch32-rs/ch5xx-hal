@@ -98,10 +98,18 @@ pub mod time_driver_impl;
 
 /// Priority given to the time driver's interrupt.
 ///
-/// The TiMER is the clock the whole executor waits on, so it has to be able to
-/// preempt ordinary work. Neither qingke nor the CH585 datasheet in this repo
-/// documents whether a larger `qingke::interrupt::Priority` is more or less
-/// urgent, so this keeps the value the driver used before it was named.
+/// **On V3C only bits `[7:5]` of `PFIC_IPRIORx` are implemented**, and the
+/// *QingKeV3 Processor Manual* states that the lower the value, the higher the
+/// priority. So there are eight usable levels, 0…7, and `P8 = 0x80` is level 4:
+/// mid-range, able to preempt ordinary work rather than the least urgent.
+///
+/// `qingke::interrupt::Priority` names 16 steps of `0x10`, but on this core each
+/// pair (P0/P1, P2/P3, …) maps to the same hardware level. Do not read a 16-step
+/// ordering into it; only the top three bits survive.
+///
+/// Preemption additionally requires nesting to be enabled: `PFIC_CFGR.NESTCTRL`
+/// controls it and `CSR 0xBC1.NEST_LVL` bounds the depth. qingke-rt's V3C
+/// startup sets `NEST_LVL = 1`, i.e. one level.
 pub(crate) const TIME_DRIVER_PRIORITY: qingke::interrupt::Priority = qingke::interrupt::Priority::P8;
 
 /// Enable global interrupts and make them wake the core from `wfi`.
