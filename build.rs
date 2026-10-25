@@ -40,10 +40,9 @@ fn main() {
     };
     println!("cargo:rustc-cfg={chip_name}");
 
-    // Per-chip GPIO port widths. The metadata does not carry pins yet (see
-    // ch5xx-data AGENTS.md, "Pins … are not in the SVD; leave them for hand
-    // editing"), and the widths differ per die, so they live here until pins
-    // land in the data.
+    // Per-chip GPIO port widths. Metadata only lists pins that carry a
+    // peripheral signal, so pads with no alternate function would not be
+    // discovered; the widths differ per die and stay here.
     let ports: &[(char, u8)] = match chip_name.as_str() {
         "ch585" => &[('A', 16), ('B', 24)],
         other => panic!("no GPIO port map for chip `{other}`"),
@@ -142,7 +141,10 @@ fn main() {
         .collect();
     make_table(&mut m, "foreach_pin", &pins_table);
 
-    // foreach_interrupt: peripheral, kind, block, signal, interrupt
+    // foreach_interrupt: peripheral, kind, block, signal, interrupt.
+    // Register-less placeholders (BLE, NFC) are skipped: the table's `block`
+    // column names a register block, which they do not have. Their vectors are
+    // still in `pac::Interrupt`, so a driver can bind them directly.
     let interrupts_table: Vec<Vec<String>> = METADATA
         .peripherals
         .iter()
