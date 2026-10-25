@@ -52,8 +52,15 @@
 //! # `misa` is load-bearing
 //!
 //! There is **no A** (atomics), which is why the HAL builds for `riscv32imc` and
-//! routes every read-modify-write through `portable-atomic`. `B` and `X` are
-//! present but the compiler is not told about them.
+//! routes every read-modify-write through `portable-atomic`. `X` is reported and
+//! appears to be the WCH compressed loads/stores that `+xwchc` asks for.
+//!
+//! `B` is reported too, but `misa` cannot say *which* B: table 8-2 calls bit 1
+//! "Tentatively reserved for Bit-Manipulation extension", and the ratified
+//! `Zb*` split, the pre-ratification draft and a WCH subset all encode
+//! differently. The `bitmanip` binary settles it on hardware: every
+//! ratified `Zba`/`Zbb`/`Zbs` instruction executes, plus `Zbc`'s `clmul`. That
+//! is why the examples pass `+b` in `rustflags`.
 //!
 //! # Probing safely
 //!
@@ -253,6 +260,8 @@ fn main() -> ! {
         // No A: this is why the HAL targets riscv32imc and uses portable-atomic.
         info!("  A (atomics) = {}", misa & (1 << 0) != 0);
         info!("  U (user)    = {}", misa & (1 << 20) != 0);
+        // Reported, but the bit alone does not say whether this is the ratified
+        // `Zb*` encoding or the older draft; `bitmanip` answers that on hardware.
         info!("  B (bitmanip)= {}", misa & (1 << 1) != 0);
         info!("  X (custom)  = {}", misa & (1 << 23) != 0);
     }

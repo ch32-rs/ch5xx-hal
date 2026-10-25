@@ -7,9 +7,19 @@ target = "riscv32imc-unknown-none-elf"
 # runner = "wlink flash"
 runner = "probe-rs run --chip CH585"
 rustflags = [
-    # Target features:
+    # `+b` — the V3C implements the ratified Zba/Zbb/Zbs encodings (verified on
+    # hardware by `src/bin/bitmanip.rs`), so letting LLVM emit them is safe and
+    # shrinks the image by ~16 KiB. It is a standard, stable target feature: no
+    # warning.
+    #
+    # `+xwchc` — WCH's extra compressed loads/stores (`c.lbu`, `c.shsp`, …), the
+    # `XW` row of the manual's table 1-1. Rust does not model this extension, so
+    # the feature is unknown to the compiler: every build prints
+    # "unknown and unstable feature ... `xwchc`" and rustc plans to turn that
+    # into a hard error (rust-lang/rust#162235). It is passed anyway because the
+    # backend does accept it; revisit when the deprecation lands.
     "-C",
-    "target-feature=+xwchc",
+    "target-feature=+b,+xwchc",
 ]
 
 [unstable]

@@ -24,6 +24,7 @@ runner commented out for when you only want to program the part.
 | `blinky` | GPIO output and the blocking `delay`; LED0 (PB16) and LED1 (PB17) in opposite phase |
 | `defmt_rtt` | logging over SEGGER RTT |
 | `cpuid` | the core's identity CSRs: `misa`, `mvendorid`, `marchid`, `mimpid`, `mhartid` |
+| `bitmanip` | whether the `B` that `misa` reports is the ratified `Zb*` encoding, one instruction at a time |
 | `clk_probe` | the firmware's view of `SYS.CLK_CFG` and the measured SysTick rate |
 | `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
 | `embassy_time_tmr` | the same on a TMR driver, so `delay` keeps the raw SysTick counter |
@@ -82,3 +83,31 @@ prints `0x40901106`, i.e. RV32 with `BCIMUX` and no `A`.
 
 That is why `portable-atomic` with the `critical-section` feature is a dependency
 here as well as in the HAL.
+
+## Target features
+
+`.cargo/config.toml` passes two `target-feature`s, and they are not the same kind
+of thing:
+
+- **`+b`** is standard and stable. The V3C implements the ratified
+  `Zba`/`Zbb`/`Zbs` encodings — `bitmanip` executes each instruction on the part
+  and they all run; there is no trap. Lighting up `+b` shrinks `blinky` by about
+  16 KiB because LLVM stops expanding `clz`/`cpop`/`rev8` into loops. Turning it
+  on is safe.
+- **`+xwchc`** is WCH's `XW` extension: compressed byte/halfword loads and stores
+  (`c.lbu`, `c.lhusp`, `c.sbsp`, …; manual table 1-1). Rust does not model it, so
+  rustc does not know the name and warns on every build — "unknown and unstable
+  feature … `xwchc`", slated to become a hard error
+  ([rust-lang/rust#162235]). It is passed anyway because the backend honours it.
+
+So the answer to "is `B` enabled like `+xwchc`?" is no: `B` is a ratified
+standard feature the compiler understands, `xwchc` is a vendor extension it does
+not. The only thing they share is the `-C target-feature=` syntax.
+
+`misa` reporting `B` was not enough on its own to justify `+b`: the manual calls
+bit 1 "tentatively reserved", and the pre-ratification `B` draft uses different
+encodings from the ratified `Zb*` set. `bitmanip` resolves it by execution, with
+three negative controls (`amoadd.w`, `amoswap.w`, `unimp`) that must trap — if
+they ever stop trapping, its `OK` lines are meaningless.
+
+[rust-lang/rust#162235]: https://github.com/rust-lang/rust/issues/162235
