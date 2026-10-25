@@ -3,6 +3,16 @@ name = "ch585-examples"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Which peripheral the embassy time driver takes. `time-driver-systick` is the
+# default; the TMR options leave SysTick to `delay`.
+default = ["time-driver-systick"]
+time-driver-systick = ["ch5xx-hal/time-driver-systick"]
+time-driver-tmr0 = ["ch5xx-hal/time-driver-tmr0"]
+time-driver-tmr1 = ["ch5xx-hal/time-driver-tmr1"]
+time-driver-tmr2 = ["ch5xx-hal/time-driver-tmr2"]
+time-driver-tmr3 = ["ch5xx-hal/time-driver-tmr3"]
+
 [dependencies]
 ch5xx-hal = { path = "../../", features = ["ch585", "rt", "memory-x"] }
 
@@ -13,6 +23,17 @@ qingke = "0.8.2"
 qingke-rt = "0.8.2"
 defmt = "1.0"
 defmt-rtt = "1.3"
+
+# The CH585's QingKe V3C core is RV32IMBC — there is **no A extension**, and
+# executing `amoadd.w`/`amoswap.w`/`lr.w` raises a hardware exception. Using the
+# standard `riscv32imac` target would make the compiler emit those instructions.
+# `portable-atomic` supplies them from a critical section instead, and embassy
+# picks its no-atomics executor state machine in response.
+# Local checkout: the published 0.10.0 does not expose the `portable-atomic`
+# feature this part needs (see the note above).
+embassy-executor = { path = "../../../embassy/embassy-executor", features = ["platform-riscv32", "executor-thread", "portable-atomic"] }
+embassy-time = { version = "0.5.1", features = ["tick-hz-1_000_000"] }
+portable-atomic = { version = "1.11", features = ["critical-section"] }
 
 [profile.release]
 strip = false   # symbols are not flashed to the microcontroller, so don't strip them.
@@ -27,3 +48,10 @@ overflow-checks = false
 [patch.crates-io]
 qingke = { path = "../../../qingke" }
 qingke-rt = { path = "../../../qingke/qingke-rt" }
+# `embassy-executor` comes from the local checkout, so its
+# `embassy-executor-timer-queue` dependency is a path too. Without this the
+# registry copy (pulled in by `embassy-time-queue-utils`) is a *second* build of
+# the same crate with a different `timer-item-size-*` feature, leaving the
+# executor's `TimerQueueItem` zero-sized: the integrated timer queue then writes
+# past the task header and every timer is silently dropped.
+embassy-executor-timer-queue = { path = "../../../embassy/embassy-executor-timer-queue" }

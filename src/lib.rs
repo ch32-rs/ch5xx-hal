@@ -10,12 +10,19 @@
 //! - **One GPIO block**, `pac::GPIO`, with per-port register groups
 //!   (`pa_out`, `pb_dir`, …) instead of one peripheral per port.
 //!
-//! [`rcc`] is a plain module rather than a driver directory: with no PLL setup
-//! implemented yet there is one frequency to report.
+//! [`rcc`] is a plain module rather than a driver directory: with no clock-tree
+//! configuration implemented yet there is one frequency to report.
 
 #![no_std]
 #![allow(static_mut_refs)]
 #![allow(unexpected_cfgs)]
+
+// The QingKe V3C core implements RV32IMBC: no A extension. `amoadd.w` and
+// `amoswap.w` trap on real CH585 silicon (measured; see the `embassy` module
+// docs), so the standard target's atomics cannot be used. Every atomic in this
+// crate goes through `portable-atomic`, which falls back to a critical
+// section. Plain loads/stores still compile to `lw`/`sw`.
+extern crate portable_atomic as atomic;
 
 pub use ch5xx_metapac as pac;
 
@@ -83,6 +90,10 @@ pub use crate::_generated::{peripherals, Peripherals};
 pub mod delay;
 pub mod gpio;
 
+/// Embassy integration (time driver). Requires the `embassy` feature.
+#[cfg(feature = "embassy")]
+pub mod embassy;
+
 pub struct Config {
     pub rcc: rcc::Config,
 }
@@ -102,7 +113,15 @@ pub fn init(config: Config) -> Peripherals {
 
     unsafe {
         rcc::init(config.rcc);
+        // `delay::init` owns the clock calibration: it measures SysTick against
+        // the RTC and publishes the result through `rcc::clocks()`.
         delay::init();
+        // The time driver starts its counter and enables its own interrupt. It
+        // reads the frequency from `rcc::clocks()`, so it must run after the
+        // calibration above. It also enables global interrupts: qingke-rt's V3C
+        // startup leaves them clear, so after `init()` interrupts work.
+        #[cfg(feature = "embassy")]
+        embassy::time_driver_impl::init();
     }
 
     critical_section::with(|cs| unsafe {

@@ -9,19 +9,20 @@
 //!
 //! # Why the rate is measured, not assumed
 //!
-//! The system clock comes out of reset configured by the boot ROM, not by the
-//! documented `CLK_CFG` reset value: on the CH585 measured here `CLK_CFG` reads
-//! `0x014D` (`CLK_SYS_MOD = 01`, i.e. PLL-sourced) rather than `0x0003`. The
-//! PLL divider therefore cannot be turned into a frequency without modelling
-//! the PLL, and a wrong constant makes every delay wrong by the same factor.
+//! `CLK_CFG` is readable and, on this board, holds `0x0003` (HSI 16 MHz / 3),
+//! so a nominal 5.333 MHz could simply be derived from it. It is measured
+//! anyway because the RC oscillators are not exact and a wrong constant makes
+//! every delay wrong by the same factor.
 //!
-//! So [`init`] calibrates the counter against the *independent* 32 kHz RTC
-//! counter instead. That is the same trick WCH's `OSC_CAL` uses, and it stays
-//! correct whatever the boot ROM left the PLL at. The calibrated value also
-//! backs [`crate::rcc::clocks`].
+//! [`init`] calibrates the counter against the 32 kHz RTC counter, the same
+//! trick WCH's `OSC_CAL` uses. The result backs [`crate::rcc::clocks`], but it
+//! is a measurement: it varies slightly between resets because the internal
+//! 32 kHz RC is the reference.
+//!
+//! Note that `probe-rs read` must not be used to check this: it halts the core
+//! and reports values the running firmware does not see.
 
-use core::sync::atomic::Ordering;
-
+use crate::atomic::Ordering;
 use crate::pac::SYSTICK;
 
 /// A delay backed by the SysTick counter.
@@ -31,16 +32,23 @@ use crate::pac::SYSTICK;
 pub struct Delay;
 
 /// SysTick ticks per second, measured against the RTC at init.
-static TICKS_PER_SEC: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(crate::rcc::DEFAULT_FREQUENCY.0);
+static TICKS_PER_SEC: crate::atomic::AtomicU32 = crate::atomic::AtomicU32::new(crate::rcc::DEFAULT_FREQUENCY.0);
 
 /// RTC block, whose `CNT_32K` counter is clocked by the independent 32 kHz
 /// oscillator and keeps running across anything the PLL does.
 const RTC_BASE: u32 = 0x4000_1000;
 
-/// RTC count used for the calibration window. 1024 counts at 32.768 kHz is
-/// 31.25 ms — long enough for a precise ratio, short enough not to stall boot.
-const CAL_COUNTS: u16 = 1024;
+/// RTC count used for the calibration window.
+///
+/// 4096 counts at 32.768 kHz is 125 ms. A shorter window is too sensitive to
+/// the skew between the `CNT_32K` and `STK_CNTL` reads: at 1024 counts the
+/// same board measured anywhere from 5.33 to 7.43 MHz run to run, which then
+/// scaled every delay (and the whole embassy timebase) by up to 40%.
+const CAL_COUNTS: u16 = 4096;
+
+/// Calibration rounds; the median is used so a single disturbed window cannot
+/// skew the result.
+const CAL_ROUNDS: usize = 5;
 
 /// RTC frequency, for turning counts into seconds.
 const RTC_HZ: u32 = 32_768;
@@ -119,25 +127,33 @@ impl Delay {
 /// Returns ticks per second, or the nominal frequency if the RTC never
 /// advances (it should always be running, but a hang here would brick boot).
 unsafe fn calibrate() -> u32 {
-    let rtc_start = rtc_count();
-    let stk_start = SYSTICK.stk_cntl().read().cntl();
+    let mut samples = [0u32; CAL_ROUNDS];
 
-    // Bounded: at ~32 MHz this window is a few milliseconds of spinning.
-    let mut guard = 0u32;
-    while rtc_count().wrapping_sub(rtc_start) < CAL_COUNTS {
-        guard += 1;
-        if guard > 200_000_000 {
-            return crate::rcc::DEFAULT_FREQUENCY.0;
+    for sample in samples.iter_mut() {
+        let rtc_start = rtc_count();
+        let stk_start = SYSTICK.stk_cntl().read().cntl();
+
+        // Bounded: at ~5.33 MHz this window is ~125 ms of spinning. A stalled
+        // RTC must not brick boot, so fall back rather than hang.
+        let mut guard = 0u32;
+        while rtc_count().wrapping_sub(rtc_start) < CAL_COUNTS {
+            guard += 1;
+            if guard > 200_000_000 {
+                return crate::rcc::DEFAULT_FREQUENCY.0;
+            }
+            core::hint::spin_loop();
         }
-        core::hint::spin_loop();
+
+        let stk_end = SYSTICK.stk_cntl().read().cntl();
+        let ticks = stk_end.wrapping_sub(stk_start) as u64;
+        let rtc_delta = CAL_COUNTS as u64;
+
+        // ticks per second = ticks * RTC_HZ / rtc_delta
+        *sample = (ticks * RTC_HZ as u64 / rtc_delta) as u32;
     }
 
-    let stk_end = SYSTICK.stk_cntl().read().cntl();
-    let ticks = stk_end.wrapping_sub(stk_start) as u64;
-    let rtc_delta = CAL_COUNTS as u64;
-
-    // ticks per second = ticks * RTC_HZ / rtc_delta
-    let hz = (ticks * RTC_HZ as u64 / rtc_delta) as u32;
+    samples.sort_unstable();
+    let hz = samples[CAL_ROUNDS / 2];
     if hz == 0 {
         crate::rcc::DEFAULT_FREQUENCY.0
     } else {

@@ -26,6 +26,18 @@ embedded-hal = "1.0"
 
 embassy-hal-internal = "0.5.0"
 
+# Embassy time driver support. Optional so a bare-metal user does not pull in
+# the executor/time stack.
+embassy-sync = { version = "0.8.0", optional = true }
+embassy-time-driver = { version = "0.2.2", optional = true }
+embassy-time-queue-utils = { version = "0.3.2", optional = true }
+
+# The QingKe V3C core has no A extension: `amoadd.w` and friends raise a
+# hardware exception on the CH585. portable-atomic supplies CAS from a critical
+# section instead, and its atomics must be used instead of `core::sync::atomic`
+# anywhere a read-modify-write is involved.
+portable-atomic = { version = "1.11", features = ["critical-section"] }
+
 critical-section = "1.2.0"
 
 [build-dependencies.proc-macro2]
@@ -46,6 +58,23 @@ rt = ["dep:qingke-rt", "qingke-rt/v3c", "qingke/v3c"]
 # Chip-selection features. Exactly one must be enabled; `ch5xx-metapac` panics
 # otherwise. All of these cores are QingKe V3C on the parts covered so far.
 ch585 = ["ch5xx-metapac/ch585"]
+
+## Embassy support. This only pulls the deps in; pick a driver with one of the
+## `time-driver-*` features below.
+embassy = ["dep:embassy-sync", "dep:embassy-time-driver", "dep:embassy-time-queue-utils", "rt"]
+
+## Time driver on the core SysTick counter. Lowest latency, but it takes SysTick
+## away from the blocking `delay` driver — both cannot own it.
+time-driver-systick = ["embassy"]
+
+## Time driver on TMR0. Leaves SysTick to `delay` and everything else.
+time-driver-tmr0 = ["embassy"]
+## Time driver on TMR1 (this instance also has DMA).
+time-driver-tmr1 = ["embassy"]
+## Time driver on TMR2 (this instance also has DMA).
+time-driver-tmr2 = ["embassy"]
+## Time driver on TMR3.
+time-driver-tmr3 = ["embassy"]
 
 ## Emit `memory.x` from the metapac's memory layout, so `qingke-rt`'s `link.x`
 ## can find it. Enable in the binary crate, not the HAL (see ch32-hal).

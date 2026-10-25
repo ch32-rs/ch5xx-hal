@@ -5,29 +5,38 @@
 //! This module caches the resulting frequency for the delay driver and for
 //! anything else that needs it.
 //!
-//! # Why the frequency is measured
+//! # Where the frequency comes from
 //!
-//! The datasheet's `CLK_CFG` reset value is `0x0003` (`CLK_SYS_MOD = 00`,
-//! "divided from 32 MHz"), but the boot ROM does not leave it there: on the
-//! CH585 used for bring-up it reads `0x014D`, i.e. `CLK_SYS_MOD = 01`
-//! (PLL-sourced) with `CLK_PLL_DIV = 13`. Turning that into a frequency means
-//! modelling the PLL, so instead [`crate::delay::Delay::init`] measures the
-//! real rate against the independent 32 kHz RTC counter and reports it through
-//! [`set_sysclk`].
+//! On the CH585 used for bring-up the firmware reads `CLK_CFG = 0x0003`
+//! (`CLK_SYS_MOD = 00`, `CLK_PLL_DIV = 3`, `OSC32M_SEL = 0`), the datasheet's
+//! reset value: **HSI 16 MHz / 3 = 5.333 MHz**. The boot ROM powers the PLL but
+//! does not route the system clock through it.
 //!
-//! This port does **not** reconfigure the PLL: changing it needs the
-//! safe-access (SAM) handshake and the crystal tuning procedure, which is
-//! separate work.
+//! Do not read this register with `probe-rs read`: that halts the core and the
+//! value it reports is not what the running firmware sees (a 16-bit read of
+//! `0x4000_1008` returns `0x014D`, with the neighbouring `HFCK_PWR_CTRL` byte
+//! mixed in). Read it from firmware, e.g. `examples/ch585/src/bin/clk_probe.rs`.
+//!
+//! [`crate::delay::Delay::init`] still measures the rate against the RTC's
+//! 32 kHz counter and reports it through [`set_sysclk`]. That measurement is
+//! useful (the internal 32 kHz RC is a real reference) but it is **not**
+//! bit-identical across resets, so it is a calibration result, not a constant.
+//!
+//! This port does **not** reconfigure the system clock yet: that needs the
+//! safe-access (SAM) handshake and, for HSE/PLL presets, the Flash access
+//! timing, which are separate work.
 //!
 //! [`DEFAULT_FREQUENCY`] is only a starting value, used if calibration fails.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use crate::atomic::{AtomicU32, Ordering};
 
 use crate::time::Hertz;
 
-/// Nominal system frequency, used until the real rate has been measured.
-/// See the module docs.
-pub const DEFAULT_FREQUENCY: Hertz = Hertz(32_000_000);
+/// Starting value for the cache, used until calibration runs.
+///
+/// This is the CH585 reset default: HSI 16 MHz divided by 3. See the module
+/// docs for why it is measured rather than trusted.
+pub const DEFAULT_FREQUENCY: Hertz = Hertz(5_333_333);
 
 static SYSCLK_HZ: AtomicU32 = AtomicU32::new(DEFAULT_FREQUENCY.0);
 
@@ -40,7 +49,7 @@ pub struct Clocks {
 
 /// Clock configuration.
 ///
-/// Empty for now: only the reset default (32 MHz) is supported.
+/// Empty for now: the boot ROM's default (HSI/3) is used as-is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Config;
 
