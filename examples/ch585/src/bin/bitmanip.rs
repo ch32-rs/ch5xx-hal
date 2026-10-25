@@ -206,9 +206,13 @@ fn main() -> ! {
     try_binop!("bext", "zbs", "bext {0}, {0}, {1}");
 
     // Zbc: carry-less multiply. Outside the ratified `B` collection, so these
-    // two are what distinguish "implements +b" from "implements more than +b".
+    // are what distinguish "implements +b" from "implements more than +b".
+    // `clmulr` is the third Zbc opcode and is what `+zbc` adds on top of `+b`;
+    // LLVM may emit it for `u32::carryless_mul` (still an unstable intrinsic),
+    // so it has to be probed before `+zbc` can be enabled.
     try_binop!("clmul", "zbc", "clmul {0}, {0}, {1}");
     try_binop!("clmulh", "zbc", "clmulh {0}, {0}, {1}");
+    try_binop!("clmulr", "zbc", "clmulr {0}, {0}, {1}");
 
     // Controls. There is no A extension, so all three must trap. If they run,
     // the handler is not installed and every OK above is meaningless.

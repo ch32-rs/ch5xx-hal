@@ -12,12 +12,22 @@ rustflags = [
     # shrinks the image by ~16 KiB. It is a standard, stable target feature: no
     # warning.
     #
-    # `+xwchc` — WCH's extra compressed loads/stores (`c.lbu`, `c.shsp`, …), the
+    # `+zbc` would add the third carry-less-multiply opcode, `clmulr`, which this
+    # part also executes. It is left out because nothing in the compiler emits it
+    # yet -- `u32::carryless_mul` is still unstable -- so it costs nothing to
+    # wait rather than track an opcode no code path uses.
+    #
+    # `+xwchc` — WCH's extra compressed loads/stores (`c.lbu`, `c.shsp`, ...), the
     # `XW` row of the manual's table 1-1. Rust does not model this extension, so
     # the feature is unknown to the compiler: every build prints
     # "unknown and unstable feature ... `xwchc`" and rustc plans to turn that
     # into a hard error (rust-lang/rust#162235). It is passed anyway because the
     # backend does accept it; revisit when the deprecation lands.
+    #
+    # `+zcb` is not an alternative: LLVM rejects the pair outright, since WCH's
+    # `XW` predates Zcb and both claim the compressed byte/halfword load-store
+    # encodings ("rustc-LLVM ERROR: 'xwchc' and 'zcb' extensions are
+    # incompatible"). Keeping `xwchc` is what the silicon's own toolchain uses.
     "-C",
     "target-feature=+b,+xwchc",
 ]

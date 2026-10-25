@@ -99,6 +99,8 @@ of thing:
   rustc does not know the name and warns on every build — "unknown and unstable
   feature … `xwchc`", slated to become a hard error
   ([rust-lang/rust#162235]). It is passed anyway because the backend honours it.
+  Note `+zcb` is *not* an alternative: LLVM rejects the pair as incompatible,
+  because `XW` predates Zcb and both claim the same compressed encodings.
 
 So the answer to "is `B` enabled like `+xwchc`?" is no: `B` is a ratified
 standard feature the compiler understands, `xwchc` is a vendor extension it does
