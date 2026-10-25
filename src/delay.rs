@@ -21,6 +21,24 @@
 //!
 //! Note that `probe-rs read` must not be used to check this: it halts the core
 //! and reports values the running firmware does not see.
+//!
+//! # This driver and the SysTick time driver are mutually exclusive
+//!
+//! With `STRE = 1` the counter reloads at `STK_CMPLR`, and the embassy SysTick
+//! time driver reprograms that register to whatever its next alarm needs. A
+//! [`Delay`] running at the same time then measures its interval against a
+//! counter that restarts underneath it. Measured on hardware with an alarm
+//! every 100 ms: `delay_ms(1000)` completed in **97 ms**, not 1000 ms. It
+//! silently returns early — no hang, no error.
+//!
+//! It is easy to miss because an idle executor leaves `STK_CMPLR` at its
+//! initial `MAX_PERIOD - 1`, so the counter never reaches it and `delay` looks
+//! correct until the first task actually sleeps. To make the conflict a
+//! build-time error rather than a silent wrong answer, [`Delay`] is compiled
+//! out under `time-driver-systick`.
+//!
+//! The rate measurement does **not** depend on this module: [`crate::rcc`]
+//! calibrates against the RTC in [`crate::init`] whether or not `Delay` exists.
 
 use crate::atomic::Ordering;
 use crate::pac::SYSTICK;
@@ -29,6 +47,9 @@ use crate::pac::SYSTICK;
 ///
 /// Requires [`crate::init`] (or [`init`]) to have run, so the counter is
 /// started and its rate is known.
+///
+/// Absent when the `time-driver-systick` feature is on — see the module docs.
+#[cfg(not(feature = "time-driver-systick"))]
 pub struct Delay;
 
 /// SysTick ticks per second, measured against the RTC at init.
@@ -61,31 +82,36 @@ fn rtc_count() -> u16 {
     unsafe { core::ptr::read_volatile((RTC_BASE + 0x38) as *const u16) }
 }
 
+/// Start SysTick as a free-running counter and measure its rate.
+///
+/// This runs on every build, even when the SysTick time driver owns the
+/// counter: it is what fills in [`crate::rcc::clocks`], and the driver reads
+/// the frequency from there. When the driver is compiled in, its `init` runs
+/// directly after this and reprograms the counter for its own reload model.
+///
+/// # Safety
+///
+/// Call once, from [`crate::init`].
+pub(crate) unsafe fn init() {
+    // Free-running, up-count, HCLK source (`STCLK` set — clearing it would
+    // select HCLK/8). `STE` starts it.
+    SYSTICK.stk_sr().modify(|w| w.set_cntif(false));
+    SYSTICK.stk_cntl().write(|w| w.set_cntl(0));
+    SYSTICK.stk_cnth().write(|w| w.set_cnth(0));
+    SYSTICK.stk_ctlr().modify(|w| {
+        w.set_mode(false); // up-count
+        w.set_stclk(true); // source: HCLK (not HCLK/8)
+        w.set_stie(false); // poll, never interrupt
+        w.set_ste(true);
+    });
+
+    let hz = unsafe { calibrate() };
+    TICKS_PER_SEC.store(hz, Ordering::Relaxed);
+    crate::rcc::set_sysclk(hz);
+}
+
+#[cfg(not(feature = "time-driver-systick"))]
 impl Delay {
-    /// Start SysTick and measure its rate.
-    ///
-    /// # Safety
-    ///
-    /// Must not be used alongside any other SysTick user (in particular an
-    /// embassy time driver).
-    pub(crate) unsafe fn init() {
-        // Free-running, up-count, HCLK source (`STCLK` set — clearing it
-        // would select HCLK/8). `STE` starts it.
-        SYSTICK.stk_sr().modify(|w| w.set_cntif(false));
-        SYSTICK.stk_cntl().write(|w| w.set_cntl(0));
-        SYSTICK.stk_cnth().write(|w| w.set_cnth(0));
-        SYSTICK.stk_ctlr().modify(|w| {
-            w.set_mode(false); // up-count
-            w.set_stclk(true); // source: HCLK (not HCLK/8)
-            w.set_stie(false); // poll, never interrupt
-            w.set_ste(true);
-        });
-
-        let hz = unsafe { calibrate() };
-        TICKS_PER_SEC.store(hz, Ordering::Relaxed);
-        crate::rcc::set_sysclk(hz);
-    }
-
     /// Busy-wait for `us` microseconds.
     ///
     /// Panics in debug builds if called before [`crate::init`].
@@ -119,6 +145,24 @@ impl Delay {
             ms -= 4_000;
         }
         self.delay_us(ms * 1_000);
+    }
+}
+
+#[cfg(not(feature = "time-driver-systick"))]
+impl embedded_hal::delay::DelayNs for Delay {
+    #[inline]
+    fn delay_ns(&mut self, ns: u32) {
+        self.delay_us(ns.div_ceil(1_000));
+    }
+
+    #[inline]
+    fn delay_us(&mut self, us: u32) {
+        Delay::delay_us(self, us);
+    }
+
+    #[inline]
+    fn delay_ms(&mut self, ms: u32) {
+        Delay::delay_ms(self, ms);
     }
 }
 
@@ -159,8 +203,4 @@ unsafe fn calibrate() -> u32 {
     } else {
         hz
     }
-}
-
-pub(crate) unsafe fn init() {
-    unsafe { Delay::init() }
 }

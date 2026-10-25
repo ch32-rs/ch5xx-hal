@@ -13,6 +13,19 @@
 #![no_std]
 #![no_main]
 
+// Without a driver the link fails on `_embassy_time_now`, which does not say
+// what to do. This does.
+#[cfg(not(any(
+    feature = "time-driver-systick",
+    feature = "time-driver-tmr0",
+    feature = "time-driver-tmr1",
+    feature = "time-driver-tmr2",
+    feature = "time-driver-tmr3"
+)))]
+compile_error!(
+    "pick a time driver: cargo run --release --bin embassy_time --no-default-features --features time-driver-systick"
+);
+
 use ch5xx_hal as hal;
 use ch5xx_hal::gpio::{Level, Output, Speed};
 use defmt::info;

@@ -18,6 +18,18 @@
 #![no_std]
 #![no_main]
 
+// This example is about a TMR driver keeping `delay` alive, so a SysTick driver
+// would defeat the point (and `Delay` would not even exist).
+#[cfg(not(any(
+    feature = "time-driver-tmr0",
+    feature = "time-driver-tmr1",
+    feature = "time-driver-tmr2",
+    feature = "time-driver-tmr3"
+)))]
+compile_error!(
+    "this example needs a TMR driver: cargo run --release --bin embassy_time_tmr --no-default-features --features time-driver-tmr0"
+);
+
 use ch5xx_hal as hal;
 use ch5xx_hal::delay::Delay;
 use ch5xx_hal::gpio::{Level, Output, Speed};

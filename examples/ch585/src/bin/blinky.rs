@@ -9,8 +9,8 @@
 use ch5xx_hal as hal;
 use hal::delay::Delay;
 use hal::gpio::{Level, Output, Speed};
-
-use {panic_halt as _, qingke_rt::entry};
+use panic_halt as _;
+use qingke_rt::entry;
 
 /// Iteration counter, so progress can be observed with a single memory read
 /// (every debugger read halts the core, so sampling `PB_OUT` freezes it).

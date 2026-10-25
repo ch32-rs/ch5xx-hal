@@ -25,7 +25,8 @@ enabled.
 
 - `init()` — clock/frequency setup and GPIO bring-up
 - `gpio` — input, output, flex pins, internal pull up/down, drive strength
-- `delay` — `embedded-hal` `DelayNs`, backed by the core SysTick
+- `delay` — `embedded-hal` `DelayNs`, backed by the core SysTick. Compiled out
+  under `time-driver-systick`, which takes the same counter
 - `rcc` — reports the measured system clock
 
 Everything else (UART, SPI, I2C, timers, BLE, USB, …) is not implemented yet.
@@ -79,8 +80,8 @@ cargo run --release --bin blinky
 | `blinky` | GPIO output and the blocking `delay` |
 | `defmt_rtt` | logging over SEGGER RTT |
 | `clk_probe` | the firmware's view of `SYS.CLK_CFG` and the measured SysTick rate |
-| `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
-| `embassy_time_tmr` | the same, on a TMR driver, with the blocking `delay` still working |
+| `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver (needs a `time-driver-*` feature) |
+| `embassy_time_tmr` | the same, on a TMR driver, with the blocking `delay` still working (needs a `time-driver-tmr*` feature) |
 
 The runner is `probe-rs run --chip CH585`, so `cargo run` flashes, resets, and
 streams `defmt` output in one step. A `wlink flash` runner is kept commented out
@@ -136,12 +137,16 @@ same feature in any binary crate that shares state with the HAL.
 | `time-driver-tmr0` … `time-driver-tmr3` | that TMR instance | one of four general timers |
 
 Exactly one must be enabled; enabling none, or two, is a `compile_error!`. The
-HAL has no default — `examples/ch585` defaults to `time-driver-systick` and
-forwards the same feature names, so its binaries can be built with
+HAL has no default — `examples/ch585` forwards the same feature names and has no
+default either, so its binaries can be built with
 `--no-default-features --features time-driver-tmr0` without editing any manifest.
+
 The SysTick driver has the shortest wake-up path, but it reprograms SysTick
 (`STRE = 1` plus its own compare value) and so the blocking `delay` driver must
-not be used afterwards. A
+not be used afterwards — measured, `delay_ms(1000)` completes in **97 ms**
+alongside an active alarm. Rather than leave that as a documented rule,
+`delay::Delay` is compiled out under `time-driver-systick`, so the conflict is a
+build error. A
 `time-driver-tmr*` feature keeps SysTick free and leaves `delay` working; both
 kinds of delay can then be used in the same program. TMR0 is the least contended
 instance — TMR1/TMR2 also serve DMA and TMR3 is the one WCH's BLE stack uses.
@@ -159,8 +164,8 @@ global interrupts on, so a `#[qingke_rt::entry]` `main` can spawn tasks on an
 
 ```console
 cd examples/ch585
-cargo run --release --bin embassy_time                 # SysTick driver
-cargo run --release --bin embassy_time_tmr -F time-driver-tmr0 --no-default-features
+cargo run --release --bin embassy_time --no-default-features --features time-driver-systick
+cargo run --release --bin embassy_time_tmr --no-default-features --features time-driver-tmr0
 # toggle 1 at 5 ms / elapsed 501 ms / toggle 2 at 512 ms / ...
 ```
 
