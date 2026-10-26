@@ -58,6 +58,13 @@ pub mod mode {
     pub struct Blocking;
 
     impl_mode!(Blocking);
+
+    /// Async mode, driven by the peripheral interrupt.
+    #[cfg(feature = "embassy")]
+    pub struct Async;
+
+    #[cfg(feature = "embassy")]
+    impl_mode!(Async);
 }
 
 pub mod rcc;

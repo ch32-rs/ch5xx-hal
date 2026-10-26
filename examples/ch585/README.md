@@ -25,10 +25,37 @@ runner commented out for when you only want to program the part.
 | `defmt_rtt` | logging over SEGGER RTT |
 | `cpuid` | the core's identity CSRs: `misa`, `mvendorid`, `marchid`, `mimpid`, `mhartid` |
 | `bitmanip` | whether the `B` that `misa` reports is the ratified `Zb*` encoding, one instruction at a time |
-| `uart_loopback` | UART0 with `MCR.LOOP`, so the byte path is checked without external wiring |
+| `uart_loopback` | blocking UART0 with `MCR.LOOP`, so the byte path is checked without external wiring |
+| `uart_echo` | async (embassy) UART3 on PA4/PA5 at 9600 8N1, echoing an external device (header P2 pins 1 and 2) and mirroring each received line to `defmt` over RTT |
 | `clk_probe` | the firmware's view of `SYS.CLK_CFG` and the measured SysTick rate |
 | `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
 | `embassy_time_tmr` | the same on a TMR driver, so `delay` keeps the raw SysTick counter |
+
+## Async UART
+
+`uart_echo` uses the interrupt-driven halves: `Uart::new` takes an interrupt
+binding created by `hal::bind_interrupts!`, and `write`/`flush`/`read` are
+`async`. There is no DMA — the driver moves bytes through the eight-byte FIFO
+and wakes from the instance's interrupt.
+
+The example runs **9600 8N1** rather than the crate-wide 115200 default, because
+this board's clock cannot generate 115200. The baud is
+`Fsys / (8 * DIV * DL)`, with `DIV` in 1..=127 and `DL` a 16-bit integer, and
+`Fsys` is the measured ~5.33 MHz (HSI 16 MHz / 3):
+
+| target | `DIV * DL` needed | nearest integers | resulting rate |
+| --- | --- | --- | --- |
+| 115200 | 5.787 | 5 / 6 | 133.3 kbaud (+15.7%) / 111.1 kbaud (-3.5%) |
+| 9600 | 69.44 | 69 / 70 | 9662 baud (+0.65%) / 9524 baud (-0.79%) |
+
+-3.5% is outside what the receiver tolerates (the datasheet allows 2%), so an
+adapter sending at exactly 115200 produces intermittent framing errors and
+garbled bytes (measured: the echo came back as runs of `0x00`). 9600 lands
+inside spec and is byte-exact. An exact 115200 would need `Fsys` to be a
+multiple of `8 * 115200 = 921.6 kHz`, which none of the CH585 clock tree's
+options (16/32 MHz or 312/624 MHz divided by an integer) provides. That is a
+clock limitation, not a driver one. `uart_loopback` keeps the 115200 default
+because both directions come from the same divider, so the mismatch cancels.
 
 ## Time driver features
 

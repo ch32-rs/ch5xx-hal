@@ -4,6 +4,10 @@
 //! baud dividers, FIFO setup and both directions without any external wiring.
 //! The default UART0 pins are PB4 (RXD) and PB7 (TXD).
 //!
+//! 115200 is fine here even though this board's clock realises it as ~111.1
+//! kbaud: both ends of the loop share the same divider, so the error cancels.
+//! Talking to an external device is what needs `Config::new(9600)`.
+//!
 //! The receiver has an eight-byte FIFO and nothing drains it while
 //! `blocking_flush` waits for transmission, so the payload is sent and read in
 //! chunks no larger than the FIFO. Sending more than eight bytes before reading
@@ -14,7 +18,6 @@
 
 use ch5xx_hal as hal;
 use defmt_rtt as _;
-use hal::pac;
 use hal::uart::{Config, Uart};
 use panic_halt as _;
 use qingke_rt::entry;
@@ -23,14 +26,15 @@ use qingke_rt::entry;
 fn main() -> ! {
     let p = hal::init(Default::default());
 
-    let mut config = Config::default();
-    config.baudrate = 9600;
+    // 115200 8N1 is the default.
+    let config = Config::default();
 
     let mut uart = Uart::new_blocking::<0>(p.UART0, p.PB4, p.PB7, config).unwrap();
 
-    // Datasheet chapter 9: MCR.LOOP connects TXD to RXD internally and makes all
-    // external UART outputs inactive.
-    pac::UART0.mcr().modify(|w| w.set_mcr_loop(true));
+    // MCR.LOOP connects TXD to RXD internally and makes all external UART
+    // outputs inactive. It must be driven by polling: on CH585 the UART
+    // interrupt output is not asserted while loopback is enabled.
+    uart.set_internal_loopback(true);
 
     let sent = b"CH585 UART loopback";
     let mut received = [0u8; 19];
