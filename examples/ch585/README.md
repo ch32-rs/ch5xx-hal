@@ -26,8 +26,9 @@ runner commented out for when you only want to program the part.
 | `cpuid` | the core's identity CSRs: `misa`, `mvendorid`, `marchid`, `mimpid`, `mhartid` |
 | `bitmanip` | whether the `B` that `misa` reports is the ratified `Zb*` encoding, one instruction at a time |
 | `uart_loopback` | blocking UART0 with `MCR.LOOP`, so the byte path is checked without external wiring |
-| `uart_echo` | async (embassy) UART3 on PA4/PA5 at 9600 8N1, echoing an external device (header P2 pins 1 and 2) and mirroring each received line to `defmt` over RTT |
-| `clk_probe` | the firmware's view of `SYS.CLK_CFG` and the measured SysTick rate |
+| `uart_echo` | async (embassy) UART3 on PA4/PA5 at 115200 8N1 with `Fsys` at 78 MHz (HSE PLL), echoing an external device (header P2 pins 1 and 2) and mirroring each received line to `defmt` over RTT |
+| `clk_probe` | the firmware's view of the clock registers, nominal clock and measured SysTick rate |
+| `clk_set` | boot from `HSI_PLL_24MHZ` and report the register readback and both rates |
 | `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
 | `embassy_time_tmr` | the same on a TMR driver, so `delay` keeps the raw SysTick counter |
 
@@ -38,24 +39,37 @@ binding created by `hal::bind_interrupts!`, and `write`/`flush`/`read` are
 `async`. There is no DMA — the driver moves bytes through the eight-byte FIFO
 and wakes from the instance's interrupt.
 
-The example runs **9600 8N1** rather than the crate-wide 115200 default, because
-this board's clock cannot generate 115200. The baud is
-`Fsys / (8 * DIV * DL)`, with `DIV` in 1..=127 and `DL` a 16-bit integer, and
-`Fsys` is the measured ~5.33 MHz (HSI 16 MHz / 3):
+The example runs **115200 8N1** with `Fsys` from `rcc::Config::HSE_PLL_78MHZ`
+(78 MHz off the 32 MHz crystal). The baud is `Fsys / (8 * DIV * DL)`, with `DIV`
+in 1..=127 and `DL` a 16-bit integer, so 115200 becomes `DL = 85` = 114706 baud
+(-0.43%), inside the datasheet's 0.5% transmit budget. The reset clock
+(5.333 MHz) cannot generate 115200 (`DL = 6` is 111.1 kbaud, -3.5%), which is
+why the clock is raised first. `uart_loopback` keeps the 115200 default because
+both directions share the divider, so the error cancels.
 
-| target | `DIV * DL` needed | nearest integers | resulting rate |
-| --- | --- | --- | --- |
-| 115200 | 5.787 | 5 / 6 | 133.3 kbaud (+15.7%) / 111.1 kbaud (-3.5%) |
-| 9600 | 69.44 | 69 / 70 | 9662 baud (+0.65%) / 9524 baud (-0.79%) |
+## Clock configuration
 
--3.5% is outside what the receiver tolerates (the datasheet allows 2%), so an
-adapter sending at exactly 115200 produces intermittent framing errors and
-garbled bytes (measured: the echo came back as runs of `0x00`). 9600 lands
-inside spec and is byte-exact. An exact 115200 would need `Fsys` to be a
-multiple of `8 * 115200 = 921.6 kHz`, which none of the CH585 clock tree's
-options (16/32 MHz or 312/624 MHz divided by an integer) provides. That is a
-clock limitation, not a driver one. `uart_loopback` keeps the 115200 default
-because both directions come from the same divider, so the mismatch cancels.
+`hal::init` takes an `rcc::Config` and applies it before any driver starts.
+`Config::default()` is the datasheet reset value, HSI 16 MHz / 3 = 5.333 MHz, so
+programs that do not configure a clock behave as before. Presets mirror WCH's
+C SDK `CLK_SOURCE_*` values:
+
+```rust
+let p = hal::init(Default::default());                 // 5.333 MHz
+let p = hal::init(rcc::Config::HSI_PLL_24MHZ.into());  // 24 MHz, HSI PLL, no crystal
+let p = hal::init(rcc::Config::HSE_PLL_78MHZ.into());  // 78 MHz, needs the crystal
+let p = hal::init(rcc::Config::hsi_nearest(hal::time::hz(30_000_000)).into()); // 31.2 MHz
+```
+
+`HSE_*` presets require the board's 32 MHz crystal; the CH585M-R1-1v1 fits one
+and the presets select its 18 pF load capacitance. `rcc::clocks().sysclk` is the
+nominal frequency of the configured tree; `delay::measured_sysclk()` is the
+RTC-calibrated rate `delay` uses for busy-waits.
+
+`rcc::set_config` can change the clock at runtime, but only the tree and the
+`clocks()` cache: SysTick/timebase/UART dividers stay on the old frequency.
+`delay::recalibrate` re-measures the busy-wait rate where the SysTick time
+driver is not selected.
 
 ## Time driver features
 

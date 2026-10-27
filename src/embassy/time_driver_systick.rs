@@ -28,10 +28,10 @@
 //!
 //! The compare value is programmed for the next alarm, not on a fixed
 //! schedule, so the driver takes one interrupt per alarm instead of one per
-//! millisecond. A far-away deadline is split at [`MAX_PERIOD`] so `high` still
+//! millisecond. A far-away deadline is split at `MAX_PERIOD` so `high` still
 //! advances during long idle stretches.
 //!
-//! [`super::reload_timer`] holds the state machine this shares with the TMR
+//! `super::reload_timer` holds the state machine this shares with the TMR
 //! driver; this file is only the SysTick register access.
 //!
 //! # Why the counter is re-based on init

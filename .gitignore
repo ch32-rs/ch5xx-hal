@@ -10,3 +10,4 @@ out/
 
 # Local agent instructions; not part of the repo.
 AGENTS.md
+local-memory.md

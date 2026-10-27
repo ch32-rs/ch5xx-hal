@@ -4,8 +4,8 @@
 //!
 //! | Feature | Driver | Takes |
 //! | --- | --- | --- |
-//! | `time-driver-systick` | [`time_driver_systick`] | the core SysTick counter |
-//! | `time-driver-tmr0` … `time-driver-tmr3` | [`time_driver_tmr`] | that TMR instance |
+//! | `time-driver-systick` | `time_driver_systick.rs` | the core SysTick counter |
+//! | `time-driver-tmr0` … `time-driver-tmr3` | `time_driver_tmr.rs` | that TMR instance |
 //!
 //! `time-driver-systick` is the lowest-latency option and is what the examples
 //! use. It reprograms SysTick for its own reload model, which

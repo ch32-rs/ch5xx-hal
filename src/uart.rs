@@ -234,7 +234,7 @@ impl_instance!(UART3, set_pin_uart3);
 /// The PAC's `IIR_INT_MASK` field is already the identification bits `[3:1]`
 /// (datasheet table 9-5); the no-interrupt flag in bit 0 is separate.
 /// `LSR` must be read on a line-status interrupt to deassert it (the four error
-/// bits are read-clear), so the error kind is saved in [`State`] for the read
+/// bits are read-clear), so the error kind is saved in `State` for the read
 /// future to report. Transmit wake-ups use `TFC` instead of the IIR THR-empty
 /// bit because a pending line status has priority and reading `IIR` clears the
 /// THR-empty indication.

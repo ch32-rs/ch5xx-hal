@@ -3,15 +3,16 @@
 //! Ported from `ch32-hal`, adjusted for the CH5xx register model:
 //!
 //! - **No RCC.** Clocks, power and the pin mux live in `SYS` /
-//!   `System_control` at `0x4000_1000`. [`rcc`] only caches the resulting
-//!   frequencies.
+//!   `System_control` at `0x4000_1000`. [`rcc`] configures the clock tree and
+//!   caches the resulting frequency.
 //! - **No AFIO.** Peripheral signals are selected with the `SYS.PIN_ALTERNATE`
 //!   "alternate pin enable" bits.
 //! - **One GPIO block**, `pac::GPIO`, with per-port register groups
 //!   (`pa_out`, `pb_dir`, …) instead of one peripheral per port.
 //!
-//! [`rcc`] is a plain module rather than a driver directory: with no clock-tree
-//! configuration implemented yet there is one frequency to report.
+//! [`rcc`] is a plain module rather than a driver directory because the tree is
+//! a single path with no peripheral prescalers: there is one frequency to
+//! report.
 
 #![no_std]
 #![allow(static_mut_refs)]
@@ -98,6 +99,7 @@ pub mod uart;
 pub mod embassy;
 
 pub struct Config {
+    /// System clock tree applied before any driver starts.
     pub rcc: rcc::Config,
 }
 
@@ -109,6 +111,13 @@ impl Default for Config {
     }
 }
 
+impl From<rcc::Config> for Config {
+    /// Boot with this clock tree and the default for everything else.
+    fn from(rcc: rcc::Config) -> Self {
+        Self { rcc }
+    }
+}
+
 /// Initialize the HAL and return the peripheral singletons.
 ///
 /// Panics if called twice.
@@ -117,9 +126,12 @@ pub fn init(config: Config) -> Peripherals {
     let p = Peripherals::take();
 
     unsafe {
-        rcc::init(config.rcc);
-        // `delay::init` owns the clock calibration: it measures SysTick against
-        // the RTC and publishes the result through `rcc::clocks()`.
+        // Apply the clock tree first: SysTick counts Fsys, so the calibration
+        // and the time driver below must see the final clock.
+        rcc::set_config(config.rcc);
+        // `delay` measures the real SysTick rate against the RTC and keeps it
+        // for its busy-waits. `rcc::clocks()` keeps reporting the nominal
+        // frequency the tree was configured to.
         delay::init();
         // The time driver starts its counter and enables its own interrupt. It
         // reads the frequency from `rcc::clocks()`, so it must run after the

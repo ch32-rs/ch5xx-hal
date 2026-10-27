@@ -14,13 +14,12 @@
 //! device GND -> GND / P2.24 (or 25/27)
 //! ```
 //!
-//! This example runs **9600 8N1**, not the usual 115200 default: at the
-//! measured ~5.33 MHz system clock 115200 cannot be generated. The baud is
-//! `Fsys / (8 * DIV * DL)` with integer `DIV` and `DL`, so 115200 would need
-//! `DIV * DL = 5.787`; the nearest whole products give 111.1 kbaud (-3.5%) or
-//! 133.3 kbaud (+15.7%). -3.5% is outside what a normal UART receiver tolerates,
-//! which shows up as intermittent framing errors and dropped bytes. 9600 needs
-//! `DIV * DL = 69.4`, and `DL = 69` lands within +0.6%.
+//! This example runs **115200 8N1** with the clock raised to
+//! `rcc::Config::HSE_PLL_78MHZ`, which uses the board's 32 MHz crystal. The
+//! divider becomes `DL = 85`, i.e. 114706 baud (-0.43%), inside the datasheet's
+//! 0.5% transmit budget. At the reset clock (5.333 MHz) 115200 cannot be
+//! generated closely enough (`DL = 6` is 111.1 kbaud, -3.5%), so the clock is
+//! configured before the UART is built.
 //!
 //! `defmt` writes hold a critical section, so a line log delays the next read by
 //! a few milliseconds; a sender that keeps transmitting during the log can
@@ -30,6 +29,7 @@
 #![no_main]
 
 use ch5xx_hal as hal;
+use ch5xx_hal::rcc;
 use defmt_rtt as _;
 use hal::mode::Async;
 use hal::peripherals::UART3;
@@ -90,11 +90,11 @@ async fn echo(mut uart: Uart<'static, UART3, Async>, baudrate: u32) -> ! {
 
 #[entry]
 fn main() -> ! {
-    let p = hal::init(Default::default());
+    let p = hal::init(rcc::Config::HSE_PLL_78MHZ.into());
 
-    // 9600, not the crate-wide 115200 default: this board's clock cannot
-    // generate 115200 closely enough for a real adapter, see the module docs.
-    let config = Config::new(9600);
+    // 115200 8N1, the crate-wide default, now that `Fsys` is high enough for
+    // the divider to land inside the transmit budget; see the module docs.
+    let config = Config::default();
     let baudrate = config.baudrate;
     let uart = Uart::new::<0>(p.UART3, p.PA4, p.PA5, Irqs, config).unwrap();
 

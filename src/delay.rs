@@ -4,20 +4,24 @@
 //! `MODE` bit 4), `STK_SR.CNTIF`, and the 32-bit `STK_CNTL` / `STK_CMPLR` pair.
 //! There is no free-running 64-bit counter.
 //!
-//! The counter is started **once** by [`init`] and left running; each delay
+//! The counter is started **once** by `init` and left running; each delay
 //! only reads `STK_CNT` and compares it against a target.
 //!
 //! # Why the rate is measured, not assumed
 //!
-//! `CLK_CFG` is readable and, on this board, holds `0x0003` (HSI 16 MHz / 3),
-//! so a nominal 5.333 MHz could simply be derived from it. It is measured
-//! anyway because the RC oscillators are not exact and a wrong constant makes
-//! every delay wrong by the same factor.
+//! The clock tree now gives an exact nominal `Fsys` ([`crate::rcc::Config::sysclk`]),
+//! so the rate could be derived instead. It is measured anyway because the RC
+//! oscillators are not exact and a wrong constant makes every delay wrong by
+//! the same factor.
 //!
-//! [`init`] calibrates the counter against the 32 kHz RTC counter, the same
-//! trick WCH's `OSC_CAL` uses. The result backs [`crate::rcc::clocks`], but it
-//! is a measurement: it varies slightly between resets because the internal
-//! 32 kHz RC is the reference.
+//! `init` calibrates the counter against the 32 kHz RTC counter, the same
+//! trick WCH's `OSC_CAL` uses. The result drives [`Delay`] and is readable as
+//! [`measured_sysclk`]. It is a measurement, so it varies slightly between
+//! resets because the internal 32 kHz RC is the reference.
+//!
+//! [`crate::rcc::clocks`] reports the nominal frequency of the configured clock
+//! tree instead. For HSE/PLL that is more accurate than a measurement
+//! referenced to an RC oscillator, and it keeps the value stable across resets.
 //!
 //! Note that `probe-rs read` must not be used to check this: it halts the core
 //! and reports values the running firmware does not see.
@@ -41,8 +45,9 @@
 //! at its initial `MAX_PERIOD - 1`, the counter never reaches it, and raw
 //! polling looks fine until the first task actually sleeps.
 //!
-//! The rate measurement does **not** depend on any of this: [`init`] is a free
-//! function and is what fills [`crate::rcc::clocks`] under every feature.
+//! The rate measurement does **not** depend on any of this: `init` is a free
+//! function and runs under every feature, before the time driver takes the
+//! counter over.
 
 use crate::atomic::Ordering;
 use crate::pac::SYSTICK;
@@ -85,10 +90,11 @@ fn rtc_count() -> u16 {
 
 /// Start SysTick as a free-running counter and measure its rate.
 ///
-/// This runs on every build, even when the SysTick time driver owns the
-/// counter: it is what fills in [`crate::rcc::clocks`], and the driver reads
-/// the frequency from there. When the driver is compiled in, its `init` runs
-/// directly after this and reprograms the counter for its own reload model.
+/// Runs on every build, even when the SysTick time driver owns the counter.
+/// The measurement is this module's private business: the driver and every
+/// other consumer read the nominal frequency from [`crate::rcc::clocks`]. When
+/// the driver is compiled in, its `init` runs directly after this and
+/// reprograms the counter for its own reload model.
 ///
 /// # Safety
 ///
@@ -106,9 +112,37 @@ pub(crate) unsafe fn init() {
         w.set_ste(true);
     });
 
-    let hz = unsafe { calibrate() };
-    TICKS_PER_SEC.store(hz, Ordering::Relaxed);
-    crate::rcc::set_sysclk(hz);
+    measure();
+}
+
+/// Re-measure the SysTick rate after [`crate::rcc::set_config`] changed `Fsys`.
+///
+/// Does not start or stop the counter, so it can be used after a runtime clock
+/// change. It is only meaningful while SysTick is the free-running counter this
+/// module set up: under `time-driver-systick` the embassy driver reloads it for
+/// every alarm, which invalidates the measurement, and [`Delay`] uses the
+/// driver's timebase instead.
+///
+/// # Safety
+///
+/// The caller must have applied a clock tree with [`crate::rcc::set_config`].
+#[cfg(not(feature = "time-driver-systick"))]
+pub unsafe fn recalibrate() {
+    measure();
+}
+
+/// Measure the counter and store the result for the busy-wait loops.
+unsafe fn measure() {
+    TICKS_PER_SEC.store(calibrate(), Ordering::Relaxed);
+}
+
+/// The SysTick rate this module measured at [`crate::init`] or at the last
+/// `recalibrate`.
+///
+/// This is what [`Delay`] uses. [`crate::rcc::clocks`] reports the nominal rate
+/// of the configured tree instead; the two differ by the RC oscillator error.
+pub fn measured_sysclk() -> crate::time::Hertz {
+    crate::time::Hertz(TICKS_PER_SEC.load(Ordering::Relaxed))
 }
 
 #[cfg(not(feature = "time-driver-systick"))]
@@ -204,13 +238,14 @@ unsafe fn calibrate() -> u32 {
         let rtc_start = rtc_count();
         let stk_start = SYSTICK.stk_cntl().read().cntl();
 
-        // Bounded: at ~5.33 MHz this window is ~125 ms of spinning. A stalled
-        // RTC must not brick boot, so fall back rather than hang.
+        // The RTC window is 125 ms whatever Fsys is. A stalled RTC must not
+        // brick boot, so fall back rather than hang: the guard is far larger
+        // than the loop can run in 125 ms at any supported clock.
         let mut guard = 0u32;
         while rtc_count().wrapping_sub(rtc_start) < CAL_COUNTS {
             guard += 1;
             if guard > 200_000_000 {
-                return crate::rcc::DEFAULT_FREQUENCY.0;
+                return crate::rcc::clocks().sysclk.0;
             }
             core::hint::spin_loop();
         }
@@ -226,7 +261,7 @@ unsafe fn calibrate() -> u32 {
     samples.sort_unstable();
     let hz = samples[CAL_ROUNDS / 2];
     if hz == 0 {
-        crate::rcc::DEFAULT_FREQUENCY.0
+        crate::rcc::clocks().sysclk.0
     } else {
         hz
     }

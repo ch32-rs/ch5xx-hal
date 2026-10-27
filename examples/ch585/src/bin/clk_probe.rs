@@ -3,7 +3,10 @@
 //! `probe-rs read` halts the core to inspect memory, so the values it reports
 //! are not necessarily what the running firmware sees. This binary reads the
 //! same registers in software and prints them over RTT, which is the only
-//! trustworthy view of the boot ROM's clock setup.
+//! trustworthy view of the boot clock setup.
+//!
+//! It uses `Config::default()`, i.e. the datasheet reset value. See `clk_set`
+//! for the same report after configuring a different tree.
 //!
 //! ```console
 //! cargo run --release --bin clk_probe
@@ -43,7 +46,8 @@ fn main() -> ! {
     info!("SAFE_ACCESS_SIG= {=u8:#04x}", sig.0);
     info!("PLL_CONFIG     = {=u8:#04x}", pll_cfg.0);
     info!("XT32M_TUNE     = {=u8:#04x}", xt32m.0);
-    info!("nominal sysclk = {} Hz", hal::rcc::clocks().sysclk.0);
+    info!("nominal sysclk  = {} Hz", hal::rcc::clocks().sysclk.0);
+    info!("measured sysclk = {} Hz", hal::delay::measured_sysclk().0);
 
     // SysTick is already free-running from `init`. Count it for a fixed number
     // of 32 kHz RTC ticks, so the ratio is visible without a debugger read.
