@@ -22,6 +22,7 @@ runner commented out for when you only want to program the part.
 | Binary | Shows |
 | --- | --- |
 | `blinky` | GPIO output and the blocking `delay`; LED0 (PB16) and LED1 (PB17) in opposite phase |
+| `gpio_in` | reads the user buttons S1 (PB22) and S2 (PB23) with pull-up and logs each level change |
 | `defmt_rtt` | logging over SEGGER RTT |
 | `cpuid` | the core's identity CSRs: `misa`, `mvendorid`, `marchid`, `mimpid`, `mhartid` |
 | `bitmanip` | whether the `B` that `misa` reports is the ratified `Zb*` encoding, one instruction at a time |
