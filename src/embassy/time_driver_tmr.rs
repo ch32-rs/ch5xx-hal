@@ -1,8 +1,8 @@
 //! Embassy time driver on a TMRx peripheral.
 //!
 //! Selected by one of the `time-driver-tmr0` … `time-driver-tmr3` features.
-//! TMR0 is the least contended choice: TMR1/TMR2 also carry DMA, and TMR3 is
-//! the one WCH's BLE examples use for their own tick.
+//! All four CH585 timers have local DMA. NFC PICC reserves TMR0/TMR3 and WCH's
+//! BLE examples also use TMR3; choose the timebase for the application's needs.
 //!
 //! # Why use this instead of SysTick
 //!
@@ -14,10 +14,11 @@
 //!
 //! # The peripheral
 //!
-//! CH5xx has four identical 26-bit up counters (`TMR0`–`TMR3`). Unlike the
+//! CH585 has four 26-bit up counters (`TMR0`–`TMR3`). Unlike the
 //! STM32/CH32 general-purpose timers there is **no prescaler**: the counter runs
-//! at the system clock, which the HAL measures at init (~5.33 MHz here). That
-//! is measured, not assumed, so it is stored rather than baked in as a shift.
+//! at the configured nominal system clock (~5.33 MHz at reset). The timebase
+//! stores that rate rather than baking it in as a shift; RTC calibration is
+//! used separately by the blocking delay.
 //!
 //! Measured behaviour, in an earlier throwaway probe (ratio 1.00 against
 //! SysTick; `max_before = 19998`, `min_after = 2` across a `CNT_END` of 20000):
@@ -96,6 +97,7 @@ const IRQ: pac::Interrupt = pac::Interrupt::TMR3;
 pub(crate) struct TmrTimer;
 
 impl ReloadTimer for TmrTimer {
+    const RESETS_ON_SET_END: bool = true;
     /// `COUNT`/`CNT_END` are 26 bits.
     const MASK: u32 = 0x03FF_FFFF;
 

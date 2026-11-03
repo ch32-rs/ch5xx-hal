@@ -25,17 +25,11 @@ use crate::atomic::Ordering;
 /// push the period past the counter's width.
 const MAX_PERIOD_FRACTION_SHIFT: u32 = 1;
 
-/// Minimum lead between the counter and a newly written end value.
-///
-/// Reading the counter and writing the end value are separate bus accesses; if
-/// the counter passed the new value in between, the match is lost until the
-/// counter wraps all the way round. A few dozen ticks of margin makes that
-/// impossible.
-pub(crate) const MIN_PERIOD: u32 = 64;
-
 /// A counter that reloads at a programmable end value and raises an interrupt
 /// every time it does.
 pub(crate) trait ReloadTimer {
+    /// CH585 TMR clears COUNT on every CNT_END write; SysTick does not.
+    const RESETS_ON_SET_END: bool = false;
     /// Width mask of the counter, e.g. `0xFFFF_FFFF` for SysTick, `0x03FF_FFFF`
     /// for TMR.
     const MASK: u32;
@@ -56,7 +50,7 @@ pub(crate) trait ReloadTimer {
 
 /// The parts of a time driver that do not depend on which counter is used.
 pub(crate) struct ReloadState {
-    /// Counter ticks per second, as measured at init.
+    /// Configured nominal counter ticks per second.
     pub(crate) hz: crate::atomic::AtomicU32,
     /// Counter value at the start of the current hardware period.
     ///
@@ -120,25 +114,34 @@ impl ReloadState {
     /// Program the next interrupt for absolute counter tick `at`.
     ///
     /// `at` is the queue's next expiration, or [`u64::MAX`] when it is empty.
-    pub(crate) fn arm<T: ReloadTimer>(&self, cs: CriticalSection, t: &T, at: u64) {
+    pub(crate) fn arm<T: ReloadTimer>(&self, cs: CriticalSection, t: &T, at: u64) -> bool {
         let base = self.high.borrow(cs).get();
-        let mut period = (at - base).min(T::MAX_PERIOD as u64) as u32;
-
         // Re-read the counter here: waking the timers between computing `at`
         // and writing the end value takes long enough to move it.
         let cnt = t.count() & T::MASK;
-        period = period.max(cnt.saturating_add(MIN_PERIOD)).min(T::MASK);
+        let (base, period) = super::reload_math::rearm(base, cnt, at, T::MAX_PERIOD, T::MASK, T::RESETS_ON_SET_END);
 
         t.clear_flag();
         t.set_end(period - 1);
+        // A reset-on-write backend needs a new origin as well as a relative
+        // period, otherwise every rearm discards time already spent counting.
+        self.high.borrow(cs).set(base);
         self.period.borrow(cs).set(period);
+        // Flash/bus latency can consume the lead between COUNT and the compare
+        // write. A compare-only backend then misses the match until wrap. Let
+        // the caller expire the now-due queue entry and retry instead of sleeping.
+        T::RESETS_ON_SET_END || super::reload_math::compare_armed(t.count(), period)
     }
 
     /// Run the queue at the current time and program the next interrupt.
     pub(crate) fn trigger_alarm<T: ReloadTimer>(&self, cs: CriticalSection, t: &T) {
-        let now = self.ticks_locked(cs, t);
-        let next = self.queue.borrow(cs).borrow_mut().next_expiration(now);
-        self.arm(cs, t, next);
+        loop {
+            let now = self.ticks_locked(cs, t);
+            let next = self.queue.borrow(cs).borrow_mut().next_expiration(now);
+            if self.arm(cs, t, next) {
+                break;
+            }
+        }
     }
 
     /// Advance across a completed period and re-arm. Called from the interrupt.
@@ -168,7 +171,7 @@ impl ReloadState {
         });
     }
 
-    /// Record the measured rate and reset the timebase to zero.
+    /// Record the configured rate and reset the timebase to zero.
     pub(crate) fn reset<T: ReloadTimer>(&self, cs: CriticalSection, hz: u32) {
         self.hz.store(hz, Ordering::Relaxed);
         self.high.borrow(cs).set(0);

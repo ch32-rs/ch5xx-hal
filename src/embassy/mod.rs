@@ -40,6 +40,7 @@ use crate::pac;
     feature = "time-driver-tmr2",
     feature = "time-driver-tmr3"
 ))]
+mod reload_math;
 mod reload_timer;
 
 #[cfg(not(any(
