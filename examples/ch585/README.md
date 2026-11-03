@@ -21,8 +21,8 @@ SysTick. To build every binary together, select a TMR driver instead:
 cargo build --release --bins --no-default-features --features time-driver-tmr0
 ```
 
-For the complete HAL support inventory and proposed development order, see
-[Peripheral support and priorities](../../PERIPHERALS.md).
+For the complete HAL support inventory, see the
+[crate README](../../README.md).
 
 The runner is `probe-rs run --chip CH585`, so `cargo run` flashes, resets and
 streams `defmt` over RTT in one step. `.cargo/config.toml` keeps a `wlink flash`
@@ -56,10 +56,11 @@ Build first, then use `python3 ../../tools/run_timer_silent.py` for the silent
 suite, or add `--suite async` / `--suite clock` for the corresponding binary.
 Runners check actual target identity before downloading, refuse non-CH585
 targets and never issue a separate erase. Keep target operations serial and
-disconnect loads from PA9/PA10/PA11/PA2. See [scope and limits](../../docs/timer.md).
+disconnect loads from PA9/PA10/PA11/PA2; the timer module docs record the
+current scope and limits.
 The external-input test temporarily ties those four pads together. Remove all
-fan-out wires before running any PWM/output example; see
-[external validation safety](../../docs/timer-external-validation.md).
+fan-out wires before running any PWM/output example; see the wiring notes at
+the top of `timer_external_capture.rs`.
 
 ## Async UART
 
