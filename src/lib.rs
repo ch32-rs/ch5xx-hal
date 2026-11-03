@@ -91,7 +91,9 @@ pub(crate) mod _generated {
 pub use crate::_generated::{peripherals, Peripherals};
 
 pub mod delay;
+pub mod dma;
 pub mod gpio;
+pub mod timer;
 pub mod uart;
 
 /// Embassy integration (time driver). Requires the `embassy` feature.

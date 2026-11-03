@@ -437,6 +437,9 @@ pub fn clocks() -> Clocks {
 /// this function keeps the PLL running (`PLL_GATE_DISS`): XROM is clocked from
 /// the PLL in direct and PLL modes. Do not reproduce the sequence elsewhere
 /// without that bit.
+/// Stop and quiesce active Timer/DMA/NFC sessions before changing clocks, then
+/// rebuild their timing state. Dedicated NFC clock mode does not remove its
+/// system-clock precondition or make a live session safe across this change.
 pub unsafe fn set_config(config: Config) -> Clocks {
     validate(&config);
 
