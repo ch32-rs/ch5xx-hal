@@ -6,8 +6,13 @@ trash/
 # merged firmware images / build output
 out/
 
+# Python bytecode from the host-side test and runner tools.
+__pycache__/
+*.pyc
+
 .DS_Store
 
 # Local agent instructions; not part of the repo.
 AGENTS.md
 local-memory.md
+.alma-snapshots
