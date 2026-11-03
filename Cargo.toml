@@ -23,6 +23,10 @@ qingke = { version = "0.8.2", features = ["critical-section-impl", "unsafe-trust
 qingke-rt = { version = "0.8.2", optional = true }
 
 embedded-hal = "1.0"
+embedded-io = "0.7.1"
+
+# Async I/O traits share the blocking traits' error type.
+embedded-io-async = { version = "0.7.0", optional = true }
 
 embassy-hal-internal = "0.5.0"
 
@@ -61,7 +65,13 @@ ch585 = ["ch5xx-metapac/ch585"]
 
 ## Embassy support. This only pulls the deps in; pick a driver with one of the
 ## `time-driver-*` features below.
-embassy = ["dep:embassy-sync", "dep:embassy-time-driver", "dep:embassy-time-queue-utils", "rt"]
+embassy = [
+    "dep:embassy-sync",
+    "dep:embassy-time-driver",
+    "dep:embassy-time-queue-utils",
+    "dep:embedded-io-async",
+    "rt",
+]
 
 ## Time driver on the core SysTick counter. Lowest latency, but it takes SysTick
 ## away from the blocking `delay` driver — both cannot own it.

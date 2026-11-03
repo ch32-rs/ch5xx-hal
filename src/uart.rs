@@ -27,6 +27,13 @@
 //! itself. The receiver is always enabled by the peripheral; `TXD_EN` gates the
 //! transmit pin.
 //!
+//! [`UartRx::read`] and [`UartRx::blocking_read`] fill the whole buffer.
+//! [`UartRx::read_some`] and [`UartRx::blocking_read_some`] instead wait only for
+//! the first byte and return the available prefix. The short async read is
+//! cancel-safe; exact reads and writes may consume a prefix if dropped. Standard
+//! [`embedded_io`] and, with `embassy`, [`embedded_io_async`] traits are provided
+//! for the full UART and its halves.
+//!
 //! The receive interrupt is level-based: `IIR` keeps reporting "receive data"
 //! until `RBR` is read, so the handler masks `IER.RECV_RDY` and the read future
 //! re-enables it after draining. Without that the ISR re-enters thousands of
@@ -38,7 +45,8 @@ use core::fmt;
 use core::future::poll_fn;
 use core::marker::PhantomData;
 #[cfg(feature = "embassy")]
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::compiler_fence;
+use core::sync::atomic::Ordering;
 #[cfg(feature = "embassy")]
 use core::task::Poll;
 
@@ -50,6 +58,8 @@ use crate::gpio::{AnyPin, Pin, Pull, SealedPin, Speed};
 use crate::internal::drop::OnDrop;
 #[cfg(feature = "embassy")]
 use crate::interrupt::typelevel::Interrupt;
+#[cfg(not(feature = "embassy"))]
+use crate::interrupt::typelevel::Interrupt as _;
 #[cfg(feature = "embassy")]
 use crate::mode::Async;
 use crate::mode::{Blocking, Mode};
@@ -143,6 +153,25 @@ pub enum ConfigError {
     BaudrateTooHigh,
 }
 
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Error::Overrun => "receiver overrun",
+            Error::Parity => "parity error",
+            Error::Framing => "framing error",
+            Error::Break => "break condition",
+        })
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl embedded_io::Error for Error {
+    fn kind(&self) -> embedded_io::ErrorKind {
+        embedded_io::ErrorKind::Other
+    }
+}
+
 /// One UART instance.
 ///
 /// Implemented for `UART0`..`UART3`.
@@ -159,20 +188,25 @@ pub trait Instance: crate::PeripheralType + SealedInstance + 'static + Send {
 }
 
 /// Wakers shared between the interrupt handler and the async futures.
-#[cfg(feature = "embassy")]
 pub(crate) struct State {
+    /// Number of live TX/RX owners, so the last half can disable the shared IRQ.
+    owners: crate::atomic::AtomicU8,
+    #[cfg(feature = "embassy")]
     rx_waker: AtomicWaker,
+    #[cfg(feature = "embassy")]
     tx_waker: AtomicWaker,
-    /// First line-status error seen by the interrupt handler: 0 none,
-    /// 1 overrun, 2 parity, 3 framing, 4 break.
+    /// First line-status error seen by the interrupt handler or deferred by a
+    /// short read: 0 none, 1 overrun, 2 parity, 3 framing, 4 break.
     rx_error: crate::atomic::AtomicU8,
 }
 
-#[cfg(feature = "embassy")]
 impl State {
     pub(crate) const fn new() -> Self {
         Self {
+            owners: crate::atomic::AtomicU8::new(0),
+            #[cfg(feature = "embassy")]
             rx_waker: AtomicWaker::new(),
+            #[cfg(feature = "embassy")]
             tx_waker: AtomicWaker::new(),
             rx_error: crate::atomic::AtomicU8::new(0),
         }
@@ -190,8 +224,7 @@ pub(crate) trait SealedInstance {
     /// must hold a critical section.
     unsafe fn set_remap(remapped: bool);
 
-    /// Per-instance async state.
-    #[cfg(feature = "embassy")]
+    /// Per-instance state and interrupt wakers.
     fn state() -> &'static State;
 }
 
@@ -208,7 +241,6 @@ macro_rules! impl_instance {
                 pac::SYS.pin_alternate().modify(|w| w.$setter(remapped));
             }
 
-            #[cfg(feature = "embassy")]
             #[inline]
             fn state() -> &'static State {
                 static STATE: State = State::new();
@@ -260,19 +292,8 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             // the future later.
             0b011 => {
                 let lsr = r.lsr().read();
-                let error = if lsr.lsr_over_err() {
-                    1
-                } else if lsr.lsr_par_err() {
-                    2
-                } else if lsr.lsr_frame_err() {
-                    3
-                } else if lsr.lsr_break_err() {
-                    4
-                } else {
-                    0
-                };
-                if error != 0 {
-                    state.rx_error.store(error, Ordering::Relaxed);
+                if let Some(error) = lsr_error(lsr) {
+                    save_rx_error::<T>(error);
                 }
                 state.rx_waker.wake();
             }
@@ -336,7 +357,7 @@ impl_pins!(UART3, 1, rx: [PB20], tx: [PB21]);
 /// Transmit half of a UART.
 pub struct UartTx<'d, T: Instance, M: Mode> {
     _phantom: PhantomData<(T, M)>,
-    _tx: Peri<'d, AnyPin>,
+    tx: Peri<'d, AnyPin>,
 }
 
 impl<'d, T: Instance, M: Mode> UartTx<'d, T, M> {
@@ -353,16 +374,35 @@ impl<'d, T: Instance, M: Mode> UartTx<'d, T, M> {
 
     /// Wait until the FIFO and the shift register are both empty.
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
-        let r = T::regs();
-        while !r.lsr().read().lsr_tx_all_emp() {}
+        while !read_lsr_for_tx::<T>().lsr_tx_all_emp() {}
         Ok(())
     }
 
     fn new_inner(tx: Peri<'d, AnyPin>) -> Self {
+        T::state().owners.fetch_add(1, Ordering::Relaxed);
         Self {
             _phantom: PhantomData,
-            _tx: tx,
+            tx,
         }
+    }
+}
+
+impl<T: Instance, M: Mode> Drop for UartTx<'_, T, M> {
+    fn drop(&mut self) {
+        let r = T::regs();
+        r.ier().modify(|w| {
+            w.set_ier_thr_empty(false);
+            w.set_ier_txd_en(false);
+        });
+        // The receiver is always enabled, so RXD needs no separate disable.
+        if T::state().owners.fetch_sub(1, Ordering::Relaxed) == 1 {
+            T::Interrupt::disable();
+            r.mcr().modify(|w| w.set_mcr_int_oe(false));
+        }
+        // Leave the pin as a pulled-up input, not a driven output. The global
+        // mux is shared with other UART users and is intentionally left alone.
+        self.tx.set_direction(false);
+        self.tx.set_pull(Pull::Up);
     }
 }
 
@@ -403,7 +443,8 @@ impl<'d, T: Instance> UartTx<'d, T, Async> {
     /// Queue `buffer` into the transmit FIFO, waiting for room when it is full.
     ///
     /// Returns once the whole buffer has been handed to the peripheral; use
-    /// [`UartTx::flush`] if the last byte must be on the wire.
+    /// [`UartTx::flush`] if the last byte must be on the wire. Dropping the future
+    /// before completion may leave a prefix queued; it is not cancel-safe.
     pub async fn write(&mut self, buffer: &[u8]) -> Result<(), Error> {
         write_async::<T>(buffer).await
     }
@@ -431,36 +472,42 @@ pub struct UartRx<'d, T: Instance, M: Mode> {
 
 impl<'d, T: Instance, M: Mode> UartRx<'d, T, M> {
     /// Perform a blocking read, filling `buffer` completely.
+    ///
+    /// If a line-status error follows a partial read, the bytes already read
+    /// remain in `buffer` but the call returns the error. Call again to resume.
     pub fn blocking_read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
-        let r = T::regs();
-        for byte in buffer {
-            loop {
-                let lsr = r.lsr().read();
-                if lsr.lsr_over_err() {
-                    return Err(Error::Overrun);
-                }
-                if lsr.lsr_par_err() {
-                    return Err(Error::Parity);
-                }
-                if lsr.lsr_frame_err() {
-                    return Err(Error::Framing);
-                }
-                if lsr.lsr_break_err() {
-                    return Err(Error::Break);
-                }
-                if lsr.lsr_data_rdy() {
-                    *byte = r.rbr().read().rbr();
-                    break;
-                }
-            }
-        }
-        Ok(())
+        read_blocking::<T>(buffer, true).map(|_| ())
+    }
+
+    /// Read whatever is available, blocking only for the first byte.
+    ///
+    /// If an error follows one or more valid bytes, this returns those bytes and
+    /// reports the error on the next call, so the valid prefix is not lost.
+    pub fn blocking_read_some(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
+        read_blocking::<T>(buffer, false)
     }
 
     fn new_inner(rx: Peri<'d, AnyPin>) -> Self {
+        T::state().owners.fetch_add(1, Ordering::Relaxed);
         Self {
             _phantom: PhantomData,
             _rx: rx,
+        }
+    }
+}
+
+impl<T: Instance, M: Mode> Drop for UartRx<'_, T, M> {
+    fn drop(&mut self) {
+        let r = T::regs();
+        r.ier().modify(|w| {
+            w.set_ier_recv_rdy(false);
+            w.set_ier_line_stat(false);
+        });
+        // Both halves share one PFIC interrupt. Dropping either one masks the
+        // sources it owns; dropping the last one disables the IRQ itself.
+        if T::state().owners.fetch_sub(1, Ordering::Relaxed) == 1 {
+            T::Interrupt::disable();
+            r.mcr().modify(|w| w.set_mcr_int_oe(false));
         }
     }
 }
@@ -506,9 +553,21 @@ impl<'d, T: Instance> UartRx<'d, T, Async> {
     /// Read until `buffer` is full.
     ///
     /// Returns immediately with an error if a line-status error is pending; the
-    /// `LSR` read that reports it also clears the error bits.
+    /// `LSR` read that reports it also clears the error bits. Valid bytes already
+    /// read into `buffer` are retained when a later byte reports an error.
+    /// Dropping the future leaves bytes already read in `buffer`; those bytes are
+    /// consumed and the rest of `buffer` is still unwritten.
     pub async fn read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
-        read_async::<T>(buffer).await
+        read_async::<T>(buffer, true).await.map(|_| ())
+    }
+
+    /// Read whatever is available, waiting only for the first byte.
+    ///
+    /// Unlike [`UartRx::read`], this returns after at least one byte instead of
+    /// waiting to fill the whole buffer. It is cancel-safe: no bytes are consumed
+    /// if the future is dropped before returning.
+    pub async fn read_some(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
+        read_async::<T>(buffer, false).await
     }
 }
 
@@ -532,6 +591,11 @@ impl<'d, T: Instance, M: Mode> Uart<'d, T, M> {
     /// Perform a blocking read, filling `buffer` completely.
     pub fn blocking_read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
         self.rx.blocking_read(buffer)
+    }
+
+    /// Read whatever is available, blocking only for the first byte.
+    pub fn blocking_read_some(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
+        self.rx.blocking_read_some(buffer)
     }
 
     /// Split into independent transmitter and receiver halves.
@@ -629,11 +693,125 @@ impl<'d, T: Instance> Uart<'d, T, Async> {
     pub async fn read(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
         self.rx.read(buffer).await
     }
+
+    /// Read whatever is available, waiting only for the first byte.
+    pub async fn read_some(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
+        self.rx.read_some(buffer).await
+    }
 }
 
 impl<'d, T: Instance, M: Mode> fmt::Write for Uart<'d, T, M> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.blocking_write(s.as_bytes()).map_err(|_| fmt::Error)
+    }
+}
+
+impl<T: Instance, M: Mode> embedded_io::ErrorType for Uart<'_, T, M> {
+    type Error = Error;
+}
+
+impl<T: Instance, M: Mode> embedded_io::ErrorType for UartTx<'_, T, M> {
+    type Error = Error;
+}
+
+impl<T: Instance, M: Mode> embedded_io::ErrorType for UartRx<'_, T, M> {
+    type Error = Error;
+}
+
+impl<T: Instance, M: Mode> embedded_io::Read for Uart<'_, T, M> {
+    fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+        self.blocking_read_some(buffer)
+    }
+}
+
+impl<T: Instance, M: Mode> embedded_io::Read for UartRx<'_, T, M> {
+    fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+        self.blocking_read_some(buffer)
+    }
+}
+
+impl<T: Instance, M: Mode> embedded_io::Write for Uart<'_, T, M> {
+    fn write(&mut self, buffer: &[u8]) -> Result<usize, Self::Error> {
+        self.blocking_write(buffer)?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.blocking_flush()
+    }
+}
+
+impl<T: Instance, M: Mode> embedded_io::Write for UartTx<'_, T, M> {
+    fn write(&mut self, buffer: &[u8]) -> Result<usize, Self::Error> {
+        self.blocking_write(buffer)?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.blocking_flush()
+    }
+}
+
+impl<T: Instance, M: Mode> embedded_io::ReadReady for Uart<'_, T, M> {
+    fn read_ready(&mut self) -> Result<bool, Self::Error> {
+        // RFC has no read-clear side effects, unlike LSR.
+        Ok(T::regs().rfc().read().rfc() != 0 || T::state().rx_error.load(Ordering::Relaxed) != 0)
+    }
+}
+
+impl<T: Instance, M: Mode> embedded_io::ReadReady for UartRx<'_, T, M> {
+    fn read_ready(&mut self) -> Result<bool, Self::Error> {
+        Ok(T::regs().rfc().read().rfc() != 0 || T::state().rx_error.load(Ordering::Relaxed) != 0)
+    }
+}
+
+impl<T: Instance, M: Mode> embedded_io::WriteReady for Uart<'_, T, M> {
+    fn write_ready(&mut self) -> Result<bool, Self::Error> {
+        Ok(T::regs().tfc().read().tfc() < 8)
+    }
+}
+
+impl<T: Instance, M: Mode> embedded_io::WriteReady for UartTx<'_, T, M> {
+    fn write_ready(&mut self) -> Result<bool, Self::Error> {
+        Ok(T::regs().tfc().read().tfc() < 8)
+    }
+}
+
+#[cfg(feature = "embassy")]
+impl<T: Instance> embedded_io_async::Read for Uart<'_, T, Async> {
+    async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+        self.read_some(buffer).await
+    }
+}
+
+#[cfg(feature = "embassy")]
+impl<T: Instance> embedded_io_async::Read for UartRx<'_, T, Async> {
+    async fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error> {
+        self.read_some(buffer).await
+    }
+}
+
+#[cfg(feature = "embassy")]
+impl<T: Instance> embedded_io_async::Write for Uart<'_, T, Async> {
+    async fn write(&mut self, buffer: &[u8]) -> Result<usize, Self::Error> {
+        Uart::write(self, buffer).await?;
+        Ok(buffer.len())
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Uart::flush(self).await
+    }
+}
+
+#[cfg(feature = "embassy")]
+impl<T: Instance> embedded_io_async::Write for UartTx<'_, T, Async> {
+    async fn write(&mut self, buffer: &[u8]) -> Result<usize, Self::Error> {
+        UartTx::write(self, buffer).await?;
+        Ok(buffer.len())
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        UartTx::flush(self).await
     }
 }
 
@@ -701,14 +879,12 @@ async fn write_async<T: Instance>(buffer: &[u8]) -> Result<(), Error> {
 /// Wait for `LSR.TX_ALL_EMP`.
 ///
 /// There is no transmission-complete interrupt to wait on, so the future
-/// re-schedules itself and polls. CH585's `LSR` also holds the read-clear RX
-/// error bits; if a receive future is running concurrently, this read can
-/// consume an error before it is reported.
+/// re-schedules itself and polls. RX error bits read as a side effect are saved
+/// for the receiver instead of being silently discarded.
 #[cfg(feature = "embassy")]
 async fn flush_async<T: Instance>() -> Result<(), Error> {
-    let r = T::regs();
     poll_fn(|cx| {
-        if r.lsr().read().lsr_tx_all_emp() {
+        if read_lsr_for_tx::<T>().lsr_tx_all_emp() {
             Poll::Ready(())
         } else {
             cx.waker().wake_by_ref();
@@ -720,10 +896,13 @@ async fn flush_async<T: Instance>() -> Result<(), Error> {
 }
 
 /// Fill `buffer` from the RX FIFO, waking on the receive interrupts.
+///
+/// Exact reads may consume a prefix before returning `Pending`; short reads only
+/// consume bytes in a poll that returns `Ready`, making them cancel-safe.
 #[cfg(feature = "embassy")]
-async fn read_async<T: Instance>(buffer: &mut [u8]) -> Result<(), Error> {
+async fn read_async<T: Instance>(buffer: &mut [u8], wait_for_full: bool) -> Result<usize, Error> {
     if buffer.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     let r = T::regs();
@@ -751,36 +930,34 @@ async fn read_async<T: Instance>(buffer: &mut [u8]) -> Result<(), Error> {
 
         loop {
             if filled == buffer.len() {
-                return Poll::Ready(Ok(()));
+                return Poll::Ready(Ok(filled));
             }
 
             // The interrupt handler consumes line-status errors (LSR is
             // read-clear) and records the first one for this future.
-            match state.rx_error.swap(0, Ordering::Relaxed) {
-                1 => return Poll::Ready(Err(Error::Overrun)),
-                2 => return Poll::Ready(Err(Error::Parity)),
-                3 => return Poll::Ready(Err(Error::Framing)),
-                4 => return Poll::Ready(Err(Error::Break)),
-                _ => {}
+            if let Some(error) = take_rx_error::<T>() {
+                if filled > 0 && !wait_for_full {
+                    restore_rx_error::<T>(error);
+                    return Poll::Ready(Ok(filled));
+                }
+                return Poll::Ready(Err(error));
             }
 
             let lsr = r.lsr().read();
-            if lsr.lsr_over_err() {
-                return Poll::Ready(Err(Error::Overrun));
-            }
-            if lsr.lsr_par_err() {
-                return Poll::Ready(Err(Error::Parity));
-            }
-            if lsr.lsr_frame_err() {
-                return Poll::Ready(Err(Error::Framing));
-            }
-            if lsr.lsr_break_err() {
-                return Poll::Ready(Err(Error::Break));
+            if let Some(error) = lsr_error(lsr) {
+                if filled > 0 && !wait_for_full {
+                    save_rx_error::<T>(error);
+                    return Poll::Ready(Ok(filled));
+                }
+                return Poll::Ready(Err(error));
             }
             if lsr.lsr_data_rdy() {
                 buffer[filled] = r.rbr().read().rbr();
                 filled += 1;
                 continue;
+            }
+            if filled > 0 && !wait_for_full {
+                return Poll::Ready(Ok(filled));
             }
 
             return Poll::Pending;
@@ -797,8 +974,120 @@ async fn read_async<T: Instance>(buffer: &mut [u8]) -> Result<(), Error> {
     result
 }
 
+/// Read bytes from the RX FIFO. Exact reads wait for a full buffer; short reads
+/// return once at least one byte is available and the FIFO has been drained.
+fn read_blocking<T: Instance>(buffer: &mut [u8], wait_for_full: bool) -> Result<usize, Error> {
+    if buffer.is_empty() {
+        return Ok(0);
+    }
+
+    let r = T::regs();
+    let mut filled = 0usize;
+    loop {
+        if filled == buffer.len() {
+            return Ok(filled);
+        }
+
+        if let Some(error) = take_rx_error::<T>() {
+            if filled > 0 && !wait_for_full {
+                restore_rx_error::<T>(error);
+                return Ok(filled);
+            }
+            return Err(error);
+        }
+
+        let lsr = r.lsr().read();
+        if let Some(error) = lsr_error(lsr) {
+            if filled > 0 && !wait_for_full {
+                save_rx_error::<T>(error);
+                return Ok(filled);
+            }
+            return Err(error);
+        }
+        if lsr.lsr_data_rdy() {
+            buffer[filled] = r.rbr().read().rbr();
+            filled += 1;
+        } else if filled > 0 && !wait_for_full {
+            return Ok(filled);
+        }
+    }
+}
+
+/// Decode the read-clear line-status error bits.
+fn lsr_error(lsr: pac::uart::regs::Lsr) -> Option<Error> {
+    if lsr.lsr_over_err() {
+        Some(Error::Overrun)
+    } else if lsr.lsr_par_err() {
+        Some(Error::Parity)
+    } else if lsr.lsr_frame_err() {
+        Some(Error::Framing)
+    } else if lsr.lsr_break_err() {
+        Some(Error::Break)
+    } else {
+        None
+    }
+}
+
+fn error_code(error: Error) -> u8 {
+    match error {
+        Error::Overrun => 1,
+        Error::Parity => 2,
+        Error::Framing => 3,
+        Error::Break => 4,
+    }
+}
+
+/// Preserve the first pending error instead of overwriting it with a later one.
+fn save_rx_error<T: Instance>(error: Error) {
+    let _ = T::state()
+        .rx_error
+        .compare_exchange(0, error_code(error), Ordering::Relaxed, Ordering::Relaxed);
+}
+
+fn take_rx_error<T: Instance>() -> Option<Error> {
+    match T::state().rx_error.swap(0, Ordering::Relaxed) {
+        1 => Some(Error::Overrun),
+        2 => Some(Error::Parity),
+        3 => Some(Error::Framing),
+        4 => Some(Error::Break),
+        _ => None,
+    }
+}
+
+/// Put back an error that preceded bytes returned by a short read. This is an
+/// earlier error than anything an interrupt may have stored in the meantime.
+fn restore_rx_error<T: Instance>(error: Error) {
+    T::state().rx_error.store(error_code(error), Ordering::Relaxed);
+}
+
+/// Read LSR without losing an RX error when the caller only wants TX status.
+fn read_lsr_for_tx<T: Instance>() -> pac::uart::regs::Lsr {
+    let lsr = T::regs().lsr().read();
+    if let Some(error) = lsr_error(lsr) {
+        save_rx_error::<T>(error);
+    }
+    lsr
+}
+
 fn configure<T: Instance, const REMAP: u8>(config: &Config, enable_tx: bool) -> Result<(), ConfigError> {
+    // DIV = 1, so DL = Fsys / (8 * baud), rounded to the nearest integer.
+    // The datasheet's reference clock is Fsys * 2 / DIV divided by 16 * DL.
+    // Validate before touching the mux or resetting a working peripheral.
+    let baud = config.baudrate as u64;
+    if baud == 0 {
+        return Err(ConfigError::BaudrateTooHigh);
+    }
+    let denominator = 8 * baud;
+    let dl = (T::frequency().0 as u64 + denominator / 2) / denominator;
+    if dl == 0 {
+        return Err(ConfigError::BaudrateTooHigh);
+    }
+    if dl > u16::MAX as u64 {
+        return Err(ConfigError::BaudrateTooLow);
+    }
+
     critical_section::with(|_| unsafe { T::set_remap(REMAP != 0) });
+    T::state().rx_error.store(0, Ordering::Relaxed);
 
     let r = T::regs();
 
@@ -829,21 +1118,6 @@ fn configure<T: Instance, const REMAP: u8>(config: &Config, enable_tx: bool) -> 
         w.set_lcr_par_en(par_en);
         w.set_lcr_par_mod(par_mod);
     });
-
-    // DIV = 1, so DL = Fsys / (8 * baud), rounded to the nearest integer.
-    // The datasheet's reference clock is Fsys * 2 / DIV divided by 16 * DL.
-    let baud = config.baudrate as u64;
-    if baud == 0 {
-        return Err(ConfigError::BaudrateTooHigh);
-    }
-    let denominator = 8 * baud;
-    let dl = (T::frequency().0 as u64 + denominator / 2) / denominator;
-    if dl == 0 {
-        return Err(ConfigError::BaudrateTooHigh);
-    }
-    if dl > u16::MAX as u64 {
-        return Err(ConfigError::BaudrateTooLow);
-    }
 
     r.div().write(|w| w.set_div(1));
     r.dl().write(|w| w.set_dl(dl as u16));
