@@ -23,4 +23,10 @@ local-memory.md
 PERIPHERALS.md
 backlog.md
 docs/
-tools/nfc/
+
+# Local development tooling: board runners, result checks, host tests and the
+# offline NFC archive analysis. These are used during development, not shipped.
+tools/
+
+# Agent guidance is local; this file is not committed either.
+CLAUDE.md
