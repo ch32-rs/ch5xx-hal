@@ -25,9 +25,10 @@ enabled.
 
 - `init()` — clock/frequency setup and GPIO bring-up
 - `gpio` — input, output, flex pins, internal pull up/down, drive strength
-- `uart` — blocking TX/RX for UART0–UART3, with pin selection checked against
-  the default or remapped pin set at compile time; interrupt-driven async
-  `read`/`write`/`flush` with the `embassy` feature, plus split TX/RX halves
+- `uart` — blocking and interrupt-driven async UART0–UART3, with pin selection
+  checked against the default or remapped pin set at compile time; exact and
+  short reads, split TX/RX halves, `embedded-io` traits, and
+  `embedded-io-async` traits with the `embassy` feature
 - `delay` — `embedded-hal` `DelayNs`, backed by the core SysTick (or by the
   time driver's timebase under `time-driver-systick`)
 - `rcc` — HSI/HSE, dividers and PLL configuration; nominal system clock reporting

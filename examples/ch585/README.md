@@ -64,8 +64,10 @@ the top of `timer_external_capture.rs`.
 
 `uart_echo` uses the interrupt-driven halves: `Uart::new` takes an interrupt
 binding created by `hal::bind_interrupts!`, and `write`/`flush`/`read` are
-`async`. There is no DMA — the driver moves bytes through the eight-byte FIFO
-and wakes from the instance's interrupt.
+`async`. `read` fills the supplied buffer; `read_some` waits only for the first
+byte and returns the available prefix, and is the cancel-safe operation used by
+the `embedded_io_async::Read` implementation. There is no DMA — the driver moves
+bytes through the eight-byte FIFO and wakes from the instance's interrupt.
 
 The example runs **115200 8N1** with `Fsys` from `rcc::Config::HSE_PLL_78MHZ`
 (78 MHz off the 32 MHz crystal). The baud is `Fsys / (8 * DIV * DL)`, with `DIV`
