@@ -1,187 +1,76 @@
 # CH585 examples
 
-Example binaries for `ch5xx-hal` on the CH585 (QingKe V3C). Each one is a
-`no_std` binary run straight on the part; none of them is part of the HAL crate.
+`no_std` example binaries for `ch5xx-hal` on CH585 (QingKe V3C).
 
-Everything here runs **from this directory** — the target triple, `build-std` and
-the runner live in `.cargo/config.toml`. Building from the repository root fails
-with `invalid Mach-O section specifier` because no RISC-V target is selected
-there.
+Run commands **from this directory**; `.cargo/config.toml` selects the RISC-V
+target, `build-std`, and the probe runner.
 
 ```console
 cd examples/ch585
 cargo run --release --bin blinky
 ```
 
-Select binaries explicitly with the default features: `cargo build --bins`
-also selects `embassy_time_tmr`, whose feature guard intentionally rejects
-SysTick. To build every binary together, select a TMR driver instead:
+`cargo run` uses `probe-rs run --chip CH585` to flash, reset, and stream `defmt`
+over RTT.
 
-```console
-cargo build --release --bins --no-default-features --features time-driver-tmr0
-```
+## Time driver selection
 
-For the complete HAL support inventory, see the
-[crate README](../../README.md).
-
-The runner is `probe-rs run --chip CH585`, so `cargo run` flashes, resets and
-streams `defmt` over RTT in one step. `.cargo/config.toml` keeps a `wlink flash`
-runner commented out for when you only want to program the part.
-
-## Binaries
-
-| Binary | Shows |
-| --- | --- |
-| `blinky` | GPIO output and the blocking `delay`; LED0 (PB16) and LED1 (PB17) in opposite phase |
-| `gpio_in` | reads the user buttons S1 (PB22) and S2 (PB23) with pull-up and logs each level change |
-| `defmt_rtt` | logging over SEGGER RTT |
-| `cpuid` | the core's identity CSRs: `misa`, `mvendorid`, `marchid`, `mimpid`, `mhartid` |
-| `bitmanip` | whether the `B` that `misa` reports is the ratified `Zb*` encoding, one instruction at a time |
-| `uart_loopback` | blocking UART0 with `MCR.LOOP`, so the byte path is checked without external wiring |
-| `uart_echo` | async (embassy) UART3 on PA4/PA5 at 115200 8N1 with `Fsys` at 78 MHz (HSE PLL), echoing an external device (header P2 pins 1 and 2) and mirroring each received line to `defmt` over RTT |
-| `clk_probe` | the firmware's view of the clock registers, nominal clock and measured SysTick rate |
-| `clk_set` | boot from `HSI_PLL_24MHZ` and report the register readback and both rates |
-| `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
-| `embassy_time_tmr` | the same on a TMR driver, so `delay` keeps the raw SysTick counter |
-| `timer_dma` | experimental Timer counter/PWM/capture/DMA characterization, excluding the time-driver instance; PA9/PA10/PA11/PA2 must be disconnected from loads |
-| `timer_dma_async` | experimental timer IRQ binding, DMA waveform/capture waits and cancellation |
-| `timer_acceptance` | detached SRAM-recorded counter/PWM/capture/address/FIFO acceptance; no RTT timing interference |
-| `timer_clock_guard` | boot at 39 MHz and verify both NFC-capable timers reject the dedicated clock |
-| `timer_timebase` | detached 500 ms async / 100 ms blocking regression with independent RTC checks; runner needs `--suite timebase --wait 8` |
-| `timer_dma_stress` | repeated failure paths, short RX descriptors, cancellation/stale IRQs and TX drain; `--suite stress --wait 8` |
-| `timer_external_capture` | independent 9600-baud 3.3 V UART input qualification; built but not physically verified; requires explicit wiring and `--suite external --stimulus-port ...` |
-
-Timer/DMA detached acceptance passes under SysTick and each TMR timebase.
-These binaries record results in SRAM for the local-only host-side test
-tooling rather than streaming measurements over RTT, which perturbs timing.
-Keep target operations serial and disconnect loads from PA9/PA10/PA11/PA2; the
-timer module docs record the current scope and limits.
-The external-input test temporarily ties those four pads together. Remove all
-fan-out wires before running any PWM/output example; see the wiring notes at
-the top of `timer_external_capture.rs`.
-
-## Async UART
-
-`uart_echo` uses the interrupt-driven halves: `Uart::new` takes an interrupt
-binding created by `hal::bind_interrupts!`, and `write`/`flush`/`read` are
-`async`. `read` fills the supplied buffer; `read_some` waits only for the first
-byte and returns the available prefix, and is the cancel-safe operation used by
-the `embedded_io_async::Read` implementation. There is no DMA — the driver moves
-bytes through the eight-byte FIFO and wakes from the instance's interrupt.
-
-The example runs **115200 8N1** with `Fsys` from `rcc::Config::HSE_PLL_78MHZ`
-(78 MHz off the 32 MHz crystal). The baud is `Fsys / (8 * DIV * DL)`, with `DIV`
-in 1..=127 and `DL` a 16-bit integer, so 115200 becomes `DL = 85` = 114706 baud
-(-0.43%), inside the datasheet's 0.5% transmit budget. The reset clock
-(5.333 MHz) cannot generate 115200 (`DL = 6` is 111.1 kbaud, -3.5%), which is
-why the clock is raised first. `uart_loopback` keeps the 115200 default because
-both directions share the divider, so the error cancels.
-
-## Clock configuration
-
-`hal::init` takes an `rcc::Config` and applies it before any driver starts.
-`Config::default()` is the datasheet reset value, HSI 16 MHz / 3 = 5.333 MHz, so
-programs that do not configure a clock behave as before. Presets mirror WCH's
-C SDK `CLK_SOURCE_*` values:
-
-```rust
-let p = hal::init(Default::default());                 // 5.333 MHz
-let p = hal::init(rcc::Config::HSI_PLL_24MHZ.into());  // 24 MHz, HSI PLL, no crystal
-let p = hal::init(rcc::Config::HSE_PLL_78MHZ.into());  // 78 MHz, needs the crystal
-let p = hal::init(rcc::Config::hsi_nearest(hal::time::hz(30_000_000)).into()); // 31.2 MHz
-```
-
-`HSE_*` presets require the board's 32 MHz crystal; the CH585M-R1-1v1 fits one
-and the presets select its 18 pF load capacitance. `rcc::clocks().sysclk` is the
-nominal frequency of the configured tree; `delay::measured_sysclk()` is the
-RTC-calibrated rate `delay` uses for busy-waits.
-
-`rcc::set_config` can change the clock at runtime, but only the tree and the
-`clocks()` cache: SysTick/timebase/UART dividers stay on the old frequency.
-`delay::recalibrate` re-measures the busy-wait rate where the SysTick time
-driver is not selected.
-
-## Time driver features
-
-`embassy_time` and `embassy_time_tmr` need a time driver, selected with the
-features this crate forwards from the HAL. The default is
-`time-driver-systick`; switch without editing `Cargo.toml`:
+The examples default to `time-driver-systick`. Select a TMR driver without
+editing the manifest:
 
 ```console
 cargo run --release --bin embassy_time_tmr --no-default-features --features time-driver-tmr0
 ```
 
-`embassy_time` works with any of them. `embassy_time_tmr` needs one of
-`time-driver-tmr0` … `time-driver-tmr3` — its point is that a TMR leaves SysTick
-free, so it refuses to build with the SysTick driver.
-
-The non-embassy examples do not care which driver is selected; `delay` works
-either way.
-
-## Console output
-
-CH5xx has no SDI printf (the debug-module `DATA0`/`DATA1` handshake is not
-present). Use `defmt` over SEGGER RTT — no special chip support is needed and
-`probe-rs` handles it natively.
-
-`DEFMT_LOG` controls the log level at compile time and defaults to `error`,
-which silently discards `info!`. `.cargo/config.toml` sets it to `info` here.
-
-To flash and attach separately:
+`embassy_time_tmr` intentionally rejects SysTick, so a default `--bins` build
+fails its feature guard. Build all binaries with a TMR driver instead:
 
 ```console
-probe-rs download --chip CH585 target/riscv32imc-unknown-none-elf/release/defmt_rtt
-probe-rs attach --chip CH585 target/riscv32imc-unknown-none-elf/release/defmt_rtt
+cargo build --release --bins --no-default-features --features time-driver-tmr0
 ```
 
-## Observing with a debugger
+## Binaries
 
-Every `wlink`/`probe-rs` memory read **halts the core and does not resume it**,
-so polling a live counter freezes the firmware and makes working code look hung;
-repeatedly sampling a GPIO keeps catching the same phase and makes alternating
-LEDs look stuck.
+| Binary | Description |
+| --- | --- |
+| `blinky` | GPIO output and blocking delay; PB16/PB17 LEDs in opposite phase |
+| `gpio_in` | Active-low buttons S1/PB22 and S2/PB23 with pull-ups |
+| `defmt_rtt` | Logging over SEGGER RTT |
+| `cpuid` | Core identity and ISA CSRs |
+| `bitmanip` | Hardware probe for ratified bit-manipulation instructions |
+| `uart_loopback` | Blocking UART0 internal loopback; no external wiring |
+| `uart_echo` | Async UART3 echo on PA4/PA5 at 115200 8N1, mirrored to RTT |
+| `clk_probe` | Clock registers, nominal clock, and measured SysTick rate |
+| `clk_set` | Boot at `HSI_PLL_24MHZ` and report clock state |
+| `embassy_time` | Two tasks using the SysTick time driver |
+| `embassy_time_tmr` | Two tasks using a TMR time driver |
+| `timer_dma` | Timer counter/PWM/capture/DMA characterization |
+| `timer_dma_async` | Timer IRQ binding, DMA waits, and cancellation |
+| `timer_acceptance` | Detached SRAM-recorded Timer/DMA acceptance checks |
+| `timer_clock_guard` | Reject the NFC clock when the system clock is too slow |
+| `timer_timebase` | Async/blocking waits checked against the independent RTC |
+| `timer_dma_stress` | Repeated short transfers, cancellation, and failure paths |
+| `timer_external_capture` | Capture qualification from an independent 3.3 V UART source |
 
-Verify by recording a *history* into RAM and reading it once at the end (see the
-`BLINKS` counter in `blinky`), or flash, wait untouched, then take a single read.
-Prefer `probe-rs read` over `wlink dump` for memory — `wlink dump` can return
-all-`0xFF` where data exists.
+## Notes
 
-## Target and atomics
+### UART
 
-These build for `riscv32imc-unknown-none-elf`. The QingKe V3C is RV32IMBC — there
-is **no A extension**, and `amoadd.w`/`amoswap.w` raise a hardware exception on
-real silicon. `misa` reports this directly: `cargo run --release --bin cpuid`
-prints `0x40901106`, i.e. RV32 with `BCIMUX` and no `A`.
+`uart_echo` uses HSE PLL 78 MHz because the reset 5.333 MHz clock cannot generate
+an in-spec 115200 baud. Connect the external device at 3.3 V logic: TX to PA4
+(P2.1), RX to PA5 (P2.2), and share GND. The async driver also provides
+`read_some` for short, cancel-safe reads; see the `uart` module documentation.
 
-That is why `portable-atomic` with the `critical-section` feature is a dependency
-here as well as in the HAL.
+### Timer
 
-## Target features
+Disconnect external loads from PA9/PA10/PA11/PA2 before output tests. The
+acceptance binaries record results in SRAM rather than streaming timing data
+over RTT. `timer_external_capture` ties these pads together as inputs; follow
+the wiring and safety notes at the top of its source and remove all fan-out
+wires before running output examples.
 
-`.cargo/config.toml` passes two `target-feature`s, and they are not the same kind
-of thing:
+### Debugging
 
-- **`+b`** is standard and stable. The V3C implements the ratified
-  `Zba`/`Zbb`/`Zbs` encodings — `bitmanip` executes each instruction on the part
-  and they all run; there is no trap. Lighting up `+b` shrinks `blinky` by about
-  16 KiB because LLVM stops expanding `clz`/`cpop`/`rev8` into loops. Turning it
-  on is safe.
-- **`+xwchc`** is WCH's `XW` extension: compressed byte/halfword loads and stores
-  (`c.lbu`, `c.lhusp`, `c.sbsp`, …; manual table 1-1). Rust does not model it, so
-  rustc does not know the name and warns on every build — "unknown and unstable
-  feature … `xwchc`", slated to become a hard error
-  ([rust-lang/rust#162235]). It is passed anyway because the backend honours it.
-  Note `+zcb` is *not* an alternative: LLVM rejects the pair as incompatible,
-  because `XW` predates Zcb and both claim the same compressed encodings.
-
-So the answer to "is `B` enabled like `+xwchc`?" is no: `B` is a ratified
-standard feature the compiler understands, `xwchc` is a vendor extension it does
-not. The only thing they share is the `-C target-feature=` syntax.
-
-`misa` reporting `B` was not enough on its own to justify `+b`: the manual calls
-bit 1 "tentatively reserved", and the pre-ratification `B` draft uses different
-encodings from the ratified `Zb*` set. `bitmanip` resolves it by execution, with
-three negative controls (`amoadd.w`, `amoswap.w`, `unimp`) that must trap — if
-they ever stop trapping, its `OK` lines are meaningless.
-
-[rust-lang/rust#162235]: https://github.com/rust-lang/rust/issues/162235
+`DEFMT_LOG = "info"` is set in `.cargo/config.toml`. Debugger memory reads halt
+the core and do not resume it, so do not poll live counters through `probe-rs`
+or `wlink`; record a history in RAM and read it once.
