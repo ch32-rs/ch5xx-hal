@@ -12,7 +12,15 @@ __pycache__/
 
 .DS_Store
 
-# Local agent instructions; not part of the repo.
+# Local agent instructions and working notes; not part of the repo.
 AGENTS.md
 local-memory.md
 .alma-snapshots
+
+# Local design/status documents and offline vendor-archive analysis. The
+# repository keeps only descriptive docs such as README.md and the example
+# README.
+PERIPHERALS.md
+backlog.md
+docs/
+tools/nfc/
