@@ -62,8 +62,8 @@
 //! HSI the two agree to within its tolerance.
 //!
 //! Do not read `CLK_CFG` with `probe-rs read`: that halts the core and the value
-//! it reports is not what the running firmware sees. Read it from firmware,
-//! e.g. `examples/ch585/src/bin/clk_probe.rs`.
+//! it reports is not what the running firmware sees. Read it from firmware and
+//! report it through the console instead.
 
 use crate::atomic::{AtomicU32, Ordering};
 use crate::pac;

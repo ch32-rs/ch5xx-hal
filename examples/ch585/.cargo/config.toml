@@ -8,9 +8,8 @@ target = "riscv32imc-unknown-none-elf"
 runner = "probe-rs run --chip CH585"
 rustflags = [
     # `+b` — the V3C implements the ratified Zba/Zbb/Zbs encodings (verified on
-    # hardware by `src/bin/bitmanip.rs`), so letting LLVM emit them is safe and
-    # shrinks the image by ~16 KiB. It is a standard, stable target feature: no
-    # warning.
+    # hardware), so letting LLVM emit them is safe and shrinks the image by
+    # ~16 KiB. It is a standard, stable target feature: no warning.
     #
     # `+zbc` would add the third carry-less-multiply opcode, `clmulr`, which this
     # part also executes. It is left out because nothing in the compiler emits it
