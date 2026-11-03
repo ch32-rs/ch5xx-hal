@@ -13,6 +13,17 @@ cd examples/ch585
 cargo run --release --bin blinky
 ```
 
+Select binaries explicitly with the default features: `cargo build --bins`
+also selects `embassy_time_tmr`, whose feature guard intentionally rejects
+SysTick. To build every binary together, select a TMR driver instead:
+
+```console
+cargo build --release --bins --no-default-features --features time-driver-tmr0
+```
+
+For the complete HAL support inventory and proposed development order, see
+[Peripheral support and priorities](../../PERIPHERALS.md).
+
 The runner is `probe-rs run --chip CH585`, so `cargo run` flashes, resets and
 streams `defmt` over RTT in one step. `.cargo/config.toml` keeps a `wlink flash`
 runner commented out for when you only want to program the part.
@@ -32,6 +43,23 @@ runner commented out for when you only want to program the part.
 | `clk_set` | boot from `HSI_PLL_24MHZ` and report the register readback and both rates |
 | `embassy_time` | two tasks on an embassy executor driven by the SysTick time driver |
 | `embassy_time_tmr` | the same on a TMR driver, so `delay` keeps the raw SysTick counter |
+| `timer_dma` | experimental Timer counter/PWM/capture/DMA characterization, excluding the time-driver instance; PA9/PA10/PA11/PA2 must be disconnected from loads |
+| `timer_dma_async` | experimental timer IRQ binding, DMA waveform/capture waits and cancellation |
+| `timer_acceptance` | detached SRAM-recorded counter/PWM/capture/address/FIFO acceptance; no RTT timing interference |
+| `timer_clock_guard` | boot at 39 MHz and verify both NFC-capable timers reject the dedicated clock |
+| `timer_timebase` | detached 500 ms async / 100 ms blocking regression with independent RTC checks; runner needs `--suite timebase --wait 8` |
+| `timer_dma_stress` | repeated failure paths, short RX descriptors, cancellation/stale IRQs and TX drain; `--suite stress --wait 8` |
+| `timer_external_capture` | independent 9600-baud 3.3 V UART input qualification; built but not physically verified; requires explicit wiring and `--suite external --stimulus-port ...` |
+
+Timer/DMA detached acceptance passes under SysTick and each TMR timebase.
+Build first, then use `python3 ../../tools/run_timer_silent.py` for the silent
+suite, or add `--suite async` / `--suite clock` for the corresponding binary.
+Runners check actual target identity before downloading, refuse non-CH585
+targets and never issue a separate erase. Keep target operations serial and
+disconnect loads from PA9/PA10/PA11/PA2. See [scope and limits](../../docs/timer.md).
+The external-input test temporarily ties those four pads together. Remove all
+fan-out wires before running any PWM/output example; see
+[external validation safety](../../docs/timer-external-validation.md).
 
 ## Async UART
 
