@@ -52,12 +52,10 @@ runner commented out for when you only want to program the part.
 | `timer_external_capture` | independent 9600-baud 3.3 V UART input qualification; built but not physically verified; requires explicit wiring and `--suite external --stimulus-port ...` |
 
 Timer/DMA detached acceptance passes under SysTick and each TMR timebase.
-Build first, then use `python3 ../../tools/run_timer_silent.py` for the silent
-suite, or add `--suite async` / `--suite clock` for the corresponding binary.
-Runners check actual target identity before downloading, refuse non-CH585
-targets and never issue a separate erase. Keep target operations serial and
-disconnect loads from PA9/PA10/PA11/PA2; the timer module docs record the
-current scope and limits.
+These binaries record results in SRAM for the local-only host-side test
+tooling rather than streaming measurements over RTT, which perturbs timing.
+Keep target operations serial and disconnect loads from PA9/PA10/PA11/PA2; the
+timer module docs record the current scope and limits.
 The external-input test temporarily ties those four pads together. Remove all
 fan-out wires before running any PWM/output example; see the wiring notes at
 the top of `timer_external_capture.rs`.
