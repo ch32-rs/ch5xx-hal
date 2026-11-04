@@ -19,9 +19,10 @@
 #![no_main]
 
 use ch5xx_hal as hal;
-
+use defmt::info;
 use defmt_rtt as _;
-use {defmt::info, panic_halt as _, qingke_rt::entry};
+use panic_halt as _;
+use qingke_rt::entry;
 
 #[entry]
 fn main() -> ! {

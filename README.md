@@ -1,100 +1,107 @@
 # ch5xx-hal
 
-Rust HAL (Hardware Abstraction Layer) crate for WCH's CH5xx BLE microcontrollers.
+Rust HAL for WCH CH5xx BLE microcontrollers, with blocking APIs and optional
+Embassy support.
+
+[Documentation](https://docs.rs/ch5xx-hal) · [Examples](examples/ch585)
 
 > **Note**
-> This project is under development. Only a small part of the peripheral set is
-> implemented, and only CH585 has been exercised on real hardware. Expect the
-> API to change.
-
-This HAL follows the [ch32-hal](https://github.com/ch32-rs/ch32-hal) layout and
-the metapac approach: register access comes from a single
-[`ch5xx-metapac`](https://github.com/ch32-rs/ch5xx-data) crate, so the same HAL
-code serves every supported chip in the family.
+> This crate is under development and its API may change. CH585 is the only
+> chip exercised on hardware so far.
 
 ## Supported devices
 
-| Chip  | Core      | Status                          |
-| ----- | --------- | ------------------------------- |
-| CH585 | QingKe V3C | Bring-up target; blinky verified on hardware |
+| Chip | Core | Status |
+| --- | --- | --- |
+| CH585 | QingKe V3C | GPIO, clocks, UART, and Embassy time drivers tested on hardware |
 
-Chip support is selected with a Cargo feature (`ch585`). Exactly one must be
-enabled.
+Select exactly one chip feature, currently `ch585`. Register access comes from
+[`ch5xx-metapac`](https://github.com/ch32-rs/ch5xx-data), allowing shared driver
+code across chips with compatible peripherals.
 
-## Implemented so far
+## Features
 
-- `init()` — clock/frequency setup and GPIO bring-up
-- `gpio` — input, output, flex pins, internal pull up/down, drive strength
-- `delay` — `embedded-hal` `DelayNs`, backed by the core SysTick
-- `rcc` — reports the measured system clock
+- `gpio`: input, output, flex pins, pulls, and drive strength.
+- `rcc`: HSI/HSE, dividers, PLL configuration, and clock reporting.
+- `uart`: blocking and interrupt-driven async UART0–UART3, typed pin remapping,
+  split halves, exact and short reads, and `embedded-io`/`embedded-io-async`
+  traits.
+- `delay`: `embedded-hal` `DelayNs` using SysTick or the Embassy timebase.
+- Embassy time driver on SysTick or TMR0–TMR3, plus typed interrupt bindings.
 
-Everything else (UART, SPI, I2C, timers, BLE, USB, …) is not implemented yet.
+Timer counter/PWM/capture and timer-local DMA drivers are experimental. They
+pass scoped detached CH585 tests but are not yet qualified for arbitrary bus
+loads, lossless streaming, or NFC transport.
 
-## What differs from CH32
+GPIO interrupts, I2C, SPI, ADC, USB, BLE, and a public RTC calendar/alarm API
+are not implemented yet.
 
-The CH5xx register model is not a CH32 one, so a few things look different:
+## Architecture
 
-- **No RCC.** Clocks, power and the pin mux live in `SYS` / `System_control` at
-  `0x4000_1000`.
-- **No AFIO.** Peripheral signals are routed with the `SYS.PIN_ALTERNATE`
-  "alternate pin enable" bits rather than a remap register.
-- **One GPIO block** with per-port register groups (`pa_out`, `pb_dir`, …)
-  instead of one peripheral per port.
+The API and ownership model follow `ch32-hal` and Embassy, with CH5xx-specific
+hardware differences:
 
-## System clock
+- Clocks and pin muxing live in `SYS`, not separate RCC/AFIO peripherals.
+- One GPIO block contains per-port register groups.
+- Each timer has one 26-bit counter/FIFO, no prescaler, and peripheral-local DMA.
 
-The datasheet documents a 32 MHz `CLK_CFG` reset default, but the boot ROM does
-not leave it there: on the CH585 used for bring-up `CLK_CFG` reads `0x014D`
-(`CLK_SYS_MOD = 01`, PLL-sourced) and the actual system clock is
-**5,333,696 Hz**.
+A generated PAC singleton does not imply that a HAL driver exists.
 
-Rather than model the PLL, `delay::init` measures SysTick against the RTC's
-independent 32 kHz counter at startup (the same idea as WCH's `OSC_CAL`) and
-publishes the result through `rcc::clocks()`. The measurement is deterministic
-across resets. PLL setup itself is not implemented.
+## Quick start
 
-## Example
+```rust
+let p = ch5xx_hal::init(ch5xx_hal::rcc::Config::HSI_PLL_24MHZ.into());
+```
 
-`examples/ch585` blinks LED0 (PB16) and LED1 (PB17) in opposite phase:
+The default clock is HSI 16 MHz divided by 3 (5.333 MHz). It cannot generate an
+in-spec 115200 baud for external UART communication; `uart_echo` therefore uses
+`HSE_PLL_78MHZ`. HSE presets require a 32 MHz crystal.
+
+Prefer selecting the final clock during initialization. Runtime clock changes
+do not rebuild UART dividers, the Embassy timebase, or other clock-dependent
+drivers.
+
+See [`examples/ch585`](examples/ch585) for complete programs and wiring notes.
+
+## Embassy time driver
+
+| Feature | Counter | Effect |
+| --- | --- | --- |
+| `time-driver-systick` | Core SysTick | `delay` uses the Embassy timebase |
+| `time-driver-tmr0` … `time-driver-tmr3` | Selected TMR | SysTick remains available for `delay` |
+
+With `embassy` enabled, exactly one time driver must be selected; none or
+multiple selections produce a compile error. The HAL has no default time driver,
+while the example crate defaults to SysTick. A selected TMR is removed from
+`Peripherals`, preventing a second owner.
+
+`init()` starts the selected driver and enables interrupts, so an Embassy
+executor can be started directly from `main`.
+
+## Target and atomics
+
+The QingKe V3C is RV32IMBC with **no A extension**. Build for
+`riscv32imc-unknown-none-elf`, not `riscv32imac`, and use `portable-atomic` with
+the `critical-section` feature for shared atomics. The example crate already has
+the required target and dependency configuration.
+
+## Running examples
 
 ```console
 cd examples/ch585
 cargo run --release --bin blinky
 ```
 
-The runner is `probe-rs run --chip CH585`, so `cargo run` flashes, resets, and
-streams `defmt` output in one step. A `wlink flash` runner is kept commented out
-in `.cargo/config.toml` if you only want to program the part.
-
-> **Careful when observing with a debugger:** every `wlink`/`probe-rs` memory
-> read halts the core and does not resume it, so polling a live counter will
-> freeze the firmware. Read state once after waiting, or record a history into
-> RAM and read it afterwards.
-
-## Console output (defmt + RTT)
-
-CH5xx has no SDI printf (the debug-module `DATA0`/`DATA1` handshake is not
-present). Use `defmt` over SEGGER RTT instead — no special chip support is
-needed, and `probe-rs` handles it natively:
+The runner uses `probe-rs run --chip CH585` to flash, reset, and stream `defmt`
+over RTT. The example manifest also carries the local metapac, qingke, and
+Embassy dependency patches required by this checkout. To build every example,
+select a TMR time driver:
 
 ```console
-cd examples/ch585
-cargo run --release --bin defmt_rtt
+cargo build --release --bins --no-default-features --features time-driver-tmr0
 ```
-
-This uses the `probe-rs run --chip CH585` runner from `.cargo/config.toml`. If
-you want to flash and attach separately instead:
-
-```console
-probe-rs download --chip CH585 target/riscv32imac-unknown-none-elf/release/defmt_rtt
-probe-rs attach --chip CH585 target/riscv32imac-unknown-none-elf/release/defmt_rtt
-```
-
-Add `defmt` and `defmt-rtt` to your binary's dependencies. The `DEFMT_LOG` env
-variable controls log level at compile time (default is `error`; `.cargo/config.toml`
-sets `info` for the examples).
 
 ## License
 
-Licensed under either of Apache License, Version 2.0 or MIT license at your
+Licensed under either of Apache License, Version 2.0 or MIT license, at your
 option.

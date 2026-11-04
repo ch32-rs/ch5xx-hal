@@ -5,5 +5,4 @@ fn main() {
     // first and silently lands `.defmt` at 0x0, on top of the vector table.
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
-
 }

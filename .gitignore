@@ -6,7 +6,27 @@ trash/
 # merged firmware images / build output
 out/
 
+# Python bytecode from the host-side test and runner tools.
+__pycache__/
+*.pyc
+
 .DS_Store
 
-# Local agent instructions; not part of the repo.
+# Local agent instructions and working notes; not part of the repo.
 AGENTS.md
+local-memory.md
+.alma-snapshots
+
+# Local design/status documents and offline vendor-archive analysis. The
+# repository keeps only descriptive docs such as README.md and the example
+# README.
+PERIPHERALS.md
+backlog.md
+docs/
+
+# Local development tooling: board runners, result checks, host tests and the
+# offline NFC archive analysis. These are used during development, not shipped.
+tools/
+
+# Agent guidance is local; this file is not committed either.
+CLAUDE.md
