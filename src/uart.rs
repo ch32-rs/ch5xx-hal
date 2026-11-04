@@ -1054,10 +1054,12 @@ fn take_rx_error<T: Instance>() -> Option<Error> {
     }
 }
 
-/// Put back an error that preceded bytes returned by a short read. This is an
-/// earlier error than anything an interrupt may have stored in the meantime.
+/// Put back an error deferred so a short read can return the bytes it already
+/// took. Fills an empty slot only: [`take_rx_error`] clears the slot, and the
+/// interrupt handler may have stored a newer line-status error before this runs.
+/// Overwriting that error would drop it.
 fn restore_rx_error<T: Instance>(error: Error) {
-    T::state().rx_error.store(error_code(error), Ordering::Relaxed);
+    save_rx_error::<T>(error);
 }
 
 /// Read LSR without losing an RX error when the caller only wants TX status.
