@@ -19,6 +19,7 @@ ch5xx-hal = { path = "../../", features = ["ch585", "rt", "memory-x"] }
 
 panic-halt = "1.0"
 embedded-hal = "1.0.0"
+embedded-graphics = "0.8.1"
 
 qingke = "0.8.2"
 qingke-rt = "0.8.2"
