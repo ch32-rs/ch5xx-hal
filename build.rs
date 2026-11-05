@@ -66,6 +66,13 @@ fn main() {
     if pin_intx {
         println!("cargo:rustc-cfg=gpio_pin_intx");
     }
+    // The SPI register block is not one layout. The `ch585` and `ch583`
+    // versions are the FIFO controller this driver programs; the others are not,
+    // and naming their registers would not compile.
+    match register_version(&chip_name, "spi").as_str() {
+        "ch585" | "ch583" => println!("cargo:rustc-cfg=spi_ch585"),
+        _ => {}
+    }
 
     // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
     // the singletons so `init()` cannot hand the same peripheral to a second

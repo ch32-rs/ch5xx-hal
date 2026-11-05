@@ -29,6 +29,8 @@ code across chips with compatible peripherals.
   traits.
 - `i2c`: blocking I2C0 master at up to 400 kHz, with the default and remapped
   pin pairs and `embedded-hal` `I2c`.
+- `spi`: blocking SPI0/SPI1 master in mode 0 and mode 3, with `embedded-hal`
+  `SpiBus`. SPI0 has a remapped pin set; SPI1 does not.
 - `delay`: `embedded-hal` `DelayNs` using SysTick or the Embassy timebase.
 - Embassy time driver on SysTick or TMR0–TMR3, plus typed interrupt bindings.
 
@@ -36,8 +38,9 @@ Timer counter/PWM/capture and timer-local DMA drivers are experimental. They
 pass scoped detached CH585 tests but are not yet qualified for arbitrary bus
 loads, lossless streaming, or NFC transport.
 
-SPI, ADC, USB, BLE, and a public RTC calendar/alarm API are not implemented
-yet. The I2C driver is blocking only; async transfers and bus recovery are not.
+ADC, USB, BLE, and a public RTC calendar/alarm API are not implemented yet.
+The I2C and SPI drivers are blocking only; async transfers, I2C bus recovery and
+SPI DMA are not.
 
 ## Architecture
 
