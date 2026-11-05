@@ -4,9 +4,10 @@
 //! baud dividers, FIFO setup and both directions without any external wiring.
 //! The default UART0 pins are PB4 (RXD) and PB7 (TXD).
 //!
-//! 115200 is fine here even though this board's clock realises it as ~111.1
-//! kbaud: both ends of the loop share the same divider, so the error cancels.
-//! Talking to an external device is what needs `Config::new(9600)`.
+//! The reset clock is 5.333 MHz, and 115200 cannot be divided from it within
+//! two percent, so the driver rejects it. 9600 divides exactly. Both ends of the
+//! loop share the divider, so the check is the divider and the FIFO, not the
+//! rate itself.
 //!
 //! The receiver has an eight-byte FIFO and nothing drains it while
 //! `blocking_flush` waits for transmission, so the payload is sent and read in
@@ -26,8 +27,8 @@ use qingke_rt::entry;
 fn main() -> ! {
     let p = hal::init(Default::default());
 
-    // 115200 8N1 is the default.
-    let config = Config::default();
+    // 9600 8N1. 115200 is out of reach at the reset clock.
+    let config = Config::new(9600);
 
     let mut uart = Uart::new_blocking::<0>(p.UART0, p.PB4, p.PB7, config).unwrap();
 
