@@ -45,6 +45,7 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `timer_dma_async` | Timer IRQ binding, DMA waits, and cancellation |
 | `i2c_scan` | Blocking I2C0 scan of PB13/PB12; reports every address that ACKs |
 | `i2c_oled` | SSD1306 at `0x3C`: bouncing circle and text via embedded-graphics |
+| `spi_loopback` | Blocking SPI0 loopback; wire PA14 to PA15 |
 
 ## Notes
 
@@ -65,6 +66,14 @@ selected by constructing the driver with remap `1`.
 `i2c_oled` drives the SSD1306 found at `0x3C` at 400 kHz. A white banner carries
 the title and a filled circle bounces over the rest of the panel. A 128x32 panel
 needs a different multiplex ratio.
+
+### SPI
+
+`spi_loopback` runs SPI0 at 1 MHz on PA13 (SCK), PA14 (MOSI) and PA15 (MISO).
+Join PA14 to PA15. It exchanges 10 bytes in mode 0, then 40 bytes in mode 3, and
+logs whether each one comes back unchanged. PA12 is driven as the chip select
+even though the loop needs none. The remapped set is PB13/PB14/PB15, selected by
+constructing the driver with remap `1`.
 
 ### UART
 
