@@ -33,6 +33,8 @@ code across chips with compatible peripherals.
   `SpiBus`. SPI0 has a remapped pin set; SPI1 does not.
 - `adc`: blocking single conversions on the CH585 layout, with the internal
   temperature sensor and the divided battery channel.
+- `pwm`: PWM4-PWM11 on the CH585 layout, with a shared clock and cycle and
+  per-channel duty.
 - `delay`: `embedded-hal` `DelayNs` using SysTick or the Embassy timebase.
 - Embassy time driver on SysTick or TMR0–TMR3, plus typed interrupt bindings.
 
