@@ -93,6 +93,7 @@ pub use crate::_generated::{peripherals, Peripherals};
 pub mod delay;
 pub mod dma;
 pub mod gpio;
+pub mod i2c;
 pub mod timer;
 pub mod uart;
 
