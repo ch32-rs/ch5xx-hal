@@ -44,9 +44,28 @@ fn main() {
     // peripheral signal, so pads with no alternate function would not be
     // discovered; the widths differ per die and stay here.
     let ports: &[(char, u8)] = match chip_name.as_str() {
-        "ch585" => &[('A', 16), ('B', 24)],
+        "ch581" | "ch582" | "ch583" | "ch584" | "ch585" | "ch592" | "ch595" | "ch573" => &[('A', 16), ('B', 24)],
+        "ch572" => &[('A', 24)],
         other => panic!("no GPIO port map for chip `{other}`"),
     };
+    // The PAC's `METADATA` is empty here: a build-dependency is compiled
+    // without a chip feature, so the chip's register block is read from the
+    // sibling data tree instead.
+    let gpio_items = gpio_items(&chip_name);
+    let port_b = gpio_items.iter().any(|item| item == "PB_DIR");
+    let gpio_set = gpio_items.iter().any(|item| item == "PA_SET");
+    let pin_intx = sys_has_pin_intx(&chip_name);
+    // Port B, the write-1-to-set register and `PIN_INTX` are not on every die.
+    // Drivers consult the cfg instead of naming a register the PAC lacks.
+    if port_b {
+        println!("cargo:rustc-cfg=gpio_port_b");
+    }
+    if gpio_set {
+        println!("cargo:rustc-cfg=gpio_set");
+    }
+    if pin_intx {
+        println!("cargo:rustc-cfg=gpio_pin_intx");
+    }
 
     // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
     // the singletons so `init()` cannot hand the same peripheral to a second
@@ -174,6 +193,109 @@ fn main() {
     fs::write(out_dir.join("_macros.rs"), m).unwrap();
 
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// Register names of the chip's GPIO block, read from the sibling data tree.
+///
+/// `ch5xx-metapac`'s `METADATA` cannot answer this. Its build script only
+/// fills the const when a chip feature is enabled, and a build-dependency is
+/// compiled with `metadata` alone, so the const is empty here.
+fn gpio_items(chip: &str) -> Vec<String> {
+    let version = register_version(chip, "gpio");
+    let path = data_root().join(format!("registers/gpio_{version}.yaml"));
+    register_names(&fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display())))
+}
+
+/// `PIN_ALTERNATE.PIN_INTX` selects which pair the shared flag bits follow.
+/// A die can bond the high pins and still have no such field.
+fn sys_has_pin_intx(chip: &str) -> bool {
+    let version = register_version(chip, "sys");
+    let path = data_root().join(format!("registers/sys_{version}.yaml"));
+    let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+    // The field lives in the `PIN_ALTERNATE` fieldset. Matching the name is
+    // enough: no other fieldset in these blocks reuses it.
+    text.lines().any(|line| line.trim() == "- name: PIN_INTX")
+}
+
+fn data_root() -> PathBuf {
+    PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../ch5xx-data/data")
+}
+
+/// The `version:` of the `kind` register block the chip's family selects.
+fn register_version(chip: &str, kind: &str) -> String {
+    let chip_path = data_root().join(format!("chips/{}.yaml", chip.to_ascii_uppercase()));
+    let family = family_file(
+        &fs::read_to_string(&chip_path).unwrap_or_else(|err| panic!("reading {}: {err}", chip_path.display())),
+    );
+    let family_path = data_root().join(format!("family/{family}"));
+    let text =
+        fs::read_to_string(&family_path).unwrap_or_else(|err| panic!("reading {}: {err}", family_path.display()));
+    version_of(&text, kind).unwrap_or_else(|| panic!("family {family} has no `{kind}` register block"))
+}
+
+/// The family file named by `include_peripherals`.
+fn family_file(chip_yaml: &str) -> String {
+    chip_yaml
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("- \"../family/")
+                .or_else(|| trimmed.strip_prefix("- '../family/"))
+                .and_then(|rest| rest.strip_suffix('"').or_else(|| rest.strip_suffix('\'')))
+        })
+        .expect("chip yaml has no include_peripherals family entry")
+        .to_string()
+}
+
+fn version_of(family_yaml: &str, kind: &str) -> Option<String> {
+    let lines: Vec<&str> = family_yaml.lines().collect();
+    lines.iter().enumerate().find_map(|(index, line)| {
+        if line.trim() != format!("kind: {kind}") {
+            return None;
+        }
+        // The version sits next to its kind, before the next register block.
+        // Reading past that boundary picks up the following block's version.
+        lines[index + 1..]
+            .iter()
+            .map(|candidate| candidate.trim())
+            .take_while(|candidate| !candidate.starts_with("- name:"))
+            .find_map(|candidate| candidate.strip_prefix("version: "))
+            .map(str::to_string)
+    })
+}
+
+/// Names of the registers in the first block of a register YAML file.
+///
+/// Fieldsets are skipped. Some files list them before the block and some after,
+/// so the scan follows the `block/` section instead of assuming an order.
+fn register_names(yaml: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut in_block = false;
+    let mut in_items = false;
+    for line in yaml.lines() {
+        if line.starts_with("block/") {
+            in_block = true;
+            in_items = false;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        if line.starts_with("fieldset/") || (!line.starts_with(' ') && !line.is_empty()) {
+            break;
+        }
+        if line.trim() == "items:" {
+            in_items = true;
+            continue;
+        }
+        if in_items {
+            if let Some(name) = line.trim().strip_prefix("- name: ") {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
 }
 
 /// Metadata names are free-form (`System_control`, `PWMx`); make them valid,
