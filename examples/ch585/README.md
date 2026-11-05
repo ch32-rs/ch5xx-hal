@@ -48,6 +48,7 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `spi_loopback` | Blocking SPI0 loopback; wire PA14 to PA15 |
 | `adc_temp` | Internal temperature sensor, no wiring |
 | `adc_pin` | Single conversion on PA4, corrected by the measured offset |
+| `pwm_out` | PWM4 on PA12, five duty steps at about 400 Hz |
 
 ## Notes
 
@@ -86,6 +87,12 @@ value stored in the chip's info flash.
 `adc_pin` reads PA4, channel 0. Tie the pin to ground or to 3.3 V; left open, the
 count floats. The log adds the offset measured once at start with the converter's
 input shorted.
+
+### PWM
+
+`pwm_out` drives PWM4 on PA12. The pin is not an on-board LED, so probe it: the
+frequency is about 400 Hz and the duty steps through 0, 64, 128, 192 and 255,
+one second each, logged over RTT. The shared remap moves PWM4 to PA6.
 
 ### UART
 
