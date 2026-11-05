@@ -21,7 +21,8 @@ code across chips with compatible peripherals.
 
 ## Features
 
-- `gpio`: input, output, flex pins, pulls, and drive strength.
+- `gpio`: input, output, flex pins, pulls, drive strength, and port-interrupt
+  waits for level and single-edge triggers.
 - `rcc`: HSI/HSE, dividers, PLL configuration, and clock reporting.
 - `uart`: blocking and interrupt-driven async UART0–UART3, typed pin remapping,
   split halves, exact and short reads, and `embedded-io`/`embedded-io-async`
@@ -33,8 +34,8 @@ Timer counter/PWM/capture and timer-local DMA drivers are experimental. They
 pass scoped detached CH585 tests but are not yet qualified for arbitrary bus
 loads, lossless streaming, or NFC transport.
 
-GPIO interrupts, I2C, SPI, ADC, USB, BLE, and a public RTC calendar/alarm API
-are not implemented yet.
+I2C, SPI, ADC, USB, BLE, and a public RTC calendar/alarm API are not
+implemented yet.
 
 ## Architecture
 

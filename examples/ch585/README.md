@@ -35,6 +35,7 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | --- | --- |
 | `blinky` | GPIO output and blocking delay; PB16/PB17 LEDs in opposite phase |
 | `gpio_in` | Active-low buttons S1/PB22 and S2/PB23 with pull-ups |
+| `gpio_async` | The same buttons through the port-B interrupt |
 | `defmt_rtt` | Logging over SEGGER RTT |
 | `uart_loopback` | Blocking UART0 internal loopback; no external wiring |
 | `uart_echo` | Async UART3 echo on PA4/PA5 at 115200 8N1, mirrored to RTT |
@@ -44,6 +45,13 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `timer_dma_async` | Timer IRQ binding, DMA waits, and cancellation |
 
 ## Notes
+
+### GPIO interrupts
+
+`gpio_async` waits for edges on S1 and S2. PB22/PB23 share flag bits 9:8 with
+PB8/PB9, and `gpio_async` selects the button pair. PB16–PB21 have no interrupt
+source. One pin watches one edge at a time, so a press and its release are two
+waits. Contact bounce logs several edges per press.
 
 ### UART
 
