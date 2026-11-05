@@ -5,20 +5,21 @@
 //! …) rather than a peripheral of its own. A pin is therefore identified by
 //! (port, bit) and the driver dispatches on the port letter.
 //!
-//! Per-port register set (CH585, offsets from `0x4000_1000`): interrupt enable,
-//! mode and flag for PA/PB, then `DIR`, `PIN`, `OUT`, `CLR`, `PU`, `PD_DRV` and
-//! `SET`. `CLR`/`SET` are write-1-to-act, so they are the atomic way to change
-//! one pin.
+//! Per-port register set, offsets from `0x4000_1000`: interrupt enable, mode and
+//! flag, then `DIR`, `PIN`, `OUT`, `CLR`, `PU` and `PD_DRV`. `CLR` is
+//! write-1-to-clear. `SET` is the write-1-to-set counterpart where the die has
+//! it; a die without it changes one output bit through `OUT`. Not every die bonds
+//! port B.
 //!
 //! Power-on state: every pin is a floating input.
 //!
 //! # Port interrupts
 //!
-//! There is no per-pin EXTI. Each port has one interrupt (`GPIO_A`, `GPIO_B`)
-//! and a 16-bit enable, mode and flag register, one bit per pin. [`Input`] waits
-//! on a pin through that shared line. With the `embassy` feature, `crate::init`
-//! claims both port vectors, the same way the time driver claims its counter, so
-//! a wait needs no separate binding.
+//! There is no per-pin EXTI. Each port has one interrupt (`GPIO_A`, and `GPIO_B`
+//! where the die bonds port B) and a 16-bit enable, mode and flag register, one
+//! bit per pin. [`Input`] waits on a pin through that shared line. With the
+//! `embassy` feature, `crate::init` claims the port vectors, the same way the time
+//! driver claims its counter, so a wait needs no separate binding.
 //!
 //! A pin is either level- or edge-sensitive, and `Px_OUT` selects which one:
 //! high/rising when the bit is set, low/falling when it is clear. Both edges of
@@ -26,10 +27,11 @@
 //! waiter re-enables it, because a level that is still present would otherwise
 //! re-enter the handler until the executor runs.
 //!
-//! On CH585 the flag registers only cover PA0–PA15 and PB0–PB15.
-//! `PB_INT_*[9:8]` follows `SYS.PIN_ALTERNATE.PIN_INTX`: clear selects PB8/PB9,
-//! set selects PB22/PB23. PB16–PB21 have no interrupt source. `PIN_CONFIG`
-//! `.PB16_8_SEL` is a separate select and is left untouched.
+//! The flag registers cover the first 16 pins of a port. Where
+//! `SYS.PIN_ALTERNATE.PIN_INTX` exists, `PB_INT_*[9:8]` follows it: clear selects
+//! PB8/PB9, set selects PB22/PB23, and PB16–PB21 have no source. A die without
+//! that field keeps the pair its reset value selects, so PB22/PB23 are not armed.
+//! `PIN_CONFIG.PB16_8_SEL` is a separate select and is left untouched.
 
 use core::convert::Infallible;
 use core::future::Future;
@@ -108,11 +110,13 @@ impl From<Level> for bool {
 
 /// Which physical port a pin lives on.
 ///
-/// The CH5xx exposes `PA` and `PB` as register groups, so this is the
-/// discriminator the driver switches on.
+/// The CH5xx exposes the ports as register groups inside the one GPIO block,
+/// so this is the discriminator the driver switches on. A die with no port B
+/// has no `B` variant: its PAC has no `PB_*` registers to name.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Port {
     A,
+    #[cfg(gpio_port_b)]
     B,
 }
 
@@ -174,9 +178,11 @@ pub(crate) trait SealedPin {
     #[inline]
     fn is_high(&self) -> bool {
         let n = self._pin() as usize;
+        let gpio = self.block();
         match self._port() {
-            Port::A => self.block().pa_pin().read().pa_pin(n),
-            Port::B => self.block().pb_pin().read().pb_pin(n),
+            Port::A => gpio.pa_pin().read().pa_pin(n),
+            #[cfg(gpio_port_b)]
+            Port::B => gpio.pb_pin().read().pb_pin(n),
         }
     }
 
@@ -184,19 +190,37 @@ pub(crate) trait SealedPin {
     #[inline]
     fn is_set_high(&self) -> bool {
         let n = self._pin() as usize;
+        let gpio = self.block();
         match self._port() {
-            Port::A => self.block().pa_out().read().pa_out(n),
-            Port::B => self.block().pb_out().read().pb_out(n),
+            Port::A => gpio.pa_out().read().pa_out(n),
+            #[cfg(gpio_port_b)]
+            Port::B => gpio.pb_out().read().pb_out(n),
         }
     }
 
-    /// Drive the pin high (write-1-to-set, so other pins are untouched).
+    /// Drive the pin high.
+    ///
+    /// `Px_SET` is write-1-to-set where the die has it. A die without that
+    /// register sets the one bit in `Px_OUT`; that read-modify-write can race
+    /// another port's output write, which `Px_SET` does not.
     #[inline]
     fn set_high(&self) {
         let n = self._pin() as usize;
+        let gpio = self.block();
         match self._port() {
-            Port::A => self.block().pa_set().write(|w| w.set_pa_set(n, true)),
-            Port::B => self.block().pb_set().write(|w| w.set_pb_set(n, true)),
+            Port::A => {
+                #[cfg(gpio_set)]
+                gpio.pa_set().write(|w| w.set_pa_set(n, true));
+                #[cfg(not(gpio_set))]
+                gpio.pa_out().modify(|w| w.set_pa_out(n, true));
+            }
+            #[cfg(gpio_port_b)]
+            Port::B => {
+                #[cfg(gpio_set)]
+                gpio.pb_set().write(|w| w.set_pb_set(n, true));
+                #[cfg(not(gpio_set))]
+                gpio.pb_out().modify(|w| w.set_pb_out(n, true));
+            }
         }
     }
 
@@ -204,9 +228,11 @@ pub(crate) trait SealedPin {
     #[inline]
     fn set_low(&self) {
         let n = self._pin() as usize;
+        let gpio = self.block();
         match self._port() {
-            Port::A => self.block().pa_clr().write(|w| w.set_pa_clr(n, true)),
-            Port::B => self.block().pb_clr().write(|w| w.set_pb_clr(n, true)),
+            Port::A => gpio.pa_clr().write(|w| w.set_pa_clr(n, true)),
+            #[cfg(gpio_port_b)]
+            Port::B => gpio.pb_clr().write(|w| w.set_pb_clr(n, true)),
         }
     }
 
@@ -214,9 +240,11 @@ pub(crate) trait SealedPin {
     #[inline]
     fn set_direction(&self, output: bool) {
         let n = self._pin() as usize;
+        let gpio = self.block();
         match self._port() {
-            Port::A => self.block().pa_dir().modify(|w| w.set_pa_dir(n, output)),
-            Port::B => self.block().pb_dir().modify(|w| w.set_pb_dir(n, output)),
+            Port::A => gpio.pa_dir().modify(|w| w.set_pa_dir(n, output)),
+            #[cfg(gpio_port_b)]
+            Port::B => gpio.pb_dir().modify(|w| w.set_pb_dir(n, output)),
         }
     }
 
@@ -224,19 +252,19 @@ pub(crate) trait SealedPin {
     #[inline]
     fn set_pull(&self, pull: Pull) {
         let n = self._pin() as usize;
+        let gpio = self.block();
         match self._port() {
-            Port::A => self.block().pa_pu().modify(|w| w.set_pa_pu(n, pull == Pull::Up)),
-            Port::B => self.block().pb_pu().modify(|w| w.set_pb_pu(n, pull == Pull::Up)),
-        }
-        match self._port() {
-            Port::A => self
-                .block()
-                .pa_pd_drv()
-                .modify(|w| w.set_pa_pd_drv(n, matches!(pull, Pull::Down))),
-            Port::B => self
-                .block()
-                .pb_pd_drv()
-                .modify(|w| w.set_pb_pd_drv(n, matches!(pull, Pull::Down))),
+            Port::A => {
+                gpio.pa_pu().modify(|w| w.set_pa_pu(n, pull == Pull::Up));
+                gpio.pa_pd_drv()
+                    .modify(|w| w.set_pa_pd_drv(n, matches!(pull, Pull::Down)));
+            }
+            #[cfg(gpio_port_b)]
+            Port::B => {
+                gpio.pb_pu().modify(|w| w.set_pb_pu(n, pull == Pull::Up));
+                gpio.pb_pd_drv()
+                    .modify(|w| w.set_pb_pd_drv(n, matches!(pull, Pull::Down)));
+            }
         }
     }
 
@@ -245,9 +273,11 @@ pub(crate) trait SealedPin {
     fn set_speed(&self, speed: Speed) {
         let n = self._pin() as usize;
         let high = speed == Speed::High;
+        let gpio = self.block();
         match self._port() {
-            Port::A => self.block().pa_pd_drv().modify(|w| w.set_pa_pd_drv(n, high)),
-            Port::B => self.block().pb_pd_drv().modify(|w| w.set_pb_pd_drv(n, high)),
+            Port::A => gpio.pa_pd_drv().modify(|w| w.set_pa_pd_drv(n, high)),
+            #[cfg(gpio_port_b)]
+            Port::B => gpio.pb_pd_drv().modify(|w| w.set_pb_pd_drv(n, high)),
         }
     }
 
@@ -260,12 +290,28 @@ pub(crate) trait SealedPin {
     /// change never reads back a write-1-to-clear register.
     #[inline]
     fn set_interrupt_polarity(&self, high: bool) {
+        // `Px_OUT` holds the polarity while the pad is an input. Writing the
+        // whole register would clobber every other pin's polarity, so the high
+        // polarity is a read-modify-write and the low one uses the
+        // write-1-to-clear register, which the vendor routine does too.
         let n = self._pin() as usize;
-        match (self._port(), high) {
-            (Port::A, true) => self.block().pa_out().modify(|w| w.set_pa_out(n, true)),
-            (Port::A, false) => self.block().pa_clr().write(|w| w.set_pa_clr(n, true)),
-            (Port::B, true) => self.block().pb_out().modify(|w| w.set_pb_out(n, true)),
-            (Port::B, false) => self.block().pb_clr().write(|w| w.set_pb_clr(n, true)),
+        let gpio = self.block();
+        match self._port() {
+            Port::A => {
+                if high {
+                    gpio.pa_out().modify(|w| w.set_pa_out(n, true));
+                } else {
+                    gpio.pa_clr().write(|w| w.set_pa_clr(n, true));
+                }
+            }
+            #[cfg(gpio_port_b)]
+            Port::B => {
+                if high {
+                    gpio.pb_out().modify(|w| w.set_pb_out(n, true));
+                } else {
+                    gpio.pb_clr().write(|w| w.set_pb_clr(n, true));
+                }
+            }
         }
     }
 }
@@ -289,8 +335,15 @@ foreach_pin!(
         impl SealedPin for peripherals::$pin_name {
             #[inline]
             fn _port(&self) -> Port {
-                // `$port_num` is 0 for A, 1 for B.
-                if $port_num == 0 { Port::A } else { Port::B }
+                // `$port_num` is 0 for A, 1 for B. A die without port B emits no
+                // pin with a non-zero number, so the second arm is absent.
+                match $port_num {
+                    0 => Port::A,
+                    #[cfg(gpio_port_b)]
+                    _ => Port::B,
+                    #[cfg(not(gpio_port_b))]
+                    _ => unreachable!(),
+                }
             }
             #[inline]
             fn _pin(&self) -> u8 {
@@ -548,16 +601,18 @@ pub(crate) unsafe fn init(_cs: CriticalSection) {
     // comes out of reset as a floating input. Kept so `init` has the same shape
     // as ch32-hal's. Port interrupts stay masked until a wait arms its own pin.
     //
-    // The two port vectors have no other owner, so the embassy build claims them
+    // The port vectors have no other owner, so the embassy build claims them
     // here. A pin's enable bit stays clear until a wait arms it, and a disabled
-    // source never asserts the line.
+    // source never asserts the line. A die with one port has `GPIO_A` only.
     #[cfg(feature = "embassy")]
     {
         use crate::interrupt::InterruptExt;
         pac::Interrupt::GPIO_A.set_priority(PORT_INTERRUPT_PRIORITY);
+        #[cfg(gpio_port_b)]
         pac::Interrupt::GPIO_B.set_priority(PORT_INTERRUPT_PRIORITY);
         unsafe {
             pac::Interrupt::GPIO_A.enable();
+            #[cfg(gpio_port_b)]
             pac::Interrupt::GPIO_B.enable();
         }
     }
@@ -583,6 +638,7 @@ mod irq {
         on_port(Port::A);
     }
 
+    #[cfg(gpio_port_b)]
     #[crate::interrupt]
     fn GPIO_B() {
         on_port(Port::B);
@@ -605,7 +661,11 @@ impl PortWakers {
 }
 
 #[cfg(feature = "embassy")]
-static PORT_WAKERS: [PortWakers; 2] = [PortWakers::new(), PortWakers::new()];
+static PORT_WAKERS: [PortWakers; PORT_COUNT] = [const { PortWakers::new() }; PORT_COUNT];
+
+/// One waker table per port the die actually bonds.
+#[cfg(feature = "embassy")]
+const PORT_COUNT: usize = if cfg!(gpio_port_b) { 2 } else { 1 };
 
 /// Width of `Px_INT_EN`, `Px_INT_MODE` and `Px_INT_IF`.
 const INT_BITS: usize = 16;
@@ -623,29 +683,46 @@ struct InterruptLine {
 
 /// The interrupt flag bit for `pin`, or `None` when the pad has no source.
 ///
-/// CH585 documents one alias: `PB_INT_*[9:8]` selects PB8/PB9 or PB22/PB23
-/// through `PIN_ALTERNATE.PIN_INTX`. PB16–PB21 are absent from every interrupt
-/// register. `PIN_CONFIG.PB16_8_SEL` is a different select and is not touched.
+/// The vendor interrupt routine folds PB22/PB23 onto bits 8/9 and leaves every
+/// other pad on its own bit, so a pad past the 16 flag bits has no source.
+/// `PIN_INTX` chooses which pair bits 9:8 follow, and only a die that has the
+/// field can aim it at the high pair. `PIN_CONFIG.PB16_8_SEL` is a different
+/// select and is not touched.
 fn interrupt_line(port: Port, pin: u8) -> Option<InterruptLine> {
-    match (port, pin) {
-        (Port::A, 0..=15) => Some(InterruptLine {
-            port,
-            bit: pin,
-            remap: false,
-        }),
-        (Port::B, 0..=15) => Some(InterruptLine {
-            port,
-            bit: pin,
-            remap: false,
-        }),
-        // Vendor `GPIOB_ITModeCfg` shifts these two down by 14, onto bits 8 and 9.
-        (Port::B, 22) | (Port::B, 23) => Some(InterruptLine {
-            port,
-            bit: pin - 14,
-            remap: true,
-        }),
-        _ => None,
-    }
+    let (bit, remap) = match (port, pin) {
+        (_, 0..=15) => (pin, false),
+        #[cfg(all(gpio_port_b, gpio_pin_intx))]
+        (Port::B, 22 | 23) => (pin - 14, true),
+        _ => return None,
+    };
+    Some(InterruptLine { port, bit, remap })
+}
+
+/// Run `$body` against one port's interrupt mode, flag and enable registers.
+///
+/// Each register is touched once. A die with no port B has no `B` arm. The two
+/// ports have different register types, so the body is expanded per port rather
+/// than passed as a closure generic over them.
+macro_rules! with_port_irq {
+    ($port:expr, |$mode:ident, $flag:ident, $enable:ident| $body:expr) => {
+        match $port {
+            Port::A => {
+                let gpio = pac::GPIO;
+                let $mode = gpio.pa_int_mode();
+                let $flag = gpio.pa_int_if();
+                let $enable = gpio.pa_int_en();
+                $body
+            }
+            #[cfg(gpio_port_b)]
+            Port::B => {
+                let gpio = pac::GPIO;
+                let $mode = gpio.pb_int_mode();
+                let $flag = gpio.pb_int_if();
+                let $enable = gpio.pb_int_en();
+                $body
+            }
+        }
+    };
 }
 
 fn level_already_met(pin: &AnyPin, trigger: InterruptTrigger) -> bool {
@@ -668,43 +745,36 @@ fn arm(pin: &AnyPin, line: &InterruptLine, trigger: InterruptTrigger) {
         InterruptTrigger::FallingEdge => (true, false),
         InterruptTrigger::RisingEdge => (true, true),
     };
-    let bit = line.bit as usize;
-    let gpio = pac::GPIO;
-
     critical_section::with(|_| {
-        if matches!(line.port, Port::B) && matches!(line.bit, 8 | 9) {
+        // Only the alias pair shares its flag bits, so only that pair moves the
+        // select. A chip without `PIN_INTX` never emits the high pair, so its
+        // flag bits keep the pair the reset value selects.
+        #[cfg(gpio_pin_intx)]
+        if line.remap || (matches!(line.port, Port::B) && matches!(line.bit, 8 | 9)) {
             pac::SYS.pin_alternate().modify(|w| w.set_pin_intx(line.remap));
         }
         pin.set_interrupt_polarity(high);
-        match line.port {
-            Port::A => {
-                gpio.pa_int_mode().modify(|w| set_bit16(w, bit, edge));
-                gpio.pa_int_if().write_value(pac::gpio::regs::PaIntIf(1 << bit));
-                gpio.pa_int_en().modify(|w| set_bit16(w, bit, true));
-            }
-            Port::B => {
-                gpio.pb_int_mode().modify(|w| set_bit16(w, bit, edge));
-                gpio.pb_int_if().write_value(pac::gpio::regs::PbIntIf(1 << bit));
-                gpio.pb_int_en().modify(|w| set_bit16(w, bit, true));
-            }
-        }
+        with_port_irq!(line.port, |mode, flag, enable| {
+            mode.modify(|w| set_bit16(w, line.bit, edge));
+            flag.write(|w| w.set_half(1 << line.bit));
+            enable.modify(|w| set_bit16(w, line.bit, true));
+        });
     });
 }
 
 fn disarm(line: &InterruptLine) {
-    let bit = line.bit as usize;
-    let gpio = pac::GPIO;
-    critical_section::with(|_| match line.port {
-        Port::A => gpio.pa_int_en().modify(|w| set_bit16(w, bit, false)),
-        Port::B => gpio.pb_int_en().modify(|w| set_bit16(w, bit, false)),
+    critical_section::with(|_| {
+        with_port_irq!(line.port, |_mode, _flag, enable| {
+            enable.modify(|w| set_bit16(w, line.bit, false));
+        });
     });
 }
 
-/// Set or clear one bit of a 16-bit interrupt register.
+/// Set or clear one bit of a 16-bit interrupt register value.
 ///
 /// The PAC exposes these registers as one field covering the whole halfword, so
 /// there is no per-pin setter to call.
-fn set_bit16<T: BitHalf>(reg: &mut T, bit: usize, value: bool) {
+fn set_bit16(reg: &mut impl HalfWord, bit: u8, value: bool) {
     let mut raw = reg.half();
     if value {
         raw |= 1 << bit;
@@ -714,62 +784,41 @@ fn set_bit16<T: BitHalf>(reg: &mut T, bit: usize, value: bool) {
     reg.set_half(raw);
 }
 
-/// A 16-bit PAC register value that stores its bits in `.0`.
-trait BitHalf {
+trait HalfWord {
     fn half(&self) -> u16;
     fn set_half(&mut self, value: u16);
 }
 
-impl BitHalf for pac::gpio::regs::PaIntEn {
-    fn half(&self) -> u16 {
-        self.0
-    }
-    fn set_half(&mut self, value: u16) {
-        self.0 = value;
-    }
+macro_rules! impl_half_word {
+    ($($reg:ident),*) => {$( impl_half_word!(@one $reg); )*};
+    (@one $reg:ident) => {
+        impl HalfWord for pac::gpio::regs::$reg {
+            fn half(&self) -> u16 {
+                self.0
+            }
+            fn set_half(&mut self, value: u16) {
+                self.0 = value;
+            }
+        }
+    };
 }
-impl BitHalf for pac::gpio::regs::PbIntEn {
-    fn half(&self) -> u16 {
-        self.0
-    }
-    fn set_half(&mut self, value: u16) {
-        self.0 = value;
-    }
-}
-impl BitHalf for pac::gpio::regs::PaIntMode {
-    fn half(&self) -> u16 {
-        self.0
-    }
-    fn set_half(&mut self, value: u16) {
-        self.0 = value;
-    }
-}
-impl BitHalf for pac::gpio::regs::PbIntMode {
-    fn half(&self) -> u16 {
-        self.0
-    }
-    fn set_half(&mut self, value: u16) {
-        self.0 = value;
-    }
-}
+
+// Mode, flag and enable share the halfword layout on every covered die.
+impl_half_word!(PaIntMode, PaIntIf, PaIntEn);
+#[cfg(gpio_port_b)]
+impl_half_word!(PbIntMode, PbIntIf, PbIntEn);
 
 #[cfg(feature = "embassy")]
 fn on_port(port: Port) {
-    let gpio = pac::GPIO;
-    let (enabled, flags) = match port {
-        Port::A => (gpio.pa_int_en().read().0, gpio.pa_int_if().read().0),
-        Port::B => (gpio.pb_int_en().read().0, gpio.pb_int_if().read().0),
-    };
     // Only pins this driver armed. A flag left set by something else must not
-    // turn its enable bit back off.
-    let fired = enabled & flags;
+    // turn its enable bit back off. Enable and flag are read once each.
+    let fired = with_port_irq!(port, |_mode, flag, enable| enable.read().half() & flag.read().half());
     if fired == 0 {
         return;
     }
-    match port {
-        Port::A => gpio.pa_int_en().modify(|w| w.0 &= !fired),
-        Port::B => gpio.pb_int_en().modify(|w| w.0 &= !fired),
-    }
+    with_port_irq!(port, |_mode, _flag, enable| {
+        enable.modify(|w| w.set_half(w.half() & !fired));
+    });
 
     let wakers = &PORT_WAKERS[port as usize];
     let mut pending = fired;
@@ -823,18 +872,15 @@ impl Future for PinWait<'_> {
 
         // The handler masks the pin and leaves the flag set. A flag that is set
         // while the pin is masked belongs to this wait.
-        let (enabled, flags) = match line.port {
-            Port::A => (pac::GPIO.pa_int_en().read().0, pac::GPIO.pa_int_if().read().0),
-            Port::B => (pac::GPIO.pb_int_en().read().0, pac::GPIO.pb_int_if().read().0),
-        };
         let mask = 1u16 << line.bit;
+        let (enabled, flags) = with_port_irq!(line.port, |_mode, flag, enable| (
+            enable.read().half(),
+            flag.read().half()
+        ));
         if flags & mask != 0 && enabled & mask == 0 {
             // Acknowledge before returning. A level that is still present sets
             // the flag again, but the pin stays masked until the next wait.
-            match line.port {
-                Port::A => pac::GPIO.pa_int_if().write_value(pac::gpio::regs::PaIntIf(mask)),
-                Port::B => pac::GPIO.pb_int_if().write_value(pac::gpio::regs::PbIntIf(mask)),
-            }
+            with_port_irq!(line.port, |_mode, flag, _enable| flag.write(|w| w.set_half(mask)));
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -845,6 +891,7 @@ impl Future for PinWait<'_> {
 fn port_letter(port: Port) -> char {
     match port {
         Port::A => 'A',
+        #[cfg(gpio_port_b)]
         Port::B => 'B',
     }
 }
