@@ -43,6 +43,8 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `embassy_time` | Two tasks using the SysTick time driver |
 | `embassy_time_tmr` | Two tasks using a TMR time driver |
 | `timer_dma_async` | Timer IRQ binding, DMA waits, and cancellation |
+| `i2c_scan` | Blocking I2C0 scan of PB13/PB12; reports every address that ACKs |
+| `i2c_oled` | SSD1306 at `0x3C`: bouncing circle and text via embedded-graphics |
 
 ## Notes
 
@@ -52,6 +54,17 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 PB8/PB9, and `gpio_async` selects the button pair. PB16–PB21 have no interrupt
 source. One pin watches one edge at a time, so a press and its release are two
 waits. Contact bounce logs several edges per press.
+
+### I2C
+
+`i2c_scan` runs I2C0 at 100 kHz on PB13 (SCL) and PB12 (SDA). Both lines need an
+external pull-up. A device that acknowledges has its 7-bit address logged over
+RTT; a bus with nothing on it logs no address. The remapped pair is PB21/PB20,
+selected by constructing the driver with remap `1`.
+
+`i2c_oled` drives the SSD1306 found at `0x3C` at 400 kHz. A white banner carries
+the title and a filled circle bounces over the rest of the panel. A 128x32 panel
+needs a different multiplex ratio.
 
 ### UART
 
