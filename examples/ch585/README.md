@@ -34,7 +34,7 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | Binary | Description |
 | --- | --- |
 | `blinky` | GPIO output and blocking delay; PB16/PB17 LEDs in opposite phase |
-| `gpio_in` | Active-low buttons S1/PB22 and S2/PB23 with pull-ups |
+| `gpio_in` | Active-low buttons S1/PB22 and S2/PB23; PB16/PB17 follow S1 |
 | `gpio_async` | The same buttons through the port-B interrupt |
 | `defmt_rtt` | Logging over SEGGER RTT |
 | `uart_loopback` | Blocking UART0 internal loopback; no external wiring |
