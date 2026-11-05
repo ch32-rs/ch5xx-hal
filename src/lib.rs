@@ -96,6 +96,8 @@ pub mod delay;
 pub mod dma;
 pub mod gpio;
 pub mod i2c;
+#[cfg(pwmx_ch585)]
+pub mod pwm;
 #[cfg(spi_ch585)]
 pub mod spi;
 pub mod timer;

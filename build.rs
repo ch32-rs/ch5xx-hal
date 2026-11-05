@@ -78,6 +78,11 @@ fn main() {
     if register_version_opt(&chip_name, "adc").as_deref() == Some("ch585") {
         println!("cargo:rustc-cfg=adc_ch585");
     }
+    // PWMx is one block for PWM4-PWM11. The CH573 and CH572 layouts differ, so
+    // the driver only compiles where the family selects the CH585 version.
+    if register_version_opt(&chip_name, "pwmx").as_deref() == Some("ch585") {
+        println!("cargo:rustc-cfg=pwmx_ch585");
+    }
 
     // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
     // the singletons so `init()` cannot hand the same peripheral to a second
