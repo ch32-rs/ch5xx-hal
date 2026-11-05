@@ -46,6 +46,8 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `i2c_scan` | Blocking I2C0 scan of PB13/PB12; reports every address that ACKs |
 | `i2c_oled` | SSD1306 at `0x3C`: bouncing circle and text via embedded-graphics |
 | `spi_loopback` | Blocking SPI0 loopback; wire PA14 to PA15 |
+| `adc_temp` | Internal temperature sensor, no wiring |
+| `adc_pin` | Single conversion on PA4, corrected by the measured offset |
 
 ## Notes
 
@@ -74,6 +76,16 @@ Join PA14 to PA15. It exchanges 10 bytes in mode 0, then 40 bytes in mode 3, and
 logs whether each one comes back unchanged. PA12 is driven as the chip select
 even though the loop needs none. The remapped set is PB13/PB14/PB15, selected by
 constructing the driver with remap `1`.
+
+### ADC
+
+`adc_temp` reads the internal temperature sensor and logs the raw count and the
+temperature in Celsius. It needs no wiring. The conversion uses the calibration
+value stored in the chip's info flash.
+
+`adc_pin` reads PA4, channel 0. Tie the pin to ground or to 3.3 V; left open, the
+count floats. The log adds the offset measured once at start with the converter's
+input shorted.
 
 ### UART
 
