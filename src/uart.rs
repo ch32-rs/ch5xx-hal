@@ -151,6 +151,8 @@ pub enum ConfigError {
     BaudrateTooLow,
     /// `DL` would round to zero.
     BaudrateTooHigh,
+    /// The nearest divider is more than two percent off the requested rate.
+    Baudrate,
 }
 
 impl fmt::Display for Error {
@@ -1086,6 +1088,14 @@ fn configure<T: Instance, const REMAP: u8>(config: &Config, enable_tx: bool) -> 
     }
     if dl > u16::MAX as u64 {
         return Err(ConfigError::BaudrateTooLow);
+    }
+    // The realised rate is Fsys / (8 * DL). More than two percent off is
+    // refused rather than programmed: 115200 at the 5.333 MHz reset clock lands
+    // at about 111.1 kbaud, which an external receiver will not accept.
+    let actual = T::frequency().0 as u64 / (8 * dl);
+    let error = actual.abs_diff(baud);
+    if error * 100 > baud * 2 {
+        return Err(ConfigError::Baudrate);
     }
 
     critical_section::with(|_| unsafe { T::set_remap(REMAP != 0) });
