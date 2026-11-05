@@ -31,6 +31,8 @@ code across chips with compatible peripherals.
   pin pairs and `embedded-hal` `I2c`.
 - `spi`: blocking SPI0/SPI1 master in mode 0 and mode 3, with `embedded-hal`
   `SpiBus`. SPI0 has a remapped pin set; SPI1 does not.
+- `adc`: blocking single conversions on the CH585 layout, with the internal
+  temperature sensor and the divided battery channel.
 - `delay`: `embedded-hal` `DelayNs` using SysTick or the Embassy timebase.
 - Embassy time driver on SysTick or TMR0–TMR3, plus typed interrupt bindings.
 
@@ -38,9 +40,9 @@ Timer counter/PWM/capture and timer-local DMA drivers are experimental. They
 pass scoped detached CH585 tests but are not yet qualified for arbitrary bus
 loads, lossless streaming, or NFC transport.
 
-ADC, USB, BLE, and a public RTC calendar/alarm API are not implemented yet.
-The I2C and SPI drivers are blocking only; async transfers, I2C bus recovery and
-SPI DMA are not.
+USB, BLE, and a public RTC calendar/alarm API are not implemented yet. The
+I2C, SPI and ADC drivers are blocking only; async transfers, I2C bus recovery,
+SPI DMA and ADC scan or DMA are not.
 
 ## Architecture
 
