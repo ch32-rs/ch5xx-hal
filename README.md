@@ -27,6 +27,8 @@ code across chips with compatible peripherals.
 - `uart`: blocking and interrupt-driven async UART0–UART3, typed pin remapping,
   split halves, exact and short reads, and `embedded-io`/`embedded-io-async`
   traits.
+- `i2c`: blocking I2C0 master at up to 400 kHz, with the default and remapped
+  pin pairs and `embedded-hal` `I2c`.
 - `delay`: `embedded-hal` `DelayNs` using SysTick or the Embassy timebase.
 - Embassy time driver on SysTick or TMR0–TMR3, plus typed interrupt bindings.
 
@@ -34,8 +36,8 @@ Timer counter/PWM/capture and timer-local DMA drivers are experimental. They
 pass scoped detached CH585 tests but are not yet qualified for arbitrary bus
 loads, lossless streaming, or NFC transport.
 
-I2C, SPI, ADC, USB, BLE, and a public RTC calendar/alarm API are not
-implemented yet.
+SPI, ADC, USB, BLE, and a public RTC calendar/alarm API are not implemented
+yet. The I2C driver is blocking only; async transfers and bus recovery are not.
 
 ## Architecture
 
