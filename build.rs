@@ -73,6 +73,11 @@ fn main() {
         "ch585" | "ch583" => println!("cargo:rustc-cfg=spi_ch585"),
         _ => {}
     }
+    // The ADC block is not one layout either, and CH572 has none. The driver
+    // programs the CH585 field names, so any other version does not compile it.
+    if register_version_opt(&chip_name, "adc").as_deref() == Some("ch585") {
+        println!("cargo:rustc-cfg=adc_ch585");
+    }
 
     // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
     // the singletons so `init()` cannot hand the same peripheral to a second
@@ -230,6 +235,11 @@ fn data_root() -> PathBuf {
 
 /// The `version:` of the `kind` register block the chip's family selects.
 fn register_version(chip: &str, kind: &str) -> String {
+    register_version_opt(chip, kind).unwrap_or_else(|| panic!("family has no `{kind}` register block"))
+}
+
+/// The `version:` of the `kind` register block, when the family has one.
+fn register_version_opt(chip: &str, kind: &str) -> Option<String> {
     let chip_path = data_root().join(format!("chips/{}.yaml", chip.to_ascii_uppercase()));
     let family = family_file(
         &fs::read_to_string(&chip_path).unwrap_or_else(|err| panic!("reading {}: {err}", chip_path.display())),
@@ -237,7 +247,7 @@ fn register_version(chip: &str, kind: &str) -> String {
     let family_path = data_root().join(format!("family/{family}"));
     let text =
         fs::read_to_string(&family_path).unwrap_or_else(|err| panic!("reading {}: {err}", family_path.display()));
-    version_of(&text, kind).unwrap_or_else(|| panic!("family {family} has no `{kind}` register block"))
+    version_of(&text, kind)
 }
 
 /// The family file named by `include_peripherals`.
