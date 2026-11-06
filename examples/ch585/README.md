@@ -53,6 +53,7 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `rtc_oled` | SSD1306 clock: date, `HH:MM:SS`, and a bar that fills each minute |
 | `watchdog` | Window watchdog overflow with reset disabled, plus the battery detector |
 | `usb_cdc_echo` | CDC ACM serial device on PB11/PB10; echoes each received packet |
+| `usbhs_cdc_echo` | High-speed CDC ACM device on PB13/PB12 |
 
 ## Notes
 
@@ -131,6 +132,12 @@ exact packet `PING` returns `PONG`; `PATTERN <n>` returns `n`
 bytes counting modulo 256. Enumeration, binary transfers from 1 through 65536
 bytes, packet-size boundaries, and closing and reopening the serial port have
 been board-tested.
+
+`usbhs_cdc_echo` instead uses P4, the board's TYPE-C HS-USB connector: PB13 is
+D+ and PB12 is D-. It selects the 62.4 MHz HSE PLL, which requires the 32 MHz
+crystal, and uses 512-byte bulk packets. It supports the same echo, `PING`, and
+`PATTERN <n>` commands. Enumeration at 480 Mb/s, binary transfers from 1 through
+65536 bytes, and closing and reopening the serial port have been board-tested.
 
 ### UART
 
