@@ -35,6 +35,12 @@ code across chips with compatible peripherals.
   temperature sensor and the divided battery channel.
 - `pwm`: PWM4-PWM11 on the CH585 layout, with a shared clock and cycle and
   per-channel duty.
+- `rtc`: calendar, a one-shot alarm and an interval timer on the CH585 and
+  CH573 counter layouts. The calendar covers 2020 through 2064-11-08.
+- `watchdog`: the window watchdog, a software reset, the latched reset cause,
+  and the battery-voltage detector on the CH585 layout.
+- `usb`: USBFS full-speed device support through `embassy-usb-driver`, with
+  endpoints 0–4 and packets up to 64 bytes on the CH585 layout.
 - `delay`: `embedded-hal` `DelayNs` using SysTick or the Embassy timebase.
 - Embassy time driver on SysTick or TMR0–TMR3, plus typed interrupt bindings.
 
@@ -42,9 +48,11 @@ Timer counter/PWM/capture and timer-local DMA drivers are experimental. They
 pass scoped detached CH585 tests but are not yet qualified for arbitrary bus
 loads, lossless streaming, or NFC transport.
 
-USB, BLE, and a public RTC calendar/alarm API are not implemented yet. The
-I2C, SPI and ADC drivers are blocking only; async transfers, I2C bus recovery,
-SPI DMA and ADC scan or DMA are not.
+USBHS, USB host mode, USBFS endpoints 5–7, and BLE are not implemented yet.
+The USBFS driver and CDC example compile but have not been exercised on
+hardware. The I2C, SPI and ADC drivers are blocking only; async transfers, I2C
+bus recovery, SPI DMA and ADC scan or DMA are not. Sleep and wake-up are not
+implemented either.
 
 ## Architecture
 

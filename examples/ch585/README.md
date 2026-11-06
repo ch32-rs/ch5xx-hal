@@ -49,6 +49,10 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `adc_temp` | Internal temperature sensor, no wiring |
 | `adc_pin` | Single conversion on PA4, corrected by the measured offset |
 | `pwm_out` | PWM4 on PA12, five duty steps at about 400 Hz |
+| `rtc_calendar` | Set the real-time clock, read it back, then check the alarm and timer |
+| `rtc_oled` | SSD1306 clock: date, `HH:MM:SS`, and a bar that fills each minute |
+| `watchdog` | Window watchdog overflow with reset disabled, plus the battery detector |
+| `usb_cdc_echo` | CDC ACM serial device on PB11/PB10; echoes each received packet |
 
 ## Notes
 
@@ -93,6 +97,37 @@ input shorted.
 `pwm_out` drives PWM4 on PA12. The pin is not an on-board LED, so probe it: the
 frequency is about 400 Hz and the duty steps through 0, 64, 128, 192 and 255,
 one second each, logged over RTT. The shared remap moves PWM4 to PA6.
+
+### RTC
+
+`rtc_calendar` needs no wiring. It loads 2026-11-06 12:00:00, logs the calendar
+four times one second apart, then sets an alarm one second ahead and starts the
+one-second interval timer. The seconds should step 0, 1, 2, 3 and the last line
+should report both the alarm and the timer pending. The counter runs from the
+internal 32 kHz oscillator and is not cleared by a reset.
+
+`rtc_oled` uses the same panel as `i2c_oled`: SSD1306 at `0x3C` on PB13/PB12,
+with external pull-ups. It loads 12:00:00 and redraws when the RTC second
+changes. The date is on the top line, the time under it, and a bar along the
+bottom fills across the minute.
+
+### Watchdog
+
+`watchdog` needs no wiring and does not reset the board: overflow reset stays
+off. It logs the latched reset cause, one battery-detector sample at the 2.3 V
+threshold, then the overflow flag just after a feed, after four seconds, and
+after a second feed. Expect no overflow, then an overflow, then none again. A
+USB-powered board should not report a low battery.
+
+### USB
+
+`usb_cdc_echo` uses the board's USB device connector: PB11 is D+ and PB10 is
+D-. Connect that connector to a USB host; the WCH-Link remains attached only
+for flashing and RTT. The 78 MHz HSI PLL supplies the clock, so no crystal is
+needed. The host should enumerate a CDC ACM serial port. Opening it and sending
+data echoes each packet of up to 64 bytes and logs its length over RTT. This
+example has been compile-checked, but enumeration and data transfer have not
+been board-tested.
 
 ### UART
 
