@@ -7,8 +7,8 @@
 //! address, which is how the vendor code programs it.
 //!
 //! This driver covers endpoint 0 and endpoints 1 to 4. Endpoint 4 has no DMA
-//! address of its own; its buffer sits one packet after endpoint 0's. Endpoints
-//! 5 to 7 and the host port are not implemented.
+//! address of its own; its OUT and IN buffers sit one and two packets after
+//! endpoint 0's. Endpoints 5 to 7 and the host port are not implemented.
 //!
 //! `INT_BUSY` makes the serial engine answer NAK while a transfer completion is
 //! pending. The handler clears that flag and NAKs the endpoint, so no new packet
@@ -20,7 +20,8 @@
 //! use `AUTO_TOG`.
 //!
 //! The register block is the CH585 one (CH572, CH581, CH584, CH585, CH595).
-//! This driver has not yet been run on a board. USBHS is a different peripheral.
+//! CH585 control and CDC bulk transfers have been run on a board; EP4 and
+//! suspend/resume have not. USBHS is a different peripheral.
 
 use core::future::poll_fn;
 use core::marker::PhantomData;
@@ -195,26 +196,30 @@ impl Buffer {
     }
 }
 
-/// Endpoint 0's buffer, then endpoint 4's. Endpoint 4 has no DMA register and
-/// uses the packet after endpoint 0's, so the two must stay adjacent.
+/// Endpoint 0's buffer, then endpoint 4's OUT and IN buffers. Endpoint 4 has
+/// no DMA register and uses the two packets after endpoint 0's, so all three
+/// must stay adjacent.
 #[repr(C, align(4))]
 struct Ep0Buffers {
     control: Buffer,
-    ep4: Buffer,
+    ep4_out: Buffer,
+    ep4_in: Buffer,
 }
 
 static mut EP0_BUFFERS: Ep0Buffers = Ep0Buffers {
     control: Buffer::new(),
-    ep4: Buffer::new(),
+    ep4_out: Buffer::new(),
+    ep4_in: Buffer::new(),
 };
 static mut EP_BUFFER: [Buffer; 4] = [const { Buffer::new() }; 4];
 
-fn buffer(index: usize) -> &'static mut Buffer {
+fn buffer(index: usize, direction: Direction) -> &'static mut Buffer {
     unsafe {
-        match index {
-            0 => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.control),
-            4 => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.ep4),
-            i => &mut *core::ptr::addr_of_mut!(EP_BUFFER[i]),
+        match (index, direction) {
+            (0, _) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.control),
+            (4, Direction::Out) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.ep4_out),
+            (4, Direction::In) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.ep4_in),
+            (i, _) => &mut *core::ptr::addr_of_mut!(EP_BUFFER[i]),
         }
     }
 }
@@ -363,7 +368,7 @@ impl<'d, T: Instance> driver::Driver<'d> for Driver<'d, T> {
             "usb control packet larger than 64 bytes"
         );
         let regs = T::regs();
-        let control = buffer(0);
+        let control = buffer(0, Direction::Out);
         regs.uep0_dma().write(|w| w.set_uep0_dma(control.dma_address()));
         regs.uep0_t_len().write(|w| w.set_uep0_t_len(0));
         // Answer SETUP, hold everything else.
@@ -371,7 +376,10 @@ impl<'d, T: Instance> driver::Driver<'d> for Driver<'d, T> {
         set_response::<T>(0, Direction::In, Response::Nak);
 
         (
-            Bus { _phantom: PhantomData },
+            Bus {
+                _phantom: PhantomData,
+                inited: false,
+            },
             ControlPipe {
                 max_packet_size: control_max_packet_size as usize,
                 _phantom: PhantomData,
@@ -383,6 +391,7 @@ impl<'d, T: Instance> driver::Driver<'d> for Driver<'d, T> {
 /// Whole-bus control. Owned by the USB device task.
 pub struct Bus<'d, T: Instance> {
     _phantom: PhantomData<&'d mut T>,
+    inited: bool,
 }
 
 impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
@@ -421,6 +430,14 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
     }
 
     async fn poll(&mut self) -> Event {
+        // This chip has no VBUS-detection input in the USBFS block. Treat the
+        // bus-powered device as powered on the first poll: embassy-usb starts
+        // in `Unpowered` and only calls `enable` after this event.
+        if !self.inited {
+            self.inited = true;
+            return Event::PowerDetected;
+        }
+
         poll_fn(|cx| {
             BUS_WAKER.register(cx.waker());
             if IRQ_RESET.swap(false, Ordering::Relaxed) {
@@ -532,7 +549,7 @@ impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
         .await;
 
         let mut packet = [0u8; 8];
-        buffer(0).read(&mut packet);
+        buffer(0, Direction::Out).read(&mut packet);
         STATE.out_done[0].store(false, Ordering::Relaxed);
         // SETUP is DATA0, so the data stage starts at DATA1 in both directions.
         set_toggle::<T>(0, Direction::In, true);
@@ -563,7 +580,7 @@ impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
 
         let len = STATE.out_len[0].load(Ordering::Relaxed) as usize;
         let len = len.min(buf.len());
-        buffer(0).read(&mut buf[..len]);
+        buffer(0, Direction::Out).read(&mut buf[..len]);
         flip_toggle::<T>(0, Direction::Out);
         Ok(len)
     }
@@ -573,7 +590,7 @@ impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
             return Err(EndpointError::BufferOverflow);
         }
         STATE.in_done[0].store(false, Ordering::Relaxed);
-        buffer(0).write(data);
+        buffer(0, Direction::In).write(data);
         compiler_fence(Ordering::SeqCst);
         T::regs().uep0_t_len().write(|w| w.set_uep0_t_len(data.len() as u8));
         set_response::<T>(0, Direction::In, Response::Ack);
@@ -662,7 +679,7 @@ impl<'d, T: Instance> driver::EndpointOut for Endpoint<'d, T, Out> {
 
         let len = STATE.out_len[index].load(Ordering::Relaxed) as usize;
         let len = len.min(buf.len()).min(self.info.max_packet_size as usize);
-        buffer(index).read(&mut buf[..len]);
+        buffer(index, Direction::Out).read(&mut buf[..len]);
         Ok(len)
     }
 }
@@ -677,7 +694,7 @@ impl<'d, T: Instance> driver::EndpointIn for Endpoint<'d, T, In> {
             return Err(EndpointError::BufferOverflow);
         }
         STATE.in_done[index].store(false, Ordering::Relaxed);
-        buffer(index).write(buf);
+        buffer(index, Direction::In).write(buf);
         compiler_fence(Ordering::SeqCst);
         set_tx_len::<T>(index, buf.len() as u8);
         set_response::<T>(index, Direction::In, Response::Ack);
@@ -798,7 +815,7 @@ fn set_tx_len<T: Instance>(index: usize, len: u8) {
 
 fn enable_in<T: Instance>(index: usize) {
     let regs = T::regs();
-    let dma = buffer(index).dma_address();
+    let dma = buffer(index, Direction::In).dma_address();
     match index {
         1 => {
             regs.uep1_dma().write(|w| w.set_uep1_dma(dma));
@@ -824,7 +841,7 @@ fn enable_in<T: Instance>(index: usize) {
 
 fn enable_out<T: Instance>(index: usize) {
     let regs = T::regs();
-    let dma = buffer(index).dma_address();
+    let dma = buffer(index, Direction::Out).dma_address();
     match index {
         1 => {
             regs.uep1_dma().write(|w| w.set_uep1_dma(dma));
