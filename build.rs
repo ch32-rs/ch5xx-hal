@@ -102,6 +102,12 @@ fn main() {
         Some("ch585" | "ch583" | "ch592" | "ch595" | "ch572") => println!("cargo:rustc-cfg=reset_status"),
         _ => {}
     }
+    // USBFS is the WCH full-speed device controller. USBHS is a separate block
+    // and is not this driver.
+    if register_version_opt(&chip_name, "usbfs").as_deref() == Some("ch585") {
+        println!("cargo:rustc-cfg=usbfs_ch585");
+    }
+
     // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
     // the singletons so `init()` cannot hand the same peripheral to a second
     // user; the driver reaches it through the PAC anyway. Exactly one such
