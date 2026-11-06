@@ -83,7 +83,25 @@ fn main() {
     if register_version_opt(&chip_name, "pwmx").as_deref() == Some("ch585") {
         println!("cargo:rustc-cfg=pwmx_ch585");
     }
-
+    // The calendar counter is the CH585 layout, which the CH573 version shares.
+    // CH572 counts on a different set of registers.
+    match register_version_opt(&chip_name, "rtc").as_deref() {
+        Some("ch585" | "ch573") => println!("cargo:rustc-cfg=rtc_calendar"),
+        _ => {}
+    }
+    // The battery detector fields are the CH585 ones, which CH581 shares. The
+    // window watchdog itself is in `system_control` and is common to every
+    // selectable chip.
+    match register_version_opt(&chip_name, "sys").as_deref() {
+        Some("ch585" | "ch581") => println!("cargo:rustc-cfg=battery_ch585"),
+        _ => {}
+    }
+    // CH573's system-control block has no reset-status register. The flag lives
+    // in the same byte as the ROM configuration on the versions that have it.
+    match register_version_opt(&chip_name, "system_control").as_deref() {
+        Some("ch585" | "ch583" | "ch592" | "ch595" | "ch572") => println!("cargo:rustc-cfg=reset_status"),
+        _ => {}
+    }
     // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
     // the singletons so `init()` cannot hand the same peripheral to a second
     // user; the driver reaches it through the PAC anyway. Exactly one such
