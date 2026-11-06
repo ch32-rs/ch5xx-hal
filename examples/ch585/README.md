@@ -121,12 +121,15 @@ USB-powered board should not report a low battery.
 
 ### USB
 
-`usb_cdc_echo` uses the board's USB device connector: PB11 is D+ and PB10 is
-D-. Connect that connector to a USB host; the WCH-Link remains attached only
-for flashing and RTT. The 78 MHz HSI PLL supplies the clock, so no crystal is
-needed. The host should enumerate a CDC ACM serial port. Opening it and sending
-data echoes each packet of up to 64 bytes and logs its length over RTT. This
-example has been compile-checked, but enumeration and data transfer have not
+`usb_cdc_echo` uses P1, the board's TYPE-C FS-USB connector: PB11 is D+ and
+PB10 is D-. P4 is the separate HS-USB connector and is not supported by this
+example. The WCH-Link remains attached only for flashing and RTT. If your board
+cannot draw target power from the WCH-Link, power it through FS-USB while
+leaving the Link connected for debugging. The 78 MHz HSI PLL supplies the
+device clock, so no crystal is needed. Ordinary packets echo unchanged. The
+exact packet `PING` returns `PONG`; `PATTERN <n>` returns `n`
+bytes counting modulo 256. Enumeration, binary transfers from 1 through 65536
+bytes, packet-size boundaries, and closing and reopening the serial port have
 been board-tested.
 
 ### UART
