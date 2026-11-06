@@ -45,10 +45,12 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `timer_dma_async` | Timer IRQ binding, DMA waits, and cancellation |
 | `i2c_scan` | Blocking I2C0 scan of PB13/PB12; reports every address that ACKs |
 | `i2c_oled` | SSD1306 at `0x3C`: bouncing circle and text via embedded-graphics |
+| `i2c_oled_async` | Interrupt-driven I2C0 frames on the same SSD1306 |
 | `spi_loopback` | Blocking SPI0 loopback; wire PA14 to PA15 |
+| `spi_async_loopback` | Async SPI0 full-duplex, then DMA receive and transmit; wire PA14 to PA15 |
 | `adc_temp` | Internal temperature sensor, no wiring |
 | `adc_pin` | Single conversion on PA4, corrected by the measured offset |
-| `pwm_out` | PWM4 on PA12, five duty steps at about 400 Hz |
+| `pwm_out` | PWM4 on PA12; breathes an external LED through the duty range at about 400 Hz |
 | `rtc_calendar` | Set the real-time clock, read it back, then check the alarm and timer |
 | `rtc_oled` | SSD1306 clock: date, `HH:MM:SS`, and a bar that fills each minute |
 | `watchdog` | Window watchdog overflow with reset disabled, plus the battery detector |
@@ -75,6 +77,11 @@ selected by constructing the driver with remap `1`.
 the title and a filled circle bounces over the rest of the panel. A 128x32 panel
 needs a different multiplex ratio.
 
+`i2c_oled_async` uses the same wiring and init sequence, but every frame is an
+interrupt-driven async write. It alternates vertical bars and a diagonal pattern
+once per second. I2C0 has no DMA engine, so this is the async path; the `I2C0`
+interrupt is bound with `bind_interrupts!`.
+
 ### SPI
 
 `spi_loopback` runs SPI0 at 1 MHz on PA13 (SCK), PA14 (MOSI) and PA15 (MISO).
@@ -82,6 +89,14 @@ Join PA14 to PA15. It exchanges 10 bytes in mode 0, then 40 bytes in mode 3, and
 logs whether each one comes back unchanged. PA12 is driven as the chip select
 even though the loop needs none. The remapped set is PB13/PB14/PB15, selected by
 constructing the driver with remap `1`.
+
+`spi_async_loopback` repeats the full-duplex check through the interrupt path,
+then uses SPI0's local DMA for a 5000-byte receive and a 5000-byte transmit. The
+receive must read `0xFF`: with `FIFO_DIR=1` the controller clocks `0xFF` out on
+MOSI, and the wire loops it back. The transmit checks the DMA engine's `.wait()`
+completion and its internal re-arm past the 12-bit `TOTAL_CNT` limit; verifying
+the wire pattern needs an analyzer. The DMA path is half-duplex by design, so a
+full-duplex transfer always uses the interrupt path.
 
 ### ADC
 
@@ -95,9 +110,12 @@ input shorted.
 
 ### PWM
 
-`pwm_out` drives PWM4 on PA12. The pin is not an on-board LED, so probe it: the
-frequency is about 400 Hz and the duty steps through 0, 64, 128, 192 and 255,
-one second each, logged over RTT. The shared remap moves PWM4 to PA6.
+`pwm_out` drives PWM4 on PA12. The on-board PB16/PB17 LEDs are GPIO-only and
+have no PWM alternate function, so use an external LED: PA12 through a
+resistor (330 ohms to 1 kohm) to the anode, cathode to GND. At about 400 Hz the
+eye sees average brightness, and the duty ramps 0 to 255 and back. A probe
+shows the same step as a changing pulse width. The shared remap moves PWM4 to
+PA6.
 
 ### RTC
 

@@ -27,10 +27,13 @@ code across chips with compatible peripherals.
 - `uart`: blocking and interrupt-driven async UART0–UART3, typed pin remapping,
   split halves, exact and short reads, and `embedded-io`/`embedded-io-async`
   traits.
-- `i2c`: blocking I2C0 master at up to 400 kHz, with the default and remapped
-  pin pairs and `embedded-hal` `I2c`.
-- `spi`: blocking SPI0/SPI1 master in mode 0 and mode 3, with `embedded-hal`
-  `SpiBus`. SPI0 has a remapped pin set; SPI1 does not.
+- `i2c`: blocking and interrupt-driven async I2C0 master at up to 400 kHz, with
+  the default and remapped pin pairs and `embedded-hal`/`embedded-hal-async`
+  `I2c`. I2C0 has no DMA engine.
+- `spi`: blocking and interrupt-driven async SPI0/SPI1 master in mode 0 and mode
+  3, with `embedded-hal`/`embedded-hal-async` `SpiBus`. SPI0 also has its own
+  half-duplex DMA engine, exposed as `write_dma`/`read_dma` with static
+  buffers. SPI0 has a remapped pin set; SPI1 does not.
 - `adc`: blocking single conversions on the CH585 layout, with the internal
   temperature sensor and the divided battery channel.
 - `pwm`: PWM4-PWM11 on the CH585 layout, with a shared clock and cycle and
@@ -55,9 +58,9 @@ USBFS CDC enumeration, control transfers, and IN/OUT transfers up to 64 KiB have
 been exercised on hardware; EP4 and suspend/resume have not. USBHS high-speed
 CDC enumeration, control transfers, and IN/OUT transfers up to 64 KiB have also
 passed on CH585. Dynamic full-speed fallback is not implemented; isochronous
-transfers and USBHS suspend/resume remain unvalidated. The I2C, SPI and ADC
-drivers are blocking only; async transfers, I2C bus recovery, SPI DMA and ADC
-scan or DMA are not. Sleep and wake-up are not implemented either.
+transfers and USBHS suspend/resume remain unvalidated. The ADC driver is blocking
+only. I2C bus recovery, SPI slave mode and circular DMA, and ADC scan or DMA are
+not implemented. Sleep and wake-up are not implemented either.
 
 ## Architecture
 
