@@ -1,9 +1,12 @@
-//! Step PWM4 through five duty cycles on PA12.
+//! Breathe an external LED on PWM4 (PA12).
+//!
+//! The on-board PB16/PB17 LEDs are plain GPIO pins with no PWM alternate
+//! function, so this example needs an external LED. Wire PA12 through a
+//! resistor to the LED anode and the cathode to GND; the channel is active high.
 //!
 //! The block runs from the 24 MHz PLL with divisor 235 and a 256-clock cycle, so
-//! the pin toggles at about 400 Hz. Each step holds for a second and is logged.
-//! PA12 is not an on-board LED; probe it to see the duty change. A duty of 255 is
-//! the highest the register can express on a 256-clock cycle.
+//! the pin switches at about 400 Hz and the eye sees the average brightness.
+//! Duty ramps from 0 to 255 and back, five counts every 20 ms.
 
 #![no_std]
 #![no_main]
@@ -26,12 +29,20 @@ fn main() -> ! {
     let mut channel = pwm.channel(p.PA12, Polarity::ActiveHigh);
     let mut delay = Delay;
 
-    defmt::info!("PWM4 on PA12, about 400 Hz");
+    defmt::info!("PWM4 on PA12, about 400 Hz; ramp the duty");
     loop {
-        for duty in [0u16, 64, 128, 192, 255] {
+        let mut duty = 0;
+        while duty < 255 {
             channel.set_duty(duty);
-            defmt::info!("duty {}", duty);
-            delay.delay_ms(1000);
+            delay.delay_ms(20);
+            duty += 5;
+        }
+        channel.set_duty(255);
+        delay.delay_ms(20);
+        while duty > 0 {
+            duty -= 5;
+            channel.set_duty(duty);
+            delay.delay_ms(20);
         }
     }
 }
