@@ -1,4 +1,9 @@
-//! Checked timer SRAM descriptors, independent of MMIO.
+//! Checked peripheral-local DMA descriptors, independent of MMIO.
+//!
+//! Every CH5xx DMA engine stores a 17-bit SRAM offset rather than a bus
+//! address, so a descriptor is a `[start, end)` byte range below the 128 KiB
+//! SRAM window. The window is the same for the timer, SPI, ADC and LED engines;
+//! only the transfer unit and the peripheral-side behaviour differ.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -20,17 +25,26 @@ pub struct Descriptor {
 impl Descriptor {
     /// CH585 SRAM window; address bits 14/15/16 were independently probed.
     /// Exclusive END itself must be representable, so the top word is reserved.
+    ///
+    /// `words` is in 32-bit timer words, the unit of the timer DMA engine.
     pub fn new(address: usize, words: usize) -> Result<Self, Error> {
-        if words == 0 {
+        let bytes = words.checked_mul(4).ok_or(Error::Length)?;
+        Self::bytes(address, bytes)
+    }
+
+    /// A byte-addressed descriptor for engines that move bytes, such as SPI.
+    ///
+    /// The start is kept 32-bit aligned even though the registers decode byte
+    /// offsets: the vendor documents byte alignment, and the stricter rule also
+    /// keeps every chunk of a split transfer aligned. `end` is exclusive.
+    pub fn bytes(address: usize, bytes: usize) -> Result<Self, Error> {
+        if bytes == 0 {
             return Err(Error::Empty);
         }
         if address & 3 != 0 {
             return Err(Error::Unaligned);
         }
-        let end = words
-            .checked_mul(4)
-            .and_then(|n| address.checked_add(n))
-            .ok_or(Error::Length)?;
+        let end = address.checked_add(bytes).ok_or(Error::Length)?;
         if address < 0x2000_0000 || end >= 0x2002_0000 {
             return Err(Error::Address);
         }
@@ -39,8 +53,15 @@ impl Descriptor {
             end: (end - 0x2000_0000) as u32,
         })
     }
+
+    /// Transfer size in bytes.
+    pub const fn len(self) -> usize {
+        (self.end - self.start) as usize
+    }
+
+    /// Transfer size in 32-bit timer words.
     pub const fn words(self) -> usize {
-        (self.end - self.start) as usize / 4
+        self.len() / 4
     }
 }
 #[cfg(test)]
@@ -55,6 +76,17 @@ mod tests {
         assert_eq!(Descriptor::new(0x2001_fffc, 1), Err(Error::Address));
         assert_eq!(Descriptor::new(0x2000_0000, usize::MAX), Err(Error::Length));
         assert_eq!(Descriptor::new(usize::MAX - 3, 2), Err(Error::Length));
+    }
+    #[test]
+    fn byte_descriptors() {
+        let d = Descriptor::bytes(0x2000_0010, 13).unwrap();
+        assert_eq!(d.start, 0x10);
+        assert_eq!(d.end, 0x1d);
+        assert_eq!(d.len(), 13);
+        assert_eq!(Descriptor::bytes(0x2000_0000, 0), Err(Error::Empty));
+        assert_eq!(Descriptor::bytes(0x2000_0001, 1), Err(Error::Unaligned));
+        assert_eq!(Descriptor::bytes(0x2001_ffff, 1), Err(Error::Address));
+        assert_eq!(Descriptor::bytes(usize::MAX - 1, 4), Err(Error::Length));
     }
     #[test]
     fn complete_sram_boundary_sweep() {
