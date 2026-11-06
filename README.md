@@ -49,10 +49,11 @@ pass scoped detached CH585 tests but are not yet qualified for arbitrary bus
 loads, lossless streaming, or NFC transport.
 
 USBHS, USB host mode, USBFS endpoints 5–7, and BLE are not implemented yet.
-The USBFS driver and CDC example compile but have not been exercised on
-hardware. The I2C, SPI and ADC drivers are blocking only; async transfers, I2C
-bus recovery, SPI DMA and ADC scan or DMA are not. Sleep and wake-up are not
-implemented either.
+CH585 USBFS CDC enumeration, control transfers, and IN/OUT transfers up to
+64 KiB have been exercised on hardware; EP4 and suspend/resume have not. The
+I2C, SPI and ADC drivers are blocking only; async transfers, I2C bus recovery,
+SPI DMA and ADC scan or DMA are not. Sleep and wake-up are not implemented
+either.
 
 ## Architecture
 
