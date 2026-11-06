@@ -107,6 +107,10 @@ fn main() {
     if register_version_opt(&chip_name, "usbfs").as_deref() == Some("ch585") {
         println!("cargo:rustc-cfg=usbfs_ch585");
     }
+    // USBHS has a separate controller, PHY and device interrupt.
+    if register_version_opt(&chip_name, "usbhs").as_deref() == Some("ch585") {
+        println!("cargo:rustc-cfg=usbhs_ch585");
+    }
 
     // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
     // the singletons so `init()` cannot hand the same peripheral to a second

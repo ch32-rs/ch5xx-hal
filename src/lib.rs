@@ -106,6 +106,8 @@ pub mod timer;
 pub mod uart;
 #[cfg(all(feature = "embassy", usbfs_ch585))]
 pub mod usb;
+#[cfg(all(feature = "embassy", usbhs_ch585))]
+pub mod usbhs;
 pub mod watchdog;
 
 /// Embassy integration (time driver). Requires the `embassy` feature.
