@@ -186,7 +186,10 @@ const SRAM_BASE: usize = 0x2000_0000;
 const SRAM_SIZE: usize = 128 * 1024;
 
 fn memory_valid(address: usize, length: usize) -> bool {
-    address >= SRAM_BASE && address.checked_add(length).is_some_and(|end| end <= SRAM_BASE + SRAM_SIZE)
+    address >= SRAM_BASE
+        && address
+            .checked_add(length)
+            .is_some_and(|end| end <= SRAM_BASE + SRAM_SIZE)
 }
 
 pub struct Driver<'d, T: Instance> {
@@ -404,7 +407,9 @@ impl<T: Instance> Bus<'_, T> {
                 inner.suspended = false;
                 reset_endpoints::<T>(&mut inner);
                 T::REGS.usb2_int_fg().write_value(pac::usbhs::regs::Usb2IntFg(0xef));
-                T::REGS.usb2_int_en().write_value(pac::usbhs::regs::Usb2IntEn(INTERRUPTS));
+                T::REGS
+                    .usb2_int_en()
+                    .write_value(pac::usbhs::regs::Usb2IntEn(INTERRUPTS));
                 fence(Ordering::SeqCst);
                 T::REGS.usb2_ctrl().write(|w| {
                     w.set_dev_dma_en(true);
