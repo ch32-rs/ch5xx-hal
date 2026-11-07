@@ -2,10 +2,11 @@
 //!
 //! Each CH5xx peripheral that has DMA owns its own address registers and
 //! transfer unit: the timer moves 32-bit FIFO words, SPI0 moves bytes, and the
-//! two engines share nothing beyond this SRAM-window descriptor type. There is
-//! no channel to allocate, no request multiplexer and no cross-peripheral
-//! arbitration, so the HAL deliberately exposes no `Channel` trait. A driver
-//! owns its engine and hands out a transfer object instead.
+//! ADC scan engine moves 16-bit samples. Beyond this SRAM-window descriptor
+//! type the engines share nothing: no channel to allocate, no request
+//! multiplexer and no cross-peripheral arbitration, so the HAL deliberately
+//! exposes no `Channel` trait. A driver owns its engine and hands out a
+//! transfer object instead.
 //!
 //! Storage is consumed as an exclusive static slice: forgetting a transfer
 //! leaks storage, never leaves DMA pointing into an expired stack. No slice is
@@ -18,7 +19,7 @@ use crate::timer::low_level::Timer;
 use crate::timer::{Events, Instance};
 
 mod buffer;
-pub use buffer::{StaticBuffer, StaticByteBuffer};
+pub use buffer::{StaticBuffer, StaticByteBuffer, StaticSampleBuffer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {

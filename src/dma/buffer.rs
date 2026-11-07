@@ -19,6 +19,9 @@ pub type StaticBuffer<const N: usize> = StaticBufferImpl<u32, N>;
 /// Byte-oriented DMA storage for peripherals such as SPI0.
 pub type StaticByteBuffer<const N: usize> = StaticBufferImpl<u8, N>;
 
+/// 16-bit sample storage for the ADC's local DMA engine.
+pub type StaticSampleBuffer<const N: usize> = StaticBufferImpl<u16, N>;
+
 // The only storage accessor requires a static owner and atomically succeeds
 // once. It never exposes a shared reference to words accessed by CPU or DMA.
 unsafe impl<T: Copy + Send, const N: usize> Sync for StaticBufferImpl<T, N> {}
