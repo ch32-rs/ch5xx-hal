@@ -1,8 +1,10 @@
-//! Exercise the window watchdog without letting it reset the board.
+//! Exercise the window watchdog, including a real overflow reset.
 //!
-//! Nothing is wired. Reset on overflow stays disabled, so the counter is free
-//! to wrap. The program feeds it once, waits, and logs whether the overflow
-//! flag came up. It also logs the latched reset cause and one battery-detector
+//! Nothing is wired. The first boot enables reset on overflow and stops
+//! feeding, so the chip resets after the counter wraps. The boot after that
+//! sees a watchdog reset cause, disables reset, and checks the feed path: the
+//! overflow flag must be clear just after a feed, set after the counter wraps,
+//! and clear again after the next feed. It also logs one battery-detector
 //! sample. A USB-powered board should not report low.
 
 #![no_std]
@@ -19,8 +21,9 @@ use qingke_rt::entry;
 fn main() -> ! {
     let p = hal::init(Default::default());
     let mut delay = Delay;
+    let cause = reset_cause();
 
-    match reset_cause() {
+    match cause {
         ResetCause::Software => defmt::info!("reset cause software"),
         ResetCause::PowerOn => defmt::info!("reset cause power-on"),
         ResetCause::Watchdog => defmt::info!("reset cause watchdog"),
@@ -33,9 +36,23 @@ fn main() -> ! {
     let status = battery.status();
     defmt::info!("battery low {} lower {}", status.low, status.lower);
 
+    if cause != ResetCause::Watchdog {
+        // First boot: let an overflow reset the chip. `Watchdog::new` reloads
+        // the counter; nothing feeds it afterwards.
+        defmt::info!("arming watchdog reset");
+        let watchdog = Watchdog::new(p.SYSTEM_CONTROL, 0);
+        watchdog.enable_reset();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    defmt::info!("watchdog reset confirmed");
+    // Second boot: keep reset disabled so the counter can wrap safely.
     // At the 5.333 MHz reset clock the counter ticks about every 24.6 ms, so a
     // reload of 128 overflows in roughly 3.1 s.
     let watchdog = Watchdog::new(p.SYSTEM_CONTROL, 128);
+    watchdog.disable_reset();
     defmt::info!("overflow just after feed: {}", watchdog.overflowed());
     delay.delay_ms(4000);
     defmt::info!("overflow after four seconds: {}", watchdog.overflowed());

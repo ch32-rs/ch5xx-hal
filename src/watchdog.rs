@@ -1,8 +1,8 @@
 //! Window watchdog, reset cause, and battery detector.
 //!
 //! The window watchdog counts up at `Fsys / 131072` and overflows from 255. A
-//! reload of 0 is the longest interval, about 0.63 s at the 5.333 MHz reset
-//! clock and about 43 ms at 78 MHz. Overflow can raise `WDOG_BAT` or reset the
+//! reload of 0 is the longest interval, about 6.3 s at the 5.333 MHz reset
+//! clock and about 0.43 s at 78 MHz. Overflow can raise `WDOG_BAT` or reset the
 //! chip. That interrupt is shared with the battery detector, and this driver
 //! does not claim the handler; poll [`Watchdog::overflowed`] instead.
 //!
