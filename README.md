@@ -35,7 +35,10 @@ code across chips with compatible peripherals.
   half-duplex DMA engine, exposed as `write_dma`/`read_dma` with static
   buffers. SPI0 has a remapped pin set; SPI1 does not.
 - `adc`: blocking single conversions on the CH585 layout, with the internal
-  temperature sensor and the divided battery channel.
+  temperature sensor and the divided battery channel, plus multi-channel scans
+  stored by the ADC-local DMA engine into static 16-bit sample buffers. Scan
+  transfers are polled; the shared ADC interrupt is also asserted by
+  end-of-conversion and cannot be masked from the scan-end flags.
 - `pwm`: PWM4-PWM11 on the CH585 layout, with a shared clock and cycle and
   per-channel duty.
 - `rtc`: calendar, a one-shot alarm and an interval timer on the CH585 and
@@ -58,9 +61,11 @@ USBFS CDC enumeration, control transfers, and IN/OUT transfers up to 64 KiB have
 been exercised on hardware; EP4 and suspend/resume have not. USBHS high-speed
 CDC enumeration, control transfers, and IN/OUT transfers up to 64 KiB have also
 passed on CH585. Dynamic full-speed fallback is not implemented; isochronous
-transfers and USBHS suspend/resume remain unvalidated. The ADC driver is blocking
-only. I2C bus recovery, SPI slave mode and circular DMA, and ADC scan or DMA are
-not implemented. Sleep and wake-up are not implemented either.
+transfers and USBHS suspend/resume remain unvalidated. ADC scans with local DMA
+are implemented and poll-completed, and blocking transfers have run on a board;
+there is no interrupt-driven scan wait. I2C bus recovery, SPI slave mode and
+circular DMA, and ADC touch-key mode are not implemented. Sleep and wake-up are
+not implemented either.
 
 ## Architecture
 

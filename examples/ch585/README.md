@@ -50,6 +50,7 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `spi_async_loopback` | Async SPI0 full-duplex, then DMA receive and transmit; wire PA14 to PA15 |
 | `adc_temp` | Internal temperature sensor, no wiring |
 | `adc_pin` | Single conversion on PA4, corrected by the measured offset |
+| `adc_scan_dma` | Three-channel scan stored by the ADC-local DMA engine, polled completion |
 | `pwm_out` | PWM4 on PA12; breathes an external LED through the duty range at about 400 Hz |
 | `rtc_calendar` | Set the real-time clock, read it back, then check the alarm and timer |
 | `rtc_oled` | SSD1306 clock: date, `HH:MM:SS`, and a bar that fills each minute |
@@ -107,6 +108,16 @@ value stored in the chip's info flash.
 `adc_pin` reads PA4, channel 0. Tie the pin to ground or to 3.3 V; left open, the
 count floats. The log adds the offset measured once at start with the converter's
 input shorted.
+
+`adc_scan_dma` scans PA4, PA5 and PA6, which are channels 0, 1 and 10. The tuple
+order is the scan order. Tie PA4 to ground and PA5 to 3.3 V for two known
+readings; PA6 may float. Each buffer holds ten passes of three samples and is
+static, because the ADC-local DMA engine writes it while the CPU is not
+borrowing it. One scan is logged every 500 ms. Completion is polled, because the
+ADC interrupt line is also asserted by end-of-conversion and the `IE_*` bits do
+not mask it, so an interrupt-driven wait spends its time in a handler that
+cannot clear the line without disturbing the sequence. The line is shared with
+the touch-key block, so a later touch-key driver must account for this.
 
 ### PWM
 
