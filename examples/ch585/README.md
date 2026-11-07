@@ -98,12 +98,14 @@ even though the loop needs none. The remapped set is PB13/PB14/PB15, selected by
 constructing the driver with remap `1`.
 
 `spi_async_loopback` repeats the full-duplex check through the interrupt path,
-then uses SPI0's local DMA for a 5000-byte receive and a 5000-byte transmit. The
-receive must read `0xFF`: with `FIFO_DIR=1` the controller clocks `0xFF` out on
-MOSI, and the wire loops it back. The transmit checks the DMA engine's `.wait()`
-completion and its internal re-arm past the 12-bit `TOTAL_CNT` limit; verifying
-the wire pattern needs an analyzer. The DMA path is half-duplex by design, so a
-full-duplex transfer always uses the interrupt path.
+then uses SPI0's local DMA for a 5000-byte receive and a 5000-byte transmit. Both
+span the 12-bit `TOTAL_CNT` limit, so they exercise the internal chunked re-arm.
+The receive samples the looped-back MOSI; master receive mode does not clock
+`0xFF` there, so the example checks that the transfer overwrote the whole buffer
+with one repeated value. The receive path itself was verified on an unwired MISO
+pad, whose pull-up reads `0xFF`. Verifying the transmit wire pattern needs an
+analyzer. The DMA path is half-duplex by design, so a full-duplex transfer always
+uses the interrupt path.
 
 ### ADC
 

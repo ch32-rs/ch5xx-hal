@@ -4,10 +4,14 @@
 //! are driven by the example. The bus runs at 1 MHz from the 24 MHz PLL.
 //!
 //! The first two checks use the interrupt path for full-duplex transfers in mode
-//! 0 and mode 3. The DMA checks then use the half-duplex engine: a receive is
-//! checked against `0xFF`, the byte the controller puts on MOSI when it is only
-//! clocking data in, and a transmit over the 12-bit `TOTAL_CNT` limit exercises
-//! the chunked re-arm.
+//! 0 and mode 3. The DMA checks then use the half-duplex engine: a receive over
+//! the 12-bit `TOTAL_CNT` limit exercises the chunked re-arm, and a transmit does
+//! the same in the other direction.
+//!
+//! The DMA receive samples MOSI through the loopback. In master receive mode the
+//! controller does not clock `0xFF` on MOSI, so the check is that the engine
+//! overwrote the whole buffer with a single repeated value. The receive side was
+//! verified separately on an unwired MISO pad, whose pull-up reads `0xFF`.
 
 #![no_std]
 #![no_main]
@@ -45,8 +49,17 @@ fn main() -> ! {
         *byte = (index % 251) as u8 + 1;
     }
 
-    let spi = Spi::new_async::<0>(p.SPI0, Irqs, p.PA13, p.PA14, p.PA15, Config::new(Hertz(1_000_000))).unwrap();
+    let spi = match Spi::new_async::<0>(p.SPI0, Irqs, p.PA13, p.PA14, p.PA15, Config::new(Hertz(1_000_000))) {
+        Ok(spi) => spi,
+        Err(error) => {
+            defmt::error!("SPI init error {}", error as u8);
+            loop {
+                unsafe { core::arch::asm!("wfi") };
+            }
+        }
+    };
     let cs = chip_select(p.PA12, Level::High);
+    defmt::info!("SPI0 async engine ready");
 
     static mut EXECUTOR: Option<embassy_executor::Executor> = None;
     #[allow(static_mut_refs)]
@@ -95,16 +108,29 @@ async fn run(
     // Restore mode 0 for the DMA checks.
     spi.set_config(Config::new(Hertz(1_000_000))).unwrap();
 
-    let rx_result: Result<bool, ()> = cs
+    // The receive engine samples the looped-back MOSI. Master receive mode does
+    // not clock `0xFF` there, so the check is that the DMA filled every byte of
+    // the chunk and that the wire held one value. The sentinel proves the buffer
+    // was overwritten rather than left alone.
+    for byte in rx.iter_mut() {
+        *byte = 0x5A;
+    }
+    let rx_result: Result<(usize, u8, bool), ()> = cs
         .select_async(async {
             let transfer = spi.read_dma(rx).map_err(|_| ())?;
             let buffer = transfer.wait(Irqs).await.map_err(|_| ())?;
-            Ok(buffer.iter().all(|byte| *byte == 0xFF))
+            Ok((
+                buffer.len(),
+                buffer[0],
+                buffer.iter().all(|byte| *byte == buffer[0]),
+            ))
         })
         .await;
     match rx_result {
-        Ok(true) => defmt::info!("dma rx {} bytes, all ones", LEN),
-        Ok(false) => defmt::error!("dma rx: unexpected data"),
+        Ok((length, value, true)) if value != 0x5A => {
+            defmt::info!("dma rx {} bytes, uniform {=u8:x}", length, value)
+        }
+        Ok(_) => defmt::error!("dma rx: buffer not overwritten uniformly"),
         Err(()) => defmt::error!("dma rx failed"),
     }
 
