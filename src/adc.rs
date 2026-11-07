@@ -260,8 +260,15 @@ impl<'d, T: Instance> Drop for Adc<'d, T> {
 
 // --- scan and local DMA ----------------------------------------------------
 
-/// The largest scan sequence the sequencer accepts.
-pub const MAX_CHANNELS: usize = 14;
+/// Sequence entries in `SCAN_CFG1`, after the one held by `CHANNEL`.
+const SCAN_CFG1_ENTRIES: usize = 8;
+
+/// Sequence entries in `SCAN_CFG2`, after `SCAN_CFG1`.
+const SCAN_CFG2_ENTRIES: usize = 5;
+
+/// The largest scan sequence the sequencer accepts: `CHANNEL` plus the two
+/// sequence registers.
+pub const MAX_CHANNELS: usize = 1 + SCAN_CFG1_ENTRIES + SCAN_CFG2_ENTRIES;
 
 mod scan_sealed {
     use super::{Instance, MAX_CHANNELS};
@@ -395,22 +402,18 @@ impl<'d, T: Instance, P: ScanPins<T>> Scan<'d, T, P> {
         let regs = T::regs();
         let channels = &self.channels;
         regs.channel().write(|w| w.set_ch_inx(channels[0]));
+        // `CHANNEL` holds the first entry, then `SCAN_CFG1` takes the next
+        // eight and `SCAN_CFG2` the remaining five. Entries beyond the selected
+        // count are written too, and `SCAN_NUM` hides them.
         regs.scan_cfg1().write(|w| {
-            w.set_ch1(channels[1]);
-            w.set_ch2(channels[2]);
-            w.set_ch3(channels[3]);
-            w.set_ch4(channels[4]);
-            w.set_ch5(channels[5]);
-            w.set_ch6(channels[6]);
-            w.set_ch7(channels[7]);
-            w.set_ch8(channels[8]);
+            for entry in 0..SCAN_CFG1_ENTRIES {
+                w.set_ch(entry, channels[1 + entry]);
+            }
         });
         regs.scan_cfg2().write(|w| {
-            w.set_ch9(channels[9]);
-            w.set_ch10(channels[10]);
-            w.set_ch11(channels[11]);
-            w.set_ch12(channels[12]);
-            w.set_ch13(channels[13]);
+            for entry in 0..SCAN_CFG2_ENTRIES {
+                w.set_ch(entry, channels[1 + SCAN_CFG1_ENTRIES + entry]);
+            }
             w.set_scan_num((P::COUNT - 1) as u8);
             w.set_scan_sel(true);
         });
