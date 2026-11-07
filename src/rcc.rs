@@ -465,7 +465,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     // Power the oscillators this configuration needs. Reset leaves HSI, HSE
     // and the PLL powered, so in the normal path this only re-asserts bits
     // that are already set.
-    safe_access(|| {
+    with_safe_access(|| {
         pac::SYS.hfck_pwr_ctrl().modify(|w| {
             match config.osc {
                 Osc::Hsi16 => w.set_clk_rc16m_pon(true),
@@ -478,14 +478,14 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     });
 
     if osc32m_sel {
-        safe_access(|| {
+        with_safe_access(|| {
             pac::SYSTEM_CONTROL
                 .xt32m_tune()
                 .modify(|w| w.set_xt32m_c_load(config.hse_cap as u8));
         });
     }
 
-    safe_access(|| {
+    with_safe_access(|| {
         pac::SYS.clk_cfg().write(|w| {
             w.set_clk_pll_div(div);
             w.set_clk_sys_mod(sys_mod);
@@ -536,7 +536,9 @@ fn validate(config: &Config) {
 /// interrupt, or the write it protects is dropped; hence the critical section.
 /// Closing the window early (0x00) keeps it from leaking into later, unrelated
 /// register writes.
-fn safe_access<R>(f: impl FnOnce() -> R) -> R {
+///
+/// Other drivers write safe-access registers too, so this is crate-visible.
+pub(crate) fn with_safe_access<R>(f: impl FnOnce() -> R) -> R {
     critical_section::with(|_| {
         let sig = pac::SYSTEM_CONTROL.safe_access_sig();
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG1));

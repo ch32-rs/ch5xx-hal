@@ -21,11 +21,34 @@ code across chips with compatible peripherals.
 
 ## Features
 
-- `gpio`: input, output, flex pins, pulls, and drive strength.
+- `gpio`: input, output, flex pins, pulls, drive strength, and port-interrupt
+  waits for level and single-edge triggers.
 - `rcc`: HSI/HSE, dividers, PLL configuration, and clock reporting.
 - `uart`: blocking and interrupt-driven async UART0–UART3, typed pin remapping,
   split halves, exact and short reads, and `embedded-io`/`embedded-io-async`
   traits.
+- `i2c`: blocking and interrupt-driven async I2C0 master at up to 400 kHz, with
+  the default and remapped pin pairs and `embedded-hal`/`embedded-hal-async`
+  `I2c`. I2C0 has no DMA engine.
+- `spi`: blocking and interrupt-driven async SPI0/SPI1 master in mode 0 and mode
+  3, with `embedded-hal`/`embedded-hal-async` `SpiBus`. SPI0 also has its own
+  half-duplex DMA engine, exposed as `write_dma`/`read_dma` with static
+  buffers. SPI0 has a remapped pin set; SPI1 does not.
+- `adc`: blocking single conversions on the CH585 layout, with the internal
+  temperature sensor and the divided battery channel, plus multi-channel scans
+  stored by the ADC-local DMA engine into static 16-bit sample buffers. Scan
+  transfers are polled; the shared ADC interrupt is also asserted by
+  end-of-conversion and cannot be masked from the scan-end flags.
+- `pwm`: PWM4-PWM11 on the CH585 layout, with a shared clock and cycle and
+  per-channel duty.
+- `rtc`: calendar, a one-shot alarm and an interval timer on the CH585 and
+  CH573 counter layouts. The calendar covers 2020 through 2064-11-08.
+- `watchdog`: the window watchdog, a software reset, the latched reset cause,
+  and the battery-voltage detector on the CH585 layout.
+- `usb`: USBFS full-speed device support through `embassy-usb-driver`, with
+  endpoints 0–4 and packets up to 64 bytes on the CH585 layout.
+- `usbhs`: CH585 high-speed device support through `embassy-usb-driver`, with
+  endpoints 0–7 and 512-byte bulk packets.
 - `delay`: `embedded-hal` `DelayNs` using SysTick or the Embassy timebase.
 - Embassy time driver on SysTick or TMR0–TMR3, plus typed interrupt bindings.
 
@@ -33,8 +56,16 @@ Timer counter/PWM/capture and timer-local DMA drivers are experimental. They
 pass scoped detached CH585 tests but are not yet qualified for arbitrary bus
 loads, lossless streaming, or NFC transport.
 
-GPIO interrupts, I2C, SPI, ADC, USB, BLE, and a public RTC calendar/alarm API
-are not implemented yet.
+USB host mode, USBFS endpoints 5–7, and BLE are not implemented yet. CH585
+USBFS CDC enumeration, control transfers, and IN/OUT transfers up to 64 KiB have
+been exercised on hardware; EP4 and suspend/resume have not. USBHS high-speed
+CDC enumeration, control transfers, and IN/OUT transfers up to 64 KiB have also
+passed on CH585. Dynamic full-speed fallback is not implemented; isochronous
+transfers and USBHS suspend/resume remain unvalidated. ADC scans with local DMA
+are implemented and poll-completed, and blocking transfers have run on a board;
+there is no interrupt-driven scan wait. I2C bus recovery, SPI slave mode and
+circular DMA, and ADC touch-key mode are not implemented. Sleep and wake-up are
+not implemented either.
 
 ## Architecture
 

@@ -2,24 +2,39 @@
 
 /// Once-claimed static storage for DMA. The claim is never reset: explicitly
 /// stopped transfers return the same unique slice, not a second claim token.
-pub struct StaticBuffer<const N: usize> {
-    storage: core::cell::UnsafeCell<[u32; N]>,
+///
+/// `T` is the transfer unit of the owning engine: `u32` for the timer FIFO and
+/// `u8` for SPI. The storage is 4-byte aligned, which satisfies every engine.
+#[repr(align(4))]
+struct Aligned<T: Copy, const N: usize>([T; N]);
+
+pub struct StaticBufferImpl<T: Copy + Send, const N: usize> {
+    storage: core::cell::UnsafeCell<Aligned<T, N>>,
     taken: crate::atomic::AtomicBool,
 }
 
+/// Timer DMA storage, one 32-bit word per FIFO entry.
+pub type StaticBuffer<const N: usize> = StaticBufferImpl<u32, N>;
+
+/// Byte-oriented DMA storage for peripherals such as SPI0.
+pub type StaticByteBuffer<const N: usize> = StaticBufferImpl<u8, N>;
+
+/// 16-bit sample storage for the ADC's local DMA engine.
+pub type StaticSampleBuffer<const N: usize> = StaticBufferImpl<u16, N>;
+
 // The only storage accessor requires a static owner and atomically succeeds
 // once. It never exposes a shared reference to words accessed by CPU or DMA.
-unsafe impl<const N: usize> Sync for StaticBuffer<N> {}
+unsafe impl<T: Copy + Send, const N: usize> Sync for StaticBufferImpl<T, N> {}
 
-impl<const N: usize> StaticBuffer<N> {
-    pub const fn new(words: [u32; N]) -> Self {
+impl<T: Copy + Send, const N: usize> StaticBufferImpl<T, N> {
+    pub const fn new(value: [T; N]) -> Self {
         Self {
-            storage: core::cell::UnsafeCell::new(words),
+            storage: core::cell::UnsafeCell::new(Aligned(value)),
             taken: crate::atomic::AtomicBool::new(false),
         }
     }
 
-    pub fn take(&'static self) -> Option<&'static mut [u32; N]> {
+    pub fn take(&'static self) -> Option<&'static mut [T; N]> {
         self.taken
             .compare_exchange(
                 false,
@@ -28,7 +43,7 @@ impl<const N: usize> StaticBuffer<N> {
                 crate::atomic::Ordering::Acquire,
             )
             .ok()?;
-        Some(unsafe { &mut *self.storage.get() })
+        Some(unsafe { &mut (*self.storage.get()).0 })
     }
 }
 
@@ -60,5 +75,13 @@ mod tests {
             }
         }
         assert_eq!(successes, 1);
+    }
+    #[test]
+    fn byte_storage_is_claimed_once() {
+        static B: StaticByteBuffer<8> = StaticByteBuffer::new([0; 8]);
+        let bytes = B.take().unwrap();
+        assert_eq!(bytes.as_ptr() as usize & 3, 0);
+        bytes[0] = 1;
+        assert!(B.take().is_none());
     }
 }

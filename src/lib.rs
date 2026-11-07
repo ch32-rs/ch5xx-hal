@@ -90,11 +90,25 @@ pub(crate) mod _generated {
 
 pub use crate::_generated::{peripherals, Peripherals};
 
+#[cfg(adc_ch585)]
+pub mod adc;
 pub mod delay;
 pub mod dma;
 pub mod gpio;
+pub mod i2c;
+#[cfg(pwmx_ch585)]
+pub mod pwm;
+#[cfg(rtc_calendar)]
+pub mod rtc;
+#[cfg(spi_ch585)]
+pub mod spi;
 pub mod timer;
 pub mod uart;
+#[cfg(all(feature = "embassy", usbfs_ch585))]
+pub mod usb;
+#[cfg(all(feature = "embassy", usbhs_ch585))]
+pub mod usbhs;
+pub mod watchdog;
 
 /// Embassy integration (time driver). Requires the `embassy` feature.
 #[cfg(feature = "embassy")]
