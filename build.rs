@@ -66,6 +66,21 @@ fn main() {
     if pin_intx {
         println!("cargo:rustc-cfg=gpio_pin_intx");
     }
+    // The low-power driver writes the sleep and power-plan bytes of the SYS
+    // block. CH592 has no HFCK_PWR_CTRL, so the set is not shared by every
+    // selectable die; the driver only compiles where all of it exists.
+    if sys_has_registers(
+        &chip_name,
+        &[
+            "SLP_WAKE_CTRL",
+            "SLP_POWER_CTRL",
+            "POWER_PLAN",
+            "HFCK_PWR_CTRL",
+            "BAT_DET_CTRL",
+        ],
+    ) {
+        println!("cargo:rustc-cfg=power_sleep");
+    }
     // The SPI register block is not one layout. The `ch585` and `ch583`
     // versions are the FIFO controller this driver programs; the others are not,
     // and naming their registers would not compile.
@@ -254,12 +269,19 @@ fn gpio_items(chip: &str) -> Vec<String> {
 /// `PIN_ALTERNATE.PIN_INTX` selects which pair the shared flag bits follow.
 /// A die can bond the high pins and still have no such field.
 fn sys_has_pin_intx(chip: &str) -> bool {
+    // The field lives in the `PIN_ALTERNATE` fieldset. Matching the name is
+    // enough: no other fieldset in these blocks reuses it.
+    sys_has_registers(chip, &["PIN_INTX"])
+}
+
+/// Whether the chip's `SYS` block defines every one of `names`.
+fn sys_has_registers(chip: &str, names: &[&str]) -> bool {
     let version = register_version(chip, "sys");
     let path = data_root().join(format!("registers/sys_{version}.yaml"));
     let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
-    // The field lives in the `PIN_ALTERNATE` fieldset. Matching the name is
-    // enough: no other fieldset in these blocks reuses it.
-    text.lines().any(|line| line.trim() == "- name: PIN_INTX")
+    names
+        .iter()
+        .all(|name| text.lines().any(|line| line.trim() == format!("- name: {name}")))
 }
 
 fn data_root() -> PathBuf {
