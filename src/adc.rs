@@ -1,8 +1,17 @@
-//! ADC single conversions.
+//! ADC conversions and scans.
 //!
 //! CH585 has one converter, clocked from its own divider rather than `Fsys`.
-//! This driver does one conversion at a time and polls `CONVERT.EOC_X`. The DMA,
-//! scan and touch-key modes share the same block and are left untouched.
+//! [`Adc`] does one conversion at a time and polls `CONVERT.EOC_X`. [`Scan`]
+//! samples an ordered sequence of external channels and stores the samples with
+//! the block's local DMA engine; one pass can cover up to fourteen channels.
+//! Touch-key mode shares the same converter and is left untouched.
+//!
+//! Scan completion is polled from [`ScanTransfer::blocking_wait`]. The ADC
+//! interrupt line is asserted by end-of-conversion as well as by the scan and
+//! DMA end flags, and the documented `IE_*` bits do not mask that source, so an
+//! interrupt-driven wait would spend its time in a handler that cannot clear the
+//! line without disturbing the sequence. A TouchKey driver taking over the line
+//! must account for this.
 //!
 //! A channel has to be selected before the converter is powered, which is the
 //! order the vendor setup uses. An external channel also disconnects the pad's
@@ -21,6 +30,7 @@ use core::marker::PhantomData;
 
 use embassy_hal_internal::PeripheralType;
 
+use crate::dma::Descriptor;
 use crate::gpio::{Flex, Pin, Pull};
 use crate::{interrupt, pac, peripherals, Peri};
 
@@ -30,6 +40,9 @@ use crate::{interrupt, pac, peripherals, Peri};
 pub enum Error {
     /// The converter did not finish within one millisecond.
     Timeout,
+    /// A scan buffer is empty, is not a whole number of passes, or is not in
+    /// the DMA SRAM window.
+    Buffer,
 }
 
 /// Input gain. The names are the ratios the vendor documents.
@@ -213,17 +226,22 @@ impl<'d, T: Instance> Adc<'d, T> {
     }
 
     fn convert(&mut self) -> Result<u16, Error> {
-        let regs = T::regs();
-        regs.convert().modify(|w| w.set_start(true));
-        let deadline = deadline();
-        loop {
-            let state = regs.convert().read();
-            if !state.start() && !state.eoc_x() {
-                return Ok(u16::from(regs.data().read().data()));
-            }
-            if timed_out(deadline) {
-                return Err(Error::Timeout);
-            }
+        convert_once::<T>()
+    }
+}
+
+/// One conversion, polling `CONVERT` for completion.
+fn convert_once<T: Instance>() -> Result<u16, Error> {
+    let regs = T::regs();
+    regs.convert().modify(|w| w.set_start(true));
+    let deadline = deadline();
+    loop {
+        let state = regs.convert().read();
+        if !state.start() && !state.eoc_x() {
+            return Ok(u16::from(regs.data().read().data()));
+        }
+        if timed_out(deadline) {
+            return Err(Error::Timeout);
         }
     }
 }
@@ -236,6 +254,332 @@ impl<'d, T: Instance> Drop for Adc<'d, T> {
             ChannelKind::Pin(pin) => reconnect(pin.pin.port() as u8, pin.pin.pin()),
             ChannelKind::Temperature => regs.tem_sensor().write(|w| w.set_tem_sen_pwr_on(false)),
             ChannelKind::Battery => {}
+        }
+    }
+}
+
+// --- scan and local DMA ----------------------------------------------------
+
+/// The largest scan sequence the sequencer accepts.
+pub const MAX_CHANNELS: usize = 14;
+
+mod scan_sealed {
+    use super::{Instance, MAX_CHANNELS};
+
+    pub(crate) trait Pins<T: Instance> {
+        const COUNT: usize;
+        fn channels(sequence: &mut [u8; MAX_CHANNELS]);
+    }
+}
+
+/// A tuple of ADC pins, scanned in tuple order.
+///
+/// Tuples of one to [`MAX_CHANNELS`] pins are supported. The order of the tuple
+/// is the order of the sequence: the first element comes from `CHANNEL.CH_INX`,
+/// the next eight from `SCAN_CFG1` and the rest from `SCAN_CFG2`. The pins are
+/// configured as floating analog inputs when the [`Scan`] is created, and their
+/// digital inputs are reconnected when it is dropped.
+#[allow(private_bounds)]
+pub trait ScanPins<T: Instance>: scan_sealed::Pins<T> {}
+
+macro_rules! impl_scan_pins {
+    ($count:literal, $($pin:ident),+) => {
+        impl<'d, T: Instance, $($pin: AdcPin<T>),+> scan_sealed::Pins<T> for ($(Peri<'d, $pin>,)+) {
+            const COUNT: usize = $count;
+
+            fn channels(sequence: &mut [u8; MAX_CHANNELS]) {
+                let mut index = 0;
+                $(
+                    sequence[index] = $pin::channel().0;
+                    index += 1;
+                )+
+                let _ = index;
+            }
+        }
+
+        impl<'d, T: Instance, $($pin: AdcPin<T>),+> ScanPins<T> for ($(Peri<'d, $pin>,)+) {}
+    };
+}
+
+impl_scan_pins!(1, P1);
+impl_scan_pins!(2, P1, P2);
+impl_scan_pins!(3, P1, P2, P3);
+impl_scan_pins!(4, P1, P2, P3, P4);
+impl_scan_pins!(5, P1, P2, P3, P4, P5);
+impl_scan_pins!(6, P1, P2, P3, P4, P5, P6);
+impl_scan_pins!(7, P1, P2, P3, P4, P5, P6, P7);
+impl_scan_pins!(8, P1, P2, P3, P4, P5, P6, P7, P8);
+impl_scan_pins!(9, P1, P2, P3, P4, P5, P6, P7, P8, P9);
+impl_scan_pins!(10, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10);
+impl_scan_pins!(11, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11);
+impl_scan_pins!(12, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12);
+impl_scan_pins!(13, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13);
+impl_scan_pins!(14, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14);
+
+/// A scan over an ordered set of channels, with the block's DMA engine storing
+/// one 16-bit sample per conversion.
+///
+/// The sequence is programmed once when the scan is created. Each
+/// [`Scan::read`] fills a fresh buffer with whole passes over that sequence.
+/// The DMA address registers hold halfword offsets, so a sample count maps
+/// directly onto the sequence position.
+pub struct Scan<'d, T: Instance, P: ScanPins<T>> {
+    /// Keeps exclusive ownership of the pads for the scan's lifetime.
+    _pins: P,
+    channels: [u8; MAX_CHANNELS],
+    _phantom: PhantomData<&'d mut T>,
+}
+
+impl<'d, T: Instance, P: ScanPins<T>> Scan<'d, T, P> {
+    /// Take the pins and configure the converter for a scan sequence.
+    ///
+    /// Every pin is floated with its digital input disconnected. The first
+    /// conversion after power-up is discarded, as in [`Adc::new_pin`].
+    pub fn new(peri: Peri<'d, T>, pins: P, config: Config) -> Self {
+        let mut channels = [0; MAX_CHANNELS];
+        P::channels(&mut channels);
+        for &channel in channels.iter().take(P::COUNT) {
+            prepare_pin(channel);
+            disconnect(channel);
+        }
+        enable::<T>(channels[0], config, false);
+        // The vendor scan setup lengthens the sample window to seven ADC clocks.
+        T::regs().convert().modify(|w| w.set_sample_time(3));
+        // Discard the first conversion before the scan source is selected, so
+        // it cannot start a pass while the DMA engine is still unarmed.
+        let _ = convert_once::<T>();
+        let _ = peri;
+
+        let scan = Self {
+            _pins: pins,
+            channels,
+            _phantom: PhantomData,
+        };
+        scan.configure_sequence();
+        scan
+    }
+
+    /// Fill `buffer` with whole passes over the sequence.
+    ///
+    /// `buffer` is exclusive static storage. Its length must be a non-zero
+    /// multiple of the sequence length. The returned transfer must be waited on
+    /// or stopped before the samples are read.
+    pub fn read(
+        &mut self,
+        buffer: &'static mut [u16],
+    ) -> Result<ScanTransfer<'_, 'd, T, P>, (Error, &'static mut [u16])> {
+        if buffer.is_empty() || buffer.len() % P::COUNT != 0 {
+            return Err((Error::Buffer, buffer));
+        }
+        let Some(bytes) = buffer.len().checked_mul(2) else {
+            return Err((Error::Buffer, buffer));
+        };
+        let descriptor = match Descriptor::bytes(buffer.as_ptr() as usize, bytes) {
+            Ok(descriptor) => descriptor,
+            Err(_) => return Err((Error::Buffer, buffer)),
+        };
+
+        let one_pass = buffer.len() == P::COUNT;
+        let mut transfer = ScanTransfer {
+            scan: self,
+            buffer: Some(buffer),
+            descriptor,
+            one_pass,
+            finished: false,
+        };
+        transfer.start();
+        Ok(transfer)
+    }
+
+    fn configure_sequence(&self) {
+        let regs = T::regs();
+        let channels = &self.channels;
+        regs.channel().write(|w| w.set_ch_inx(channels[0]));
+        regs.scan_cfg1().write(|w| {
+            w.set_ch1(channels[1]);
+            w.set_ch2(channels[2]);
+            w.set_ch3(channels[3]);
+            w.set_ch4(channels[4]);
+            w.set_ch5(channels[5]);
+            w.set_ch6(channels[6]);
+            w.set_ch7(channels[7]);
+            w.set_ch8(channels[8]);
+        });
+        regs.scan_cfg2().write(|w| {
+            w.set_ch9(channels[9]);
+            w.set_ch10(channels[10]);
+            w.set_ch11(channels[11]);
+            w.set_ch12(channels[12]);
+            w.set_ch13(channels[13]);
+            w.set_scan_num((P::COUNT - 1) as u8);
+            w.set_scan_sel(true);
+        });
+    }
+}
+
+impl<T: Instance, P: ScanPins<T>> Drop for Scan<'_, T, P> {
+    fn drop(&mut self) {
+        let regs = T::regs();
+        regs.convert().modify(|w| w.set_start(false));
+        regs.ctrl_dma().modify(|w| {
+            w.set_dma_enable(false);
+            w.set_scan_auto_type(false);
+            w.set_ie_dma_end(false);
+            w.set_auto_en(false);
+        });
+        regs.scan_cfg2().modify(|w| {
+            w.set_ie_scan_end(false);
+            w.set_if_scan_end(true);
+            w.set_scan_sel(false);
+        });
+        regs.dma_if().write(|w| {
+            w.set_if_dma_end(true);
+            w.set_if_end(true);
+        });
+        regs.cfg().modify(|w| w.set_power_on(false));
+        for &channel in self.channels.iter().take(P::COUNT) {
+            reconnect_channel(channel);
+        }
+    }
+}
+
+/// A running ADC scan and DMA transfer.
+///
+/// Completion detects a full DMA buffer. When the buffer holds exactly one
+/// pass, the scan-end flag is also accepted, matching the vendor scan example.
+#[must_use = "dropping stops DMA; use blocking_wait or stop"]
+pub struct ScanTransfer<'a, 'd, T: Instance, P: ScanPins<T>> {
+    scan: &'a mut Scan<'d, T, P>,
+    buffer: Option<&'static mut [u16]>,
+    descriptor: Descriptor,
+    one_pass: bool,
+    finished: bool,
+}
+
+impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
+    /// Samples stored so far, counted from `DMA_NOW`.
+    pub fn position(&self) -> usize {
+        let now = u32::from(T::regs().dma_now().read().dma_now()) << 1;
+        now.saturating_sub(self.descriptor.start) as usize / 2
+    }
+
+    /// Every sample in the buffer has been stored.
+    pub fn is_complete(&self) -> bool {
+        let regs = T::regs();
+        regs.dma_if().read().if_dma_end() || (self.one_pass && regs.scan_cfg2().read().if_scan_end())
+    }
+
+    /// Wait for the buffer to fill, then stop the scan engine.
+    ///
+    /// The timeout is one millisecond per sample, which is far above the
+    /// conversion rate even at the slowest ADC clock.
+    pub fn blocking_wait(mut self) -> Result<&'static mut [u16], (Error, &'static mut [u16])> {
+        let timeout = self.samples() as u64 + 1;
+        let deadline = deadline_in(timeout);
+        while !self.is_complete() {
+            if self.continue_pass() {
+                continue;
+            }
+            if timed_out(deadline) {
+                self.quiesce();
+                return Err((Error::Timeout, self.buffer.take().unwrap()));
+            }
+            core::hint::spin_loop();
+        }
+        self.quiesce();
+        Ok(self.buffer.take().unwrap())
+    }
+
+    /// Stop the engine and hand the buffer back with `position()` samples valid.
+    pub fn stop(mut self) -> &'static mut [u16] {
+        self.quiesce();
+        self.buffer.take().unwrap()
+    }
+
+    fn samples(&self) -> usize {
+        self.descriptor.len() / 2
+    }
+
+    /// Start the next pass after a scan-end event.
+    ///
+    /// `SCAN_AUTO_TYPE` describes the trigger source; it does not make the
+    /// sequencer repeat. One pass ends after the last channel and the next one
+    /// needs a fresh `CONVERT.START`. Returns whether a pass ended, even when
+    /// the buffer is already full and no new pass was started.
+    fn continue_pass(&self) -> bool {
+        let regs = T::regs();
+        let ended = regs.scan_cfg2().read().if_scan_end();
+        if !ended {
+            return false;
+        }
+        regs.scan_cfg2().modify(|w| w.set_if_scan_end(true));
+        // The final pass is left alone: the DMA engine has reached END and
+        // raises `IF_DMA_END` on its own.
+        if !regs.dma_if().read().if_dma_end() {
+            regs.convert().modify(|w| w.set_start(true));
+        }
+        true
+    }
+
+    fn start(&mut self) {
+        let regs = T::regs();
+        // Stop whatever the previous scan left behind before moving END and
+        // reprogramming the sequence.
+        regs.convert().modify(|w| w.set_start(false));
+        regs.ctrl_dma().modify(|w| {
+            w.set_dma_enable(false);
+            w.set_scan_auto_type(false);
+            w.set_ie_dma_end(false);
+        });
+        regs.dma_if().write(|w| {
+            w.set_if_dma_end(true);
+            w.set_if_end(true);
+        });
+        self.scan.configure_sequence();
+
+        // Both registers hold halfword offsets, so the byte descriptor is
+        // shifted right by one.
+        regs.dma_beg()
+            .write(|w| w.set_dma_beg((self.descriptor.start >> 1) as u16));
+        regs.dma_end()
+            .write(|w| w.set_dma_end((self.descriptor.end >> 1) as u16));
+        // `IF_DMA_END` is gated by `IE_DMA_END`, as on the timer and SPI engines.
+        regs.ctrl_dma().modify(|w| {
+            w.set_dma_enable(true);
+            w.set_scan_auto_type(true);
+            w.set_ie_dma_end(true);
+        });
+        // Every pass sets `IF_SCAN_END`; the wait loop uses it to start the next
+        // pass. It sets without `IE_SCAN_END`, which stays off so a TouchKey user
+        // of the shared line gets no scan interrupts.
+        crate::dma::fence();
+        regs.convert().modify(|w| w.set_start(true));
+    }
+
+    fn quiesce(&mut self) {
+        let regs = T::regs();
+        regs.convert().modify(|w| w.set_start(false));
+        regs.ctrl_dma().modify(|w| {
+            w.set_dma_enable(false);
+            w.set_scan_auto_type(false);
+            w.set_ie_dma_end(false);
+        });
+        regs.scan_cfg2().modify(|w| {
+            w.set_ie_scan_end(false);
+            w.set_if_scan_end(true);
+        });
+        regs.dma_if().write(|w| {
+            w.set_if_dma_end(true);
+            w.set_if_end(true);
+        });
+        self.finished = true;
+    }
+}
+
+impl<T: Instance, P: ScanPins<T>> Drop for ScanTransfer<'_, '_, T, P> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.quiesce();
         }
     }
 }
@@ -284,7 +628,9 @@ fn temperature_config() -> Config {
 
 /// Disconnect the digital input of an ADC pin, so the pad driver is out of the way.
 fn disconnect(channel: u8) {
-    let (port, pin) = channel_pin(channel);
+    let Some((port, pin)) = channel_pin(channel) else {
+        return;
+    };
     pac::SYS.pin_in_dis().modify(|w| {
         let mut mask = if port == 0 { w.pax_in_dis() } else { w.pblx_in_dis() };
         mask |= 1 << pin;
@@ -309,30 +655,40 @@ fn reconnect(port: u8, pin: u8) {
     });
 }
 
-/// The port and pin behind a channel index. Port 0 is A.
-fn channel_pin(channel: u8) -> (u8, u8) {
-    // Datasheet table 7-8: A0 is PA4, then PA5, PA12, PA13, PA14, PA15, PA3,
-    // PA2, PA1, PA0, PA6, PA7.
-    let pin = match channel {
-        0 => 4,
-        1 => 5,
-        2 => 12,
-        3 => 13,
-        4 => 14,
-        5 => 15,
-        6 => 3,
-        7 => 2,
-        8 => 1,
-        9 => 0,
-        10 => 6,
-        _ => 7,
+fn reconnect_channel(channel: u8) {
+    if let Some((port, pin)) = channel_pin(channel) {
+        reconnect(port, pin);
+    }
+}
+
+/// Configure a scan channel as a floating input, which is what the vendor scan
+/// setup does before disabling the digital input.
+fn prepare_pin(channel: u8) {
+    let Some((0, pin)) = channel_pin(channel) else {
+        return;
     };
-    (0, pin)
+    let gpio = pac::GPIO;
+    gpio.pa_dir().modify(|w| w.set_pa_dir(pin as usize, false));
+    gpio.pa_pu().modify(|w| w.set_pa_pu(pin as usize, false));
+    gpio.pa_pd_drv().modify(|w| w.set_pa_pd_drv(pin as usize, false));
+}
+
+/// The pad behind an ADC channel. All external channels are on port A.
+fn channel_pin(channel: u8) -> Option<(u8, u8)> {
+    // Datasheet table 7-8: A0 is PA4, then PA5, PA12, PA13, PA14, PA15, PA3,
+    // PA2, PA1, PA0, PA6, PA7, PA8 and PA9.
+    const PINS: [u8; MAX_CHANNELS] = [4, 5, 12, 13, 14, 15, 3, 2, 1, 0, 6, 7, 8, 9];
+    PINS.get(channel as usize).map(|&pin| (0, pin))
 }
 
 /// One millisecond from now, in system-clock cycles.
 fn deadline() -> u64 {
-    cycles() + u64::from(crate::rcc::clocks().sysclk.0) / 1000
+    deadline_in(1)
+}
+
+/// `millis` milliseconds from now, in system-clock cycles.
+fn deadline_in(millis: u64) -> u64 {
+    cycles() + u64::from(crate::rcc::clocks().sysclk.0) / 1000 * millis
 }
 
 fn timed_out(deadline: u64) -> bool {
@@ -362,7 +718,7 @@ fn cycles() -> u64 {
 mod sealed {
     use super::pac;
 
-    pub trait Instance {
+    pub(crate) trait Instance {
         fn regs() -> pac::adc::Adc;
     }
 }
@@ -370,9 +726,8 @@ mod sealed {
 /// An ADC with the CH585 register layout.
 #[allow(private_bounds)]
 pub trait Instance: sealed::Instance + PeripheralType {
-    /// Interrupt raised when a conversion ends.
-    ///
-    /// Named for a later async driver. The touch-key block shares this line.
+    /// Interrupt line of the ADC block. End-of-conversion asserts it; the scan
+    /// and DMA end flags share it, as does the touch-key block.
     type Interrupt: interrupt::typelevel::Interrupt;
 }
 
