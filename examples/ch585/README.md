@@ -54,7 +54,7 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `pwm_out` | PWM4 on PA12; breathes an external LED through the duty range at about 400 Hz |
 | `rtc_calendar` | Set the real-time clock, read it back, then check the alarm and timer |
 | `rtc_oled` | SSD1306 clock: date, `HH:MM:SS`, and a bar that fills each minute |
-| `watchdog` | Window watchdog overflow with reset disabled, plus the battery detector |
+| `watchdog` | Window watchdog: overflow reset on first boot, then the feed and battery checks |
 | `usb_cdc_echo` | CDC ACM serial device on PB11/PB10; echoes each received packet |
 | `usbhs_cdc_echo` | High-speed CDC ACM device on PB13/PB12 |
 
@@ -143,11 +143,13 @@ bottom fills across the minute.
 
 ### Watchdog
 
-`watchdog` needs no wiring and does not reset the board: overflow reset stays
-off. It logs the latched reset cause, one battery-detector sample at the 2.3 V
-threshold, then the overflow flag just after a feed, after four seconds, and
-after a second feed. Expect no overflow, then an overflow, then none again. A
-USB-powered board should not report a low battery.
+`watchdog` needs no wiring and deliberately resets the board once. The first
+boot logs the reset cause, arms overflow reset, and stops feeding; after the
+counter wraps (about 6.3 s at the reset clock) the chip reboots and the next
+boot logs `reset cause watchdog`. The example then disables reset and checks
+that a feed clears the overflow flag, that it sets after four seconds, and that
+a second feed clears it again. A USB-powered board should not report a low
+battery.
 
 ### USB
 
