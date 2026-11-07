@@ -50,6 +50,10 @@ code across chips with compatible peripherals.
 - `usbhs`: CH585 high-speed device support through `embassy-usb-driver`, with
   endpoints 0–7 and 512-byte bulk packets.
 - `delay`: `embedded-hal` `DelayNs` using SysTick or the Embassy timebase.
+- `power`: halt and sleep with RTC, GPIO, USB and battery wake sources,
+  per-domain SRAM/USB retention and four wake delays. The wake restores the
+  clock tree and the SysTick block that the PMU's wake reset clears; shutdown
+  is not implemented because it resets the chip instead of returning.
 - Embassy time driver on SysTick or TMR0–TMR3, plus typed interrupt bindings.
 
 Timer counter/PWM/capture and timer-local DMA drivers are experimental. They
@@ -64,8 +68,9 @@ passed on CH585. Dynamic full-speed fallback is not implemented; isochronous
 transfers and USBHS suspend/resume remain unvalidated. ADC scans with local DMA
 are implemented and poll-completed, and blocking transfers have run on a board;
 there is no interrupt-driven scan wait. I2C bus recovery, SPI slave mode and
-circular DMA, and ADC touch-key mode are not implemented. Sleep and wake-up are
-not implemented either.
+circular DMA, and ADC touch-key mode are not implemented. Halt and sleep are
+implemented and have run on a board with RTC wake-ups; GPIO, USB and battery
+wake-ups and shutdown are not covered.
 
 ## Architecture
 
