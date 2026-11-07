@@ -12,8 +12,8 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-# Local build of ch5xx-data; publish-time this becomes a crates.io version.
-ch5xx-metapac = { path = "../ch5xx-data/build/ch5xx-metapac", features = ["rt"] }
+# Generated PAC, published as its own repository until a crates.io release.
+ch5xx-metapac = { git = "https://github.com/ch32-rs/ch5xx-metapac", rev = "579d934", features = ["rt"] }
 
 # `unsafe-trust-wch-atomics`: qingke refuses to build whenever the target claims
 # byte atomics unless this is set. The CH5xx target JSON declares atomics (the
@@ -53,7 +53,7 @@ version = "1.0"
 version = "1.0"
 
 [build-dependencies]
-ch5xx-metapac = { path = "../ch5xx-data/build/ch5xx-metapac", default-features = false, features = [
+ch5xx-metapac = { git = "https://github.com/ch32-rs/ch5xx-metapac", rev = "579d934", default-features = false, features = [
     "metadata",
 ] }
 
