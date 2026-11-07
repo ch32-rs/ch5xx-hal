@@ -423,10 +423,16 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         if flags.if_cnt_end() {
             state.done.store(true, Ordering::Relaxed);
             r.int_flag().write(|w| w.set_if_cnt_end(true));
+            // `IF_CNT_END` reads as set for as long as `TOTAL_CNT` is zero, so
+            // an enabled source would re-enter here until a future runs. The
+            // waits re-arm it after programming a new length.
+            r.inter_en().modify(|w| w.set_ie_cnt_end(false));
         }
         if flags.if_dma_end() {
             state.dma_done.store(true, Ordering::Relaxed);
             r.int_flag().write(|w| w.set_if_dma_end(true));
+            // One DMA completion per chunk; a second entry has nothing to add.
+            r.inter_en().modify(|w| w.set_ie_dma_end(false));
         }
         if flags.if_fifo_hf() {
             r.int_flag().write(|w| w.set_if_fifo_hf(true));
@@ -450,11 +456,11 @@ fn enable_interrupts<T: Instance>() {
         w.set_if_dma_end(true);
         w.set_if_fifo_ov(true);
     });
-    r.inter_en().modify(|w| {
-        w.set_ie_cnt_end(true);
-        w.set_ie_dma_end(true);
-        w.set_ie_fifo_ov(true);
-    });
+    // `IF_CNT_END` reads as set while `TOTAL_CNT` is zero, so enabling its
+    // source here would storm the line the moment the vector is unmasked and
+    // starve the caller of `new_async`. The waits arm it after a non-zero
+    // length is programmed instead; the DMA path arms both flags in `arm`.
+    r.inter_en().modify(|w| w.set_ie_fifo_ov(true));
     T::Interrupt::unpend();
     unsafe { T::Interrupt::enable() };
 }
@@ -503,7 +509,8 @@ async fn wait_progress<T: Instance>(tx: bool) -> Result<(), Error> {
 /// Wait for the current chunk's `TOTAL_CNT` to reach zero.
 #[cfg(feature = "embassy")]
 async fn wait_done<T: Instance>() -> Result<(), Error> {
-    poll_fn(|cx| {
+    let r = T::regs();
+    let result = poll_fn(|cx| {
         let state = T::state();
         state.waker.register(cx.waker());
         if state.overflow.load(Ordering::Relaxed) {
@@ -511,12 +518,23 @@ async fn wait_done<T: Instance>() -> Result<(), Error> {
             return Poll::Ready(Err(Error::Overrun));
         }
         if state.done.load(Ordering::Relaxed) {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
+            return Poll::Ready(Ok(()));
         }
+        // Arm the source only now that the caller has programmed a non-zero
+        // `TOTAL_CNT`. At zero length the count-end flag reads as set, so a
+        // source enabled at construction would re-enter the handler forever.
+        r.inter_en().modify(|w| w.set_ie_cnt_end(true));
+        // Close the race between the check above and arming the source.
+        if r.int_flag().read().if_cnt_end() {
+            r.int_flag().write(|w| w.set_if_cnt_end(true));
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Pending
     })
-    .await
+    .await;
+    // Leave the source off so a completed transfer cannot keep re-asserting.
+    r.inter_en().modify(|w| w.set_ie_cnt_end(false));
+    result
 }
 
 /// Wait for one byte to be exchanged in the full-duplex path.
@@ -834,12 +852,6 @@ impl<'a, 'd, T: DmaInstance, M: Mode> DmaTransfer<'a, 'd, T, M> {
             T::state().done.store(false, Ordering::Relaxed);
             T::state().dma_done.store(false, Ordering::Relaxed);
         }
-        // Like the timer engine, the SPI's DMA_END flag is gated by its
-        // interrupt enable even when the line is masked in the PFIC.
-        r.inter_en().modify(|w| {
-            w.set_ie_cnt_end(true);
-            w.set_ie_dma_end(true);
-        });
         r.int_flag().write(|w| {
             w.set_if_cnt_end(true);
             w.set_if_dma_end(true);
@@ -847,8 +859,17 @@ impl<'a, 'd, T: DmaInstance, M: Mode> DmaTransfer<'a, 'd, T, M> {
         });
         r.dma_beg().write(|w| w.set_dma_beg(start));
         r.dma_end().write(|w| w.set_dma_end(end));
+        // The length goes in before the sources are enabled: `IF_CNT_END` reads
+        // as set while `TOTAL_CNT` is zero, and a source enabled in that window
+        // would keep re-entering the handler.
         r.total_cnt().write(|w| w.set_total_cnt(chunk as u16));
         crate::dma::fence();
+        // Like the timer engine, the SPI's DMA_END flag is gated by its
+        // interrupt enable even when the line is masked in the PFIC.
+        r.inter_en().modify(|w| {
+            w.set_ie_cnt_end(true);
+            w.set_ie_dma_end(true);
+        });
         r.ctrl_cfg().modify(|w| w.set_dma_enable(true));
         self.chunk = chunk;
         Ok(())
