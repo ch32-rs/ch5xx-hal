@@ -19,8 +19,8 @@ ch5xx-metapac = { git = "https://github.com/ch32-rs/ch5xx-metapac", rev = "579d9
 # byte atomics unless this is set. The CH5xx target JSON declares atomics (the
 # V3C core is RV32IMBC, with A), so the guard applies. NOTE: the atomics have not
 # been litmus-tested on CH585 — see the qingke guard's own warning.
-qingke = { version = "0.8.2", features = ["critical-section-impl", "unsafe-trust-wch-atomics"] }
-qingke-rt = { version = "0.8.2", optional = true }
+qingke = { version = "0.8.4", features = ["critical-section-impl", "unsafe-trust-wch-atomics"] }
+qingke-rt = { version = "0.8.4", optional = true }
 
 embedded-hal = "1.0"
 embedded-hal-async = { version = "1.0.0", optional = true }
@@ -106,9 +106,3 @@ time-driver-tmr3 = ["embassy"]
 ## Emit `memory.x` from the metapac's memory layout, so `qingke-rt`'s `link.x`
 ## can find it. Enable in the binary crate, not the HAL (see ch32-hal).
 memory-x = ["ch5xx-metapac/memory-x"]
-
-# `v3c` landed on qingke's main after the 0.8.2 release, so point at the local
-# checkout until 0.8.3 is published. Drop this block then.
-[patch.crates-io]
-qingke = { path = "../qingke" }
-qingke-rt = { path = "../qingke/qingke-rt" }
