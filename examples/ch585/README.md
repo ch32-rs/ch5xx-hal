@@ -56,6 +56,7 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `rtc_calendar` | Set the real-time clock, read it back, then check the alarm and timer |
 | `rtc_oled` | SSD1306 clock: date, `HH:MM:SS`, and a bar that fills each minute |
 | `watchdog` | Window watchdog: overflow reset on first boot, then the feed and battery checks |
+| `sleep_wake` | Halt and sleep, waking on the RTC; reports the measured interval and checks the clock afterwards |
 | `usb_cdc_echo` | CDC ACM serial device on PB11/PB10; echoes each received packet |
 | `usbhs_cdc_echo` | High-speed CDC ACM device on PB13/PB12 |
 
@@ -158,6 +159,24 @@ boot logs `reset cause watchdog`. The example then disables reset and checks
 that a feed clears the overflow flag, that it sets after four seconds, and that
 a second feed clears it again. A USB-powered board should not report a low
 battery.
+
+### Power modes
+
+`sleep_wake` needs no wiring. It arms the RTC trigger one second ahead, stops
+the core with `power::halt`, and then repeats with `power::sleep`, three times
+each, measuring the 32 kHz count on both sides of every call. The clock tree is
+HSE PLL 78 MHz, so each wake also proves that the PMU restarted the crystal and
+the PLL before the core resumed; a blocking delay measured against the RTC at
+the end checks that the tree is still at the configured rate. Build it without
+an Embassy time driver (`--no-default-features`), so SysTick belongs to the
+blocking delay.
+
+The debug probe cannot reach the core while it sleeps, so `probe-rs run` drops
+out during the run. Flash with `wlink -d 1 flash -e <elf>` and read the result
+afterwards with `probe-rs attach`, which replays the retained RTT buffer. On
+this board a sleep run can also leave the debug interface unusable until the
+chip is powered on again with the Download button held; keep that button
+reachable.
 
 ### USB
 
