@@ -15,7 +15,7 @@ use core::convert::Infallible;
 
 use ch5xx_hal as hal;
 use defmt_rtt as _;
-use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_10X20};
+use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
