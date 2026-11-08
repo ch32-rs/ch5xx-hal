@@ -6,18 +6,25 @@
 //! Buffers are 4-byte aligned and the DMA register takes the low 16 bits of the
 //! address, which is how the vendor code programs it.
 //!
-//! This driver covers endpoint 0 and endpoints 1 to 4. Endpoint 4 has no DMA
-//! address of its own; its OUT and IN buffers sit one and two packets after
-//! endpoint 0's. Endpoints 5 to 7 and the host port are not implemented.
+//! This driver covers endpoints 0 to 7. Endpoint 4 has no DMA address of its
+//! own; its OUT and IN buffers sit one and two packets after endpoint 0's. It
+//! also ignores `AUTO_TOG` (the bit reads back zero), so the handler advances
+//! its data toggles by hand. Endpoints 5 to 7 are enabled through `UEP567_MOD`
+//! and have their own DMA registers. The host port is not implemented.
 //!
 //! `INT_BUSY` makes the serial engine answer NAK while a transfer completion is
 //! pending. The handler clears that flag and NAKs the endpoint, so no new packet
 //! can overwrite the buffer before the future has copied it. A read or write
 //! re-arms ACK when it starts.
 //!
+//! A received packet only counts when `U_TOG_OK` says the data toggle matched
+//! (datasheet §17.2: a packet whose toggle does not match is discarded). A
+//! mismatched OUT packet is dropped without disturbing the queued read, so a
+//! host retransmission cannot be mistaken for new data.
+//!
 //! Endpoint 0 toggles are manual: a SETUP leaves both at DATA1, each data packet
 //! flips its direction, and the status stage stays DATA1. The other endpoints
-//! use `AUTO_TOG`.
+//! use `AUTO_TOG`, except endpoint 4, whose toggles the handler advances.
 //!
 //! The register block is the CH585 one (CH572, CH581, CH584, CH585, CH595).
 //! CH585 control and CDC bulk transfers have been run on a board; EP4 and
@@ -76,28 +83,64 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             BUS_WAKER.wake();
         }
 
+        // A FIFO overflow drops whatever was queued. The endpoint state is
+        // intact, so clearing the flag is enough to resume; without clearing it
+        // the interrupt would stay asserted.
+        if flags.uif_fifo_ov() {
+            regs.int_fg().write(|w| w.set_uif_fifo_ov(true));
+        }
+
         if flags.uif_transfer() {
             let status = regs.int_st().read();
             let endpoint = status.mask_uis_h_res__mask_uis_endp() as usize;
             let token = Token::from_bits(status.mask_uis_token());
-            if endpoint < EP_COUNT {
+            // SETUP is identified by its own status bit: the datasheet says a
+            // SETUP does not update MASK_UIS_TOKEN, so the token field may still
+            // hold the previous transaction. It also does not take part in the
+            // toggle comparison.
+            let setup = status.uis_setup_act();
+            // A packet whose data toggle did not match does not belong to this
+            // transfer and must be discarded (datasheet §17.2).
+            let accepted = flags.u_tog_ok();
+            if setup {
+                // A SETUP can only target endpoint 0. The endpoint and token
+                // fields of `INT_ST` are not updated by a SETUP, so they may
+                // still hold the previous transaction (or the reset value
+                // 0xF), and `UIS_SETUP_ACT` is the only reliable indicator.
+                STATE.out_len[0].store(8, Ordering::Relaxed);
+                EP0_SETUP.store(true, Ordering::Relaxed);
+                STATE.out_done[0].store(true, Ordering::Relaxed);
+                set_response::<T>(0, Direction::Out, Response::Nak);
+                EP_OUT_WAKERS[0].wake();
+            } else if endpoint < EP_COUNT {
                 match token {
                     Token::In => {
-                        // NAK until the next packet is queued.
+                        // The toggle check applies to received data; an IN
+                        // transaction that completes was ACKed by the host.
                         set_response::<T>(endpoint, Direction::In, Response::Nak);
+                        if endpoint == 4 {
+                            flip_toggle::<T>(endpoint, Direction::In);
+                        }
                         STATE.in_done[endpoint].store(true, Ordering::Relaxed);
                         EP_IN_WAKERS[endpoint].wake();
                     }
-                    Token::Out | Token::Setup => {
-                        STATE.out_len[endpoint].store(regs.rx_len().read().rx_len() as u16, Ordering::Relaxed);
-                        set_response::<T>(endpoint, Direction::Out, Response::Nak);
-                        if endpoint == 0 && token == Token::Setup {
-                            EP0_SETUP.store(true, Ordering::Relaxed);
+                    Token::Out => {
+                        if accepted {
+                            STATE.out_len[endpoint]
+                                .store(regs.rx_len().read().rx_len() as u16, Ordering::Relaxed);
+                            set_response::<T>(endpoint, Direction::Out, Response::Nak);
+                            if endpoint == 4 {
+                                flip_toggle::<T>(endpoint, Direction::Out);
+                            }
+                            STATE.out_done[endpoint].store(true, Ordering::Relaxed);
+                            EP_OUT_WAKERS[endpoint].wake();
+                        } else {
+                            // A retransmitted packet: discard it and keep
+                            // receiving.
+                            set_response::<T>(endpoint, Direction::Out, Response::Ack);
                         }
-                        STATE.out_done[endpoint].store(true, Ordering::Relaxed);
-                        EP_OUT_WAKERS[endpoint].wake();
                     }
-                    Token::Sof => {}
+                    Token::Setup | Token::Sof => {}
                 }
             }
             // Clearing the flag lets the serial engine leave its busy NAK.
@@ -135,7 +178,7 @@ enum Response {
     Stall = 0b11,
 }
 
-const EP_COUNT: usize = 5;
+const EP_COUNT: usize = 8;
 /// Largest packet this driver accepts. The length registers are 7 bits.
 const MAX_PACKET: usize = 64;
 
@@ -211,7 +254,9 @@ static mut EP0_BUFFERS: Ep0Buffers = Ep0Buffers {
     ep4_out: Buffer::new(),
     ep4_in: Buffer::new(),
 };
-static mut EP_BUFFER: [Buffer; 4] = [const { Buffer::new() }; 4];
+/// One buffer for each of endpoints 1 to 7. The endpoint 4 slot is unused:
+/// that endpoint's buffers must stay adjacent to endpoint 0's.
+static mut EP_BUFFER: [Buffer; 7] = [const { Buffer::new() }; 7];
 
 fn buffer(index: usize, direction: Direction) -> &'static mut Buffer {
     unsafe {
@@ -219,7 +264,7 @@ fn buffer(index: usize, direction: Direction) -> &'static mut Buffer {
             (0, _) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.control),
             (4, Direction::Out) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.ep4_out),
             (4, Direction::In) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.ep4_in),
-            (i, _) => &mut *core::ptr::addr_of_mut!(EP_BUFFER[i]),
+            (i, _) => &mut *core::ptr::addr_of_mut!(EP_BUFFER[i - 1]),
         }
     }
 }
@@ -416,6 +461,7 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
             w.set_uie_bus_rst__uie_detect(true);
             w.set_uie_transfer(true);
             w.set_uie_suspend(true);
+            w.set_uie_fifo_ov(true);
         });
         unsafe { T::Interrupt::enable() };
     }
@@ -461,9 +507,16 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
         STATE.enabled[index].store(enabled, Ordering::Relaxed);
         if enabled {
             // A newly enabled endpoint starts at DATA0 with no stale completion,
-            // and stays NAK until a read or write arms it.
+            // and stays NAK until a read or write arms it. The DMA address and
+            // the `UEPn_MOD` enable bits are rewritten here as well: a bus reset
+            // or a `disable`/`enable` cycle may have dropped them, and embassy
+            // re-enables the endpoints through this call after every reset.
             STATE.in_done[index].store(false, Ordering::Relaxed);
             STATE.out_done[index].store(false, Ordering::Relaxed);
+            match ep_addr.direction() {
+                Direction::In => enable_in::<T>(index),
+                Direction::Out => enable_out::<T>(index),
+            }
             set_toggle::<T>(index, Direction::In, false);
             set_toggle::<T>(index, Direction::Out, false);
             set_response::<T>(index, Direction::In, Response::Nak);
@@ -725,7 +778,10 @@ macro_rules! modify_ctrl {
             1 => $regs.uep1_ctrl().modify(|$w| $body),
             2 => $regs.uep2_ctrl().modify(|$w| $body),
             3 => $regs.uep3_ctrl().modify(|$w| $body),
-            _ => $regs.uep4_ctrl().modify(|$w| $body),
+            4 => $regs.uep4_ctrl().modify(|$w| $body),
+            5 => $regs.uep5_ctrl().modify(|$w| $body),
+            6 => $regs.uep6_ctrl().modify(|$w| $body),
+            _ => $regs.uep7_ctrl().modify(|$w| $body),
         }
     };
 }
@@ -749,8 +805,20 @@ macro_rules! read_ctrl {
                 let $w = $regs.uep3_ctrl().read();
                 $body
             }
-            _ => {
+            4 => {
                 let $w = $regs.uep4_ctrl().read();
+                $body
+            }
+            5 => {
+                let $w = $regs.uep5_ctrl().read();
+                $body
+            }
+            6 => {
+                let $w = $regs.uep6_ctrl().read();
+                $body
+            }
+            _ => {
+                let $w = $regs.uep7_ctrl().read();
                 $body
             }
         }
@@ -809,7 +877,10 @@ fn set_tx_len<T: Instance>(index: usize, len: u8) {
         1 => regs.uep1_t_len().write(|w| w.set_uep1_t_len(len)),
         2 => regs.uep2_t_len().write(|w| w.set_uep2_t_len(len)),
         3 => regs.uep3_t_len().write(|w| w.set_uep3_t_len(len)),
-        _ => regs.uep4_t_len().write(|w| w.set_uep4_t_len(len)),
+        4 => regs.uep4_t_len().write(|w| w.set_uep4_t_len(len)),
+        5 => regs.uep5_t_len().write(|w| w.set_uep5_t_len(len)),
+        6 => regs.uep6_t_len().write(|w| w.set_uep6_t_len(len)),
+        _ => regs.uep7_t_len().write(|w| w.set_uep7_t_len(len)),
     }
 }
 
@@ -829,13 +900,32 @@ fn enable_in<T: Instance>(index: usize) {
             regs.uep3_dma().write(|w| w.set_uep3_dma(dma));
             regs.uep2_3_mod().modify(|w| w.set_uep3_tx_en(true));
         }
-        _ => {
+        4 => {
             // Endpoint 4's buffer follows endpoint 0's, so there is no DMA
             // register to write here.
             regs.uep4_1_mod().modify(|w| w.set_uep4_tx_en(true));
         }
+        5 => {
+            regs.uep5_dma().write(|w| w.set_uep5_dma(dma));
+            regs.uep567_mod().modify(|w| w.set_uep5_tx_en(true));
+        }
+        6 => {
+            regs.uep6_dma().write(|w| w.set_uep6_dma(dma));
+            regs.uep567_mod().modify(|w| w.set_uep6_tx_en(true));
+        }
+        _ => {
+            regs.uep7_dma().write(|w| w.set_uep7_dma(dma));
+            regs.uep567_mod().modify(|w| w.set_uep7_tx_en(true));
+        }
     }
-    auto_toggle::<T>(index);
+    // Endpoint 4 does not implement the automatic toggle: `UEP4_CTRL.AUTO_TOG`
+    // writes are dropped and read back as zero. Its toggle starts at DATA0 and
+    // the interrupt handler advances it after each transfer.
+    if index == 4 {
+        set_toggle::<T>(index, Direction::In, false);
+    } else {
+        auto_toggle::<T>(index);
+    }
     set_response::<T>(index, Direction::In, Response::Nak);
 }
 
@@ -855,11 +945,28 @@ fn enable_out<T: Instance>(index: usize) {
             regs.uep3_dma().write(|w| w.set_uep3_dma(dma));
             regs.uep2_3_mod().modify(|w| w.set_uep3_rx_en(true));
         }
-        _ => {
+        4 => {
             regs.uep4_1_mod().modify(|w| w.set_uep4_rx_en(true));
         }
+        5 => {
+            regs.uep5_dma().write(|w| w.set_uep5_dma(dma));
+            regs.uep567_mod().modify(|w| w.set_uep5_rx_en(true));
+        }
+        6 => {
+            regs.uep6_dma().write(|w| w.set_uep6_dma(dma));
+            regs.uep567_mod().modify(|w| w.set_uep6_rx_en(true));
+        }
+        _ => {
+            regs.uep7_dma().write(|w| w.set_uep7_dma(dma));
+            regs.uep567_mod().modify(|w| w.set_uep7_rx_en(true));
+        }
     }
-    auto_toggle::<T>(index);
+    // See the note in `enable_in`: endpoint 4 toggles by hand.
+    if index == 4 {
+        set_toggle::<T>(index, Direction::Out, false);
+    } else {
+        auto_toggle::<T>(index);
+    }
     set_response::<T>(index, Direction::Out, Response::Nak);
 }
 
