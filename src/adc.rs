@@ -1,7 +1,8 @@
 //! ADC conversions and scans.
 //!
 //! CH585 has one converter, clocked from its own divider rather than `Fsys`.
-//! [`Adc`] does one conversion at a time and polls `CONVERT.EOC_X`. [`Scan`]
+//! [`Adc`] is a controller handle: [`Adc::blocking_read`] takes the pin or
+//! internal source ([`AdcChannel`]) to convert, as in `embassy-stm32`. [`Scan`]
 //! samples an ordered sequence of channels and stores the samples with the
 //! block's local DMA engine; one pass can cover up to fourteen channels on
 //! CH585 and twelve on CH592. [`Adc::start_auto`] instead repeats one channel
@@ -12,18 +13,19 @@
 //! interrupt line is asserted by end-of-conversion as well as by the scan and
 //! DMA end flags, and the documented `IE_*` bits do not mask that source, so an
 //! interrupt-driven wait would spend its time in a handler that cannot clear the
-//! line without disturbing the sequence. A TouchKey driver taking over the line
-//! must account for this.
+//! line without disturbing the sequence. That is why this module has no
+//! interrupt or async read path. A TouchKey driver taking over the line must
+//! account for this.
 //!
 //! A channel has to be selected before the converter is powered, which is the
 //! order the vendor setup uses. On CH585 an external channel also disconnects
 //! the pad's digital input through `PIN_IN_DIS`, or the pin driver fights the
 //! signal being measured; CH592 has no such register and only floats the pad.
-//! The converter is powered down on drop and the pad is reconnected.
+//! Each read powers the converter up and down and restores the pad.
 //!
 //! The raw result is 12 bits. The vendor notes an offset near the ends of the
-//! range; [`Adc::read`] returns the sample unchanged, and [`Adc::calibrate`]
-//! measures that offset so a caller can add it.
+//! range; [`Adc::blocking_read`] returns the sample unchanged, and
+//! [`Adc::calibrate`] measures that offset so a caller can add it.
 //!
 //! The register block differs between dies. The module compiles for the CH585
 //! layout (CH581, CH584, CH585) and for CH592. CH592 has three `SCAN_CFG2`
@@ -36,7 +38,7 @@ use core::marker::PhantomData;
 use embassy_hal_internal::PeripheralType;
 
 use crate::dma::Descriptor;
-use crate::gpio::{Flex, Pin, Pull};
+use crate::gpio::Pin;
 use crate::{interrupt, pac, peripherals, Peri};
 
 /// Errors a conversion can return.
@@ -120,99 +122,136 @@ impl Default for Config {
     }
 }
 
-/// A single-conversion ADC.
-pub struct Adc<'d, T: Instance> {
-    channel: ChannelKind<'d>,
-    _phantom: PhantomData<&'d mut T>,
+mod channel_sealed {
+    use super::{Config, Instance};
+
+    pub trait Channel<T: Instance> {
+        /// The hardware channel index.
+        fn channel(&self) -> u8;
+        /// The converter configuration this channel needs, and whether the
+        /// conversion is differential.
+        fn config(&self, base: Config) -> (Config, bool);
+    }
 }
 
-/// What the selected channel is, so drop can put it back.
-enum ChannelKind<'d> {
-    /// An external pin whose digital input was disconnected.
-    Pin(Flex<'d>),
-    /// The internal temperature sensor, which was powered on.
-    Temperature,
-    /// The divided battery voltage. Nothing was powered on for it.
-    Battery,
+/// A pin or internal source the ADC can convert.
+///
+/// Implemented for ADC pins (`Peri<'_, PA4>` and friends) and for the
+/// [`Temperature`] and [`Battery`] tokens. Pass one to [`Adc::blocking_read`]
+/// or [`Adc::start_auto`].
+#[allow(private_bounds)]
+pub trait AdcChannel<T: Instance>: channel_sealed::Channel<T> {}
+
+/// The internal temperature sensor, from [`Adc::enable_temperature`].
+///
+/// Dropping it powers the sensor down. It overrides the controller's gain and
+/// clock: the vendor setup forces differential mode and a gain of two.
+pub struct Temperature {
+    _private: (),
+}
+
+impl channel_sealed::Channel<peripherals::ADC> for Temperature {
+    fn channel(&self) -> u8 {
+        TEMPERATURE_CHANNEL
+    }
+
+    fn config(&self, _base: Config) -> (Config, bool) {
+        (temperature_config(), true)
+    }
+}
+
+impl AdcChannel<peripherals::ADC> for Temperature {}
+
+impl Drop for Temperature {
+    fn drop(&mut self) {
+        pac::ADC.tem_sensor().write(|w| w.set_tem_sen_pwr_on(false));
+    }
+}
+
+/// The divided battery-voltage channel.
+///
+/// Nothing needs powering on, so the token is built directly and can be used
+/// with [`Adc::blocking_read`] or put in a [`Scan`] sequence. The vendor setup
+/// uses a gain of one quarter and the input buffer, since the battery is
+/// divided down to the converter's range; pass such a [`Config`] to
+/// [`Adc::new`].
+pub struct Battery;
+
+impl channel_sealed::Channel<peripherals::ADC> for Battery {
+    fn channel(&self) -> u8 {
+        BATTERY_CHANNEL
+    }
+
+    fn config(&self, base: Config) -> (Config, bool) {
+        (base, false)
+    }
+}
+
+impl AdcChannel<peripherals::ADC> for Battery {}
+
+/// A single-conversion ADC controller.
+///
+/// The controller owns the converter and carries the gain and clock for
+/// external channels; the channel is chosen per call, as in `embassy-stm32`.
+pub struct Adc<'d, T: Instance> {
+    _peri: Peri<'d, T>,
+    config: Config,
 }
 
 impl<'d, T: Instance> Adc<'d, T> {
-    /// Measure one external pin.
-    ///
-    /// The pad is floated and its digital input is disconnected before the
-    /// converter powers up.
-    pub fn new_pin<P: AdcPin<T>>(peri: Peri<'d, T>, pin: Peri<'d, P>, config: Config) -> Self {
-        let (channel, _pin) = P::channel();
-        let mut pin = Flex::new(pin.into());
-        pin.set_as_input(Pull::None);
-        disconnect(channel);
-        enable::<T>(channel, config, false);
-        let _ = peri;
-        Self {
-            channel: ChannelKind::Pin(pin),
-            _phantom: PhantomData,
-        }
+    /// Take the converter and set the external-channel configuration.
+    pub fn new(peri: Peri<'d, T>, config: Config) -> Self {
+        Self { _peri: peri, config }
     }
 
-    /// Measure the internal temperature sensor.
+    /// One conversion of `channel`, as a raw 12-bit sample.
     ///
-    /// The vendor setup forces differential mode and a gain of two for this
-    /// channel, so `config` is not used. [`Adc::temperature`] turns the raw
-    /// sample into a temperature with the value stored in the info flash.
-    pub fn new_temperature(peri: Peri<'d, T>) -> Self {
+    /// The pad is floated and its digital input disconnected before the
+    /// converter powers up, and restored afterwards. The first conversion
+    /// after power-up is stale; as in the vendor flow, the sample returned is
+    /// the second one.
+    pub fn blocking_read(&mut self, channel: &mut impl AdcChannel<T>) -> Result<u16, Error> {
+        let index = channel.channel();
+        let (config, differential) = channel.config(self.config);
+        prepare_pin(index);
+        disconnect(index);
+        enable::<T>(index, config, differential);
+        let result = convert_twice::<T>();
+        T::regs().cfg().modify(|w| w.set_power_on(false));
+        reconnect_channel(index);
+        result
+    }
+
+    /// Power the internal temperature sensor and return its channel.
+    ///
+    /// [`Adc::temperature`] turns a raw sample into a temperature with the
+    /// value stored in the info flash.
+    pub fn enable_temperature(&mut self) -> Temperature {
         T::regs().tem_sensor().write(|w| w.set_tem_sen_pwr_on(true));
-        enable::<T>(TEMPERATURE_CHANNEL, temperature_config(), true);
-        let _ = peri;
-        Self {
-            channel: ChannelKind::Temperature,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Measure the divided battery voltage.
-    ///
-    /// The vendor setup uses a gain of one quarter and the input buffer, since
-    /// the battery is divided down to the converter's range.
-    pub fn new_battery(peri: Peri<'d, T>, config: Config) -> Self {
-        enable::<T>(BATTERY_CHANNEL, config, false);
-        let _ = peri;
-        Self {
-            channel: ChannelKind::Battery,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// One conversion, as a raw 12-bit sample.
-    ///
-    /// The first conversion after power-up is stale. The vendor discards it, and
-    /// so does this: a call takes two conversions and returns the second.
-    pub fn read(&mut self) -> Result<u16, Error> {
-        let _ = self.convert()?;
-        self.convert()
+        Temperature { _private: () }
     }
 
     /// The converter's own offset, from the vendor's rough calibration.
     ///
-    /// Sixteen conversions of the shorted input are averaged and subtracted from
-    /// the mid-scale value. Add the result to a [`Adc::read`] sample. The channel
-    /// and gain are restored afterwards.
+    /// Sixteen conversions of the shorted input are averaged and subtracted
+    /// from the mid-scale value. Add the result to a [`Adc::blocking_read`]
+    /// sample. The converter's previous configuration is restored afterwards.
     pub fn calibrate(&mut self) -> Result<i16, Error> {
         let regs = T::regs();
-        let channel = regs.channel().read();
-        let config = regs.cfg().read();
-        regs.cfg().modify(|w| {
-            w.set_ofs_test(true);
+        let saved = regs.cfg().read();
+        let (gain, gain2) = Gain::Unity.fields();
+        regs.cfg().write(|w| {
+            w.set_buf_en(true);
             w.set_diff_en(false);
+            w.set_ofs_test(true);
+            w.set_pga_gain10(gain);
+            w.set_clk_div(self.config.sample_clock as u8);
+            w.set_power_on(true);
         });
-        let _ = self.convert()?;
-        let mut sum = 0u32;
-        for _ in 0..16 {
-            // The offset test reports the complement of the data bits.
-            sum += u32::from(!self.convert()? & DATA_MASK);
-        }
-        regs.channel().write_value(channel);
-        regs.cfg().write_value(config);
-        Ok(2048 - ((sum + 8) >> 4) as i16)
+        regs.convert().modify(|w| w.set_pga_gain2(gain2));
+        let result = calibrate_offset::<T>();
+        regs.cfg().write_value(saved);
+        result
     }
 
     /// Degrees Celsius from a temperature-channel sample.
@@ -229,10 +268,29 @@ impl<'d, T: Instance> Adc<'d, T> {
         let counts = i32::from(calib as u16);
         reference + (i32::from(sample) - counts) * 100 / 283
     }
+}
 
-    fn convert(&mut self) -> Result<u16, Error> {
-        convert_once::<T>()
+impl<T: Instance> Drop for Adc<'_, T> {
+    fn drop(&mut self) {
+        T::regs().cfg().modify(|w| w.set_power_on(false));
     }
+}
+
+/// Two conversions; the first one after power-up is stale, so it is discarded.
+fn convert_twice<T: Instance>() -> Result<u16, Error> {
+    let _ = convert_once::<T>()?;
+    convert_once::<T>()
+}
+
+/// The vendor's rough offset calibration, with the converter already powered.
+fn calibrate_offset<T: Instance>() -> Result<i16, Error> {
+    let _ = convert_once::<T>()?;
+    let mut sum = 0u32;
+    for _ in 0..16 {
+        // The offset test reports the complement of the data bits.
+        sum += u32::from(!convert_once::<T>()? & DATA_MASK);
+    }
+    Ok(2048 - ((sum + 8) >> 4) as i16)
 }
 
 /// One conversion, polling `CONVERT` for completion.
@@ -251,19 +309,7 @@ fn convert_once<T: Instance>() -> Result<u16, Error> {
     }
 }
 
-impl<'d, T: Instance> Drop for Adc<'d, T> {
-    fn drop(&mut self) {
-        let regs = T::regs();
-        regs.cfg().modify(|w| w.set_power_on(false));
-        match &mut self.channel {
-            ChannelKind::Pin(pin) => reconnect(pin.pin.port() as u8, pin.pin.pin()),
-            ChannelKind::Temperature => regs.tem_sensor().write(|w| w.set_tem_sen_pwr_on(false)),
-            ChannelKind::Battery => {}
-        }
-    }
-}
-
-// --- scan and local DMA (CH585 layout only) --------------------------------
+// --- scan and local DMA ----------------------------------------------------
 
 /// Sequence entries in `SCAN_CFG1`, after the one held by `CHANNEL`.
 #[cfg(adc_scan)]
@@ -286,71 +332,105 @@ pub const MAX_CHANNELS: usize = 1 + SCAN_CFG1_ENTRIES + SCAN_CFG2_ENTRIES;
 mod scan_sealed {
     use super::{Instance, MAX_CHANNELS};
 
-    pub(crate) trait Pins<T: Instance> {
+    pub(crate) trait Entry<T: Instance> {
+        fn scan_channel() -> u8;
+    }
+
+    pub(crate) trait Sequence<T: Instance> {
         const COUNT: usize;
         fn channels(sequence: &mut [u8; MAX_CHANNELS]);
     }
 }
 
-/// A tuple of ADC pins, scanned in tuple order.
+/// One entry in a scan sequence: an ADC pin or the [`Battery`] channel.
 ///
-/// Tuples of one to [`MAX_CHANNELS`] pins are supported. The order of the tuple
-/// is the order of the sequence: the first element comes from `CHANNEL.CH_INX`,
-/// the next eight from `SCAN_CFG1` and the rest from `SCAN_CFG2`. The pins are
-/// configured as floating analog inputs when the [`Scan`] is created, and their
-/// digital inputs are reconnected when it is dropped.
+/// [`Temperature`] is not a sequence entry: it forces differential mode, which
+/// would apply to the whole pass, so it is only usable with
+/// [`Adc::blocking_read`] or [`Adc::start_auto`].
 #[cfg(adc_scan)]
 #[allow(private_bounds)]
-pub trait ScanPins<T: Instance>: scan_sealed::Pins<T> {}
+pub trait ScanEntry<T: Instance>: scan_sealed::Entry<T> {}
 
 #[cfg(adc_scan)]
-macro_rules! impl_scan_pins {
-    ($count:literal, $($pin:ident),+) => {
-        impl<'d, T: Instance, $($pin: AdcPin<T>),+> scan_sealed::Pins<T> for ($(Peri<'d, $pin>,)+) {
+impl<'d, T: Instance, P: AdcPin<T>> scan_sealed::Entry<T> for Peri<'d, P> {
+    fn scan_channel() -> u8 {
+        P::channel().0
+    }
+}
+
+#[cfg(adc_scan)]
+impl<'d, T: Instance, P: AdcPin<T>> ScanEntry<T> for Peri<'d, P> {}
+
+#[cfg(adc_scan)]
+impl scan_sealed::Entry<peripherals::ADC> for Battery {
+    fn scan_channel() -> u8 {
+        BATTERY_CHANNEL
+    }
+}
+
+#[cfg(adc_scan)]
+impl ScanEntry<peripherals::ADC> for Battery {}
+
+/// A tuple of channels, scanned in tuple order.
+///
+/// Tuples of one to [`MAX_CHANNELS`] entries are supported; an entry is an ADC
+/// pin or the [`Battery`] channel. The order of the tuple is the order of the
+/// sequence: the first element comes from `CHANNEL.CH_INX`, the next eight from
+/// `SCAN_CFG1` and the rest from `SCAN_CFG2`. Pins are configured as floating
+/// analog inputs when the [`Scan`] is created, and their digital inputs are
+/// reconnected when it is dropped.
+#[cfg(adc_scan)]
+#[allow(private_bounds)]
+pub trait ScanChannels<T: Instance>: scan_sealed::Sequence<T> {}
+
+#[cfg(adc_scan)]
+macro_rules! impl_scan_channels {
+    ($count:literal, $($ch:ident),+) => {
+        impl<T: Instance, $($ch: ScanEntry<T>),+> scan_sealed::Sequence<T> for ($($ch,)+) {
             const COUNT: usize = $count;
 
             fn channels(sequence: &mut [u8; MAX_CHANNELS]) {
                 let mut index = 0;
                 $(
-                    sequence[index] = $pin::channel().0;
+                    sequence[index] = <$ch as scan_sealed::Entry<T>>::scan_channel();
                     index += 1;
                 )+
                 let _ = index;
             }
         }
 
-        impl<'d, T: Instance, $($pin: AdcPin<T>),+> ScanPins<T> for ($(Peri<'d, $pin>,)+) {}
+        impl<T: Instance, $($ch: ScanEntry<T>),+> ScanChannels<T> for ($($ch,)+) {}
     };
 }
 
 #[cfg(adc_scan)]
-impl_scan_pins!(1, P1);
+impl_scan_channels!(1, C1);
 #[cfg(adc_scan)]
-impl_scan_pins!(2, P1, P2);
+impl_scan_channels!(2, C1, C2);
 #[cfg(adc_scan)]
-impl_scan_pins!(3, P1, P2, P3);
+impl_scan_channels!(3, C1, C2, C3);
 #[cfg(adc_scan)]
-impl_scan_pins!(4, P1, P2, P3, P4);
+impl_scan_channels!(4, C1, C2, C3, C4);
 #[cfg(adc_scan)]
-impl_scan_pins!(5, P1, P2, P3, P4, P5);
+impl_scan_channels!(5, C1, C2, C3, C4, C5);
 #[cfg(adc_scan)]
-impl_scan_pins!(6, P1, P2, P3, P4, P5, P6);
+impl_scan_channels!(6, C1, C2, C3, C4, C5, C6);
 #[cfg(adc_scan)]
-impl_scan_pins!(7, P1, P2, P3, P4, P5, P6, P7);
+impl_scan_channels!(7, C1, C2, C3, C4, C5, C6, C7);
 #[cfg(adc_scan)]
-impl_scan_pins!(8, P1, P2, P3, P4, P5, P6, P7, P8);
+impl_scan_channels!(8, C1, C2, C3, C4, C5, C6, C7, C8);
 #[cfg(adc_scan)]
-impl_scan_pins!(9, P1, P2, P3, P4, P5, P6, P7, P8, P9);
+impl_scan_channels!(9, C1, C2, C3, C4, C5, C6, C7, C8, C9);
 #[cfg(adc_scan)]
-impl_scan_pins!(10, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10);
+impl_scan_channels!(10, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10);
 #[cfg(adc_scan)]
-impl_scan_pins!(11, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11);
+impl_scan_channels!(11, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11);
 #[cfg(adc_scan)]
-impl_scan_pins!(12, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12);
+impl_scan_channels!(12, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12);
 #[cfg(all(adc_scan, adc_ch585))]
-impl_scan_pins!(13, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13);
+impl_scan_channels!(13, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13);
 #[cfg(all(adc_scan, adc_ch585))]
-impl_scan_pins!(14, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14);
+impl_scan_channels!(14, C1, C2, C3, C4, C5, C6, C7, C8, C9, C10, C11, C12, C13, C14);
 
 /// A scan over an ordered set of channels, with the block's DMA engine storing
 /// one 16-bit sample per conversion.
@@ -360,27 +440,27 @@ impl_scan_pins!(14, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14)
 /// The DMA address registers hold halfword offsets, so a sample count maps
 /// directly onto the sequence position.
 #[cfg(adc_scan)]
-pub struct Scan<'d, T: Instance, P: ScanPins<T>> {
-    /// Keeps exclusive ownership of the pads for the scan's lifetime.
-    _pins: P,
+pub struct Scan<'d, T: Instance, P: ScanChannels<T>> {
+    /// Keeps exclusive ownership of the channels for the scan's lifetime.
+    _channels: P,
     channels: [u8; MAX_CHANNELS],
     _phantom: PhantomData<&'d mut T>,
 }
 
 #[cfg(adc_scan)]
-impl<'d, T: Instance, P: ScanPins<T>> Scan<'d, T, P> {
-    /// Take the pins and configure the converter for a scan sequence.
+impl<'d, T: Instance, P: ScanChannels<T>> Scan<'d, T, P> {
+    /// Take the channels and configure the converter for a scan sequence.
     ///
     /// Every pin is floated with its digital input disconnected. The first
-    /// conversion after power-up is discarded, as in [`Adc::new_pin`].
-    pub fn new(peri: Peri<'d, T>, pins: P, config: Config) -> Self {
-        let mut channels = [0; MAX_CHANNELS];
-        P::channels(&mut channels);
-        for &channel in channels.iter().take(P::COUNT) {
+    /// conversion after power-up is discarded, as in [`Adc::blocking_read`].
+    pub fn new(peri: Peri<'d, T>, channels: P, config: Config) -> Self {
+        let mut sequence = [0; MAX_CHANNELS];
+        P::channels(&mut sequence);
+        for &channel in sequence.iter().take(P::COUNT) {
             prepare_pin(channel);
             disconnect(channel);
         }
-        enable::<T>(channels[0], config, false);
+        enable::<T>(sequence[0], config, false);
         // The vendor scan setup lengthens the sample window to seven ADC clocks.
         // CH592 has no sample-time field; its window is fixed.
         #[cfg(adc_ch585)]
@@ -391,8 +471,8 @@ impl<'d, T: Instance, P: ScanPins<T>> Scan<'d, T, P> {
         let _ = peri;
 
         let scan = Self {
-            _pins: pins,
-            channels,
+            _channels: channels,
+            channels: sequence,
             _phantom: PhantomData,
         };
         scan.configure_sequence();
@@ -454,7 +534,7 @@ impl<'d, T: Instance, P: ScanPins<T>> Scan<'d, T, P> {
 }
 
 #[cfg(adc_scan)]
-impl<T: Instance, P: ScanPins<T>> Drop for Scan<'_, T, P> {
+impl<T: Instance, P: ScanChannels<T>> Drop for Scan<'_, T, P> {
     fn drop(&mut self) {
         let regs = T::regs();
         regs.convert().modify(|w| w.set_start(false));
@@ -487,7 +567,7 @@ impl<T: Instance, P: ScanPins<T>> Drop for Scan<'_, T, P> {
 /// pass, the scan-end flag is also accepted, matching the vendor scan example.
 #[must_use = "dropping stops DMA; use blocking_wait or stop"]
 #[cfg(adc_scan)]
-pub struct ScanTransfer<'a, 'd, T: Instance, P: ScanPins<T>> {
+pub struct ScanTransfer<'a, 'd, T: Instance, P: ScanChannels<T>> {
     scan: &'a mut Scan<'d, T, P>,
     buffer: Option<&'static mut [u16]>,
     descriptor: Descriptor,
@@ -496,7 +576,7 @@ pub struct ScanTransfer<'a, 'd, T: Instance, P: ScanPins<T>> {
 }
 
 #[cfg(adc_scan)]
-impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
+impl<'a, 'd, T: Instance, P: ScanChannels<T>> ScanTransfer<'a, 'd, T, P> {
     /// Samples stored so far, counted from `DMA_NOW`.
     pub fn position(&self) -> usize {
         let now = u32::from(T::regs().dma_now().read().dma_now()) << 1;
@@ -622,7 +702,7 @@ impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
 }
 
 #[cfg(adc_scan)]
-impl<T: Instance, P: ScanPins<T>> Drop for ScanTransfer<'_, '_, T, P> {
+impl<T: Instance, P: ScanChannels<T>> Drop for ScanTransfer<'_, '_, T, P> {
     fn drop(&mut self) {
         if !self.finished {
             self.quiesce();
@@ -670,7 +750,7 @@ impl AutoCycle {
 }
 
 impl<'d, T: Instance> Adc<'d, T> {
-    /// Sample the selected channel repeatedly into `buffer`.
+    /// Sample `channel` repeatedly into `buffer`.
     ///
     /// The converter converts once every `cycle` and the block's DMA engine
     /// stores one 16-bit sample per conversion, filling `buffer` in order. The
@@ -679,6 +759,7 @@ impl<'d, T: Instance> Adc<'d, T> {
     /// and the transfer must be waited on or stopped before it is read.
     pub fn start_auto(
         &mut self,
+        channel: &mut impl AdcChannel<T>,
         buffer: &'static mut [u16],
         cycle: AutoCycle,
     ) -> Result<AutoTransfer<'_, 'd, T>, (Error, &'static mut [u16])> {
@@ -692,6 +773,12 @@ impl<'d, T: Instance> Adc<'d, T> {
             Ok(descriptor) => descriptor,
             Err(_) => return Err((Error::Buffer, buffer)),
         };
+
+        let index = channel.channel();
+        let (config, differential) = channel.config(self.config);
+        prepare_pin(index);
+        disconnect(index);
+        enable::<T>(index, config, differential);
 
         let regs = T::regs();
         // Stop a previous user of the engine before moving the buffer window.
@@ -722,6 +809,7 @@ impl<'d, T: Instance> Adc<'d, T> {
             _adc: self,
             buffer: Some(buffer),
             descriptor,
+            channel: index,
             finished: false,
         })
     }
@@ -738,6 +826,8 @@ pub struct AutoTransfer<'a, 'd, T: Instance> {
     _adc: &'a mut Adc<'d, T>,
     buffer: Option<&'static mut [u16]>,
     descriptor: Descriptor,
+    /// Hardware channel, so the pad is restored when the transfer stops.
+    channel: u8,
     finished: bool,
 }
 
@@ -790,6 +880,8 @@ impl<'a, 'd, T: Instance> AutoTransfer<'a, 'd, T> {
             w.set_if_dma_end(true);
             w.set_if_end(true);
         });
+        regs.cfg().modify(|w| w.set_power_on(false));
+        reconnect_channel(self.channel);
         crate::dma::fence();
         self.finished = true;
     }
@@ -849,8 +941,7 @@ fn temperature_config() -> Config {
 ///
 /// CH585 removes the pad's digital input through `PIN_IN_DIS`. CH592 has no
 /// such register: the vendor setup only configures the pin as a floating input
-/// (`GPIO_ModeIN_Floating`), which [`Adc::new_pin`] already does with
-/// `Flex::set_as_input(Pull::None)`.
+/// (`GPIO_ModeIN_Floating`), which [`prepare_pin`] already does.
 #[cfg(adc_ch585)]
 fn disconnect(channel: u8) {
     let Some((port, pin)) = channel_pin(channel) else {
@@ -890,7 +981,6 @@ fn disconnect(_channel: u8) {}
 #[cfg(not(adc_ch585))]
 fn reconnect(_port: u8, _pin: u8) {}
 
-#[cfg(adc_scan)]
 fn reconnect_channel(channel: u8) {
     if let Some((port, pin)) = channel_pin(channel) {
         reconnect(port, pin);
@@ -899,7 +989,6 @@ fn reconnect_channel(channel: u8) {
 
 /// Configure a scan channel as a floating input, which is what the vendor scan
 /// setup does before disabling the digital input.
-#[cfg(adc_scan)]
 fn prepare_pin(channel: u8) {
     let Some((port, pin)) = channel_pin(channel) else {
         return;
@@ -918,7 +1007,7 @@ fn prepare_pin(channel: u8) {
 }
 
 /// The `(port, pin)` behind an ADC channel.
-#[cfg(all(adc_scan, adc_ch585))]
+#[cfg(adc_ch585)]
 fn channel_pin(channel: u8) -> Option<(u8, u8)> {
     // Datasheet table 7-8: A0 is PA4, then PA5, PA12, PA13, PA14, PA15, PA3,
     // PA2, PA1, PA0, PA6, PA7, PA8 and PA9.
@@ -927,7 +1016,7 @@ fn channel_pin(channel: u8) -> Option<(u8, u8)> {
 }
 
 /// The `(port, pin)` behind an ADC channel.
-#[cfg(all(adc_scan, adc_ch592))]
+#[cfg(adc_ch592)]
 fn channel_pin(channel: u8) -> Option<(u8, u8)> {
     // Datasheet pin table: A0-A5 are PA4, PA5, PA12, PA13, PA14 and PA15,
     // A8/A9 are PB0/PB6, and A10-A13 are PA6-PA9. Channels 6 and 7 do not
@@ -991,7 +1080,7 @@ mod sealed {
     }
 }
 
-/// An ADC with the CH585 register layout.
+/// The ADC instance.
 #[allow(private_bounds)]
 pub trait Instance: sealed::Instance + PeripheralType {
     /// Interrupt line of the ADC block. End-of-conversion asserts it; the scan
@@ -1023,6 +1112,18 @@ pub trait AdcPin<T: Instance>: Pin + pin_sealed::Channel {
         <Self as pin_sealed::Channel>::index()
     }
 }
+
+impl<'d, T: Instance, P: AdcPin<T>> channel_sealed::Channel<T> for Peri<'d, P> {
+    fn channel(&self) -> u8 {
+        P::channel().0
+    }
+
+    fn config(&self, base: Config) -> (Config, bool) {
+        (base, false)
+    }
+}
+
+impl<'d, T: Instance, P: AdcPin<T>> AdcChannel<T> for Peri<'d, P> {}
 
 macro_rules! impl_channel {
     ($pin:ident, $channel:literal, $bit:literal) => {
