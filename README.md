@@ -3,21 +3,22 @@
 Rust HAL for WCH CH5xx BLE microcontrollers, with blocking APIs and optional
 Embassy support.
 
-[Documentation](https://docs.rs/ch5xx-hal) · [Examples](examples/ch585)
+[Documentation](https://docs.rs/ch5xx-hal) · [CH585 examples](examples/ch585) · [CH592 examples](examples/ch592)
 
 > **Note**
-> This crate is under development and its API may change. CH585 is the only
-> chip exercised on hardware so far.
+> This crate is under development and its API may change. CH585 and CH592 are
+> the chips exercised on hardware so far.
 
 ## Supported devices
 
 | Chip | Core | Status |
 | --- | --- | --- |
 | CH585 | QingKe V3C | Exercised on hardware |
+| CH592 | QingKe V3C | Clocks, delay, UART0, SDI print and all four TMR time drivers exercised on hardware; other drivers are being brought up |
 
 Register access comes from
 [`ch5xx-metapac`](https://github.com/ch32-rs/ch5xx-data). Select exactly one
-chip feature, currently `ch585`.
+chip feature, for example `ch585` or `ch592`.
 
 ## Driver status
 
@@ -43,22 +44,31 @@ chip feature, currently `ch585`.
 DMA engines are peripheral-local. USBFS suspend/resume, USBHS dynamic
 full-speed fallback and isochronous transfers, I2C bus recovery, SPI slave mode
 and ADC touch-key mode are not implemented; each module documents its own
-limits.
+limits. Drivers whose register block differs per die are compiled only where
+the layout matches: on CH592 that currently excludes `spi`, `adc`, `pwm`,
+`power`, `usb`/`usbhs`, `timer` and `dma`.
 
 ## Quick start
 
 ```rust
-let p = ch5xx_hal::init(ch5xx_hal::rcc::Config::HSI_PLL_24MHZ.into());
+let p = ch5xx_hal::init(ch5xx_hal::rcc::Config::default().into());
 ```
 
-The reset clock is HSI 16 MHz divided by 3. Select the final clock during
-initialization: runtime changes do not rebuild clock-dependent drivers.
+The reset clock is HSI 16 MHz divided by 3 on CH585, and the 32 MHz crystal
+divided by 5 (6.4 MHz) on CH592, which has no internal high-speed oscillator.
+Select the final clock during initialization (`Config::HSI_PLL_*`,
+`Config::PLL_*`, `Config::hse_nearest`): runtime changes do not rebuild
+clock-dependent drivers.
 
 ## Required configuration
 
 Build for `riscv32imc-unknown-none-elf`, not `riscv32imac`: the QingKe V3C has
-no A extension. Shared atomics use `portable-atomic` with the
+no usable A extension. Shared atomics use `portable-atomic` with the
 `critical-section` feature.
+
+Do not enable RISC-V extensions blindly: CH585 reports the B extension and
+executes `+b` code, while CH592 reports A and no B, and a `+b` build traps as an
+illegal instruction.
 
 With `embassy` enabled, select exactly one of `time-driver-systick` or
 `time-driver-tmr0` … `time-driver-tmr3`; none or several is a compile error.
@@ -68,7 +78,14 @@ With `embassy` enabled, select exactly one of `time-driver-systick` or
 ```console
 cd examples/ch585
 cargo run --release --bin blinky
+
+cd examples/ch592
+cargo run --release --bin hello
 ```
+
+The CH59x board is flashed and logged through `probe-rs` over its WCH-Link
+(`probe-rs run --chip CH592`); see
+[`examples/ch592/README.md`](examples/ch592/README.md) for probe selection.
 
 ## License
 
