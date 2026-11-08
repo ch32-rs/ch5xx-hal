@@ -106,7 +106,7 @@ pub mod rtc;
 pub mod spi;
 pub mod timer;
 pub mod uart;
-#[cfg(all(feature = "embassy", usbfs_ch585))]
+#[cfg(all(feature = "embassy", any(usbfs_ch585, usb_ch592)))]
 pub mod usb;
 #[cfg(all(feature = "embassy", usbhs_ch585))]
 pub mod usbhs;

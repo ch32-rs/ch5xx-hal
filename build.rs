@@ -164,6 +164,12 @@ fn main() {
     if register_version_opt(&chip_name, "usbfs").as_deref() == Some("ch585") {
         println!("cargo:rustc-cfg=usbfs_ch585");
     }
+    // CH592 records the same device controller as kind `usb`, version `ch592`.
+    // The device-mode register offsets and field names match the CH585 block;
+    // this layout has no host-mode aliases, which the driver does not use.
+    if register_version_opt(&chip_name, "usb").as_deref() == Some("ch592") {
+        println!("cargo:rustc-cfg=usb_ch592");
+    }
     // USBHS has a separate controller, PHY and device interrupt.
     if register_version_opt(&chip_name, "usbhs").as_deref() == Some("ch585") {
         println!("cargo:rustc-cfg=usbhs_ch585");

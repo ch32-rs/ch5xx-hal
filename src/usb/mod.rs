@@ -444,9 +444,17 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
         let regs = T::regs();
         // Connect D+/D- and the device pull-up. `INT_BUSY` holds the bus in NAK
         // while a completion flag is set, and DMA moves the packets.
+        #[cfg(usbfs_ch585)]
         pac::SYS.pin_config().modify(|w| {
             w.set_pin_usb_en(true);
             w.set_udp_pu_en(true);
+        });
+        // CH592 has the analog-pin enable in PIN_ANALOG_IE, the vendor's
+        // `R16_PIN_ANALOG_IE |= RB_PIN_USB_IE | RB_PIN_USB_DP_PU`.
+        #[cfg(usb_ch592)]
+        pac::SYS.pin_analog_ie().modify(|w| {
+            w.set_pin_usb_ie(true);
+            w.set_pin_usb_dp_pu(true);
         });
         regs.udev_ctrl().write(|w| {
             w.set_ud_port_en(true);
@@ -469,9 +477,15 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
     async fn disable(&mut self) {
         T::Interrupt::disable();
         T::regs().ctrl().write(|w| w.set_uc_dev_pu_en(false));
+        #[cfg(usbfs_ch585)]
         pac::SYS.pin_config().modify(|w| {
             w.set_udp_pu_en(false);
             w.set_pin_usb_en(false);
+        });
+        #[cfg(usb_ch592)]
+        pac::SYS.pin_analog_ie().modify(|w| {
+            w.set_pin_usb_ie(false);
+            w.set_pin_usb_dp_pu(false);
         });
     }
 
@@ -980,10 +994,15 @@ fn auto_toggle<T: Instance>(index: usize) {
 mod sealed {
     use super::pac;
 
+    #[cfg(usbfs_ch585)]
+    pub type Regs = pac::usbfs::Usbfs;
+    #[cfg(usb_ch592)]
+    pub type Regs = pac::usb::Usb;
+
     pub trait Instance {
         type Interrupt: crate::interrupt::typelevel::Interrupt;
 
-        fn regs() -> pac::usbfs::Usbfs;
+        fn regs() -> Regs;
     }
 }
 
@@ -991,6 +1010,7 @@ mod sealed {
 #[allow(private_bounds)]
 pub trait Instance: sealed::Instance + PeripheralType {}
 
+#[cfg(usbfs_ch585)]
 impl sealed::Instance for peripherals::USBFS {
     type Interrupt = interrupt::typelevel::USB;
 
@@ -999,4 +1019,19 @@ impl sealed::Instance for peripherals::USBFS {
     }
 }
 
+#[cfg(usbfs_ch585)]
 impl Instance for peripherals::USBFS {}
+
+// CH592 has one USB block and no high-speed controller. The register block is
+// the device-mode part of the CH585 USBFS layout, recorded as kind `usb`.
+#[cfg(usb_ch592)]
+impl sealed::Instance for peripherals::USB {
+    type Interrupt = interrupt::typelevel::USB;
+
+    fn regs() -> pac::usb::Usb {
+        pac::USB
+    }
+}
+
+#[cfg(usb_ch592)]
+impl Instance for peripherals::USB {}
