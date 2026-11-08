@@ -1,0 +1,18 @@
+[build]
+target = "riscv32imc-unknown-none-elf"
+
+[target.riscv32imc-unknown-none-elf]
+# Flash, reset and stream defmt over RTT in one step. With several WCH-Links
+# attached, select yours with `PROBE_RS_PROBE=<VID:PID:SERIAL>` or
+# `cargo run ... -- --probe <VID:PID:SERIAL>`; a bare run picks the first one.
+runner = "probe-rs run --chip CH592"
+# No `+b`: CH592 reports `misa = 0x40901105` (A, no B), the opposite of the
+# CH585, and a `+b` build traps as an illegal instruction before `main`.
+# `+xwchc` is left out until it has been tried on this die.
+rustflags = []
+
+[unstable]
+build-std = ["core"]
+
+[env]
+DEFMT_LOG = "info"
