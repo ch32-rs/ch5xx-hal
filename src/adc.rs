@@ -2,11 +2,13 @@
 //!
 //! CH585 has one converter, clocked from its own divider rather than `Fsys`.
 //! [`Adc`] does one conversion at a time and polls `CONVERT.EOC_X`. [`Scan`]
-//! samples an ordered sequence of external channels and stores the samples with
-//! the block's local DMA engine; one pass can cover up to fourteen channels.
-//! Touch-key mode shares the same converter and is left untouched.
+//! samples an ordered sequence of channels and stores the samples with the
+//! block's local DMA engine; one pass can cover up to fourteen channels on
+//! CH585 and twelve on CH592. [`Adc::start_auto`] instead repeats one channel
+//! at a fixed interval, with the same DMA engine filling the buffer. Touch-key
+//! mode shares the same converter and is left untouched.
 //!
-//! Scan completion is polled from [`ScanTransfer::blocking_wait`]. The ADC
+//! Scan and auto-DMA completion is polled from the transfer objects. The ADC
 //! interrupt line is asserted by end-of-conversion as well as by the scan and
 //! DMA end flags, and the documented `IE_*` bits do not mask that source, so an
 //! interrupt-driven wait would spend its time in a handler that cannot clear the
@@ -14,25 +16,25 @@
 //! must account for this.
 //!
 //! A channel has to be selected before the converter is powered, which is the
-//! order the vendor setup uses. An external channel also disconnects the pad's
-//! digital input through `PIN_IN_DIS`, or the pin driver fights the signal being
-//! measured. The converter is powered down on drop and the pad is reconnected.
+//! order the vendor setup uses. On CH585 an external channel also disconnects
+//! the pad's digital input through `PIN_IN_DIS`, or the pin driver fights the
+//! signal being measured; CH592 has no such register and only floats the pad.
+//! The converter is powered down on drop and the pad is reconnected.
 //!
 //! The raw result is 12 bits. The vendor notes an offset near the ends of the
 //! range; [`Adc::read`] returns the sample unchanged, and [`Adc::calibrate`]
 //! measures that offset so a caller can add it.
 //!
 //! The register block differs between dies. The module compiles for the CH585
-//! layout (CH581, CH584, CH585) and for CH592, which keeps the single
-//! conversion, temperature and DMA registers but has no scan sequencer, so
-//! [`Scan`] is absent there. Other dies have no driver. Only CH585 has been
-//! run on a board.
+//! layout (CH581, CH584, CH585) and for CH592. CH592 has three `SCAN_CFG2`
+//! entries instead of five, no `SAMPLE_TIME` and no `SCAN_AUTO_TYPE`; it also
+//! routes AIN8/AIN9 to PB0/PB6 and has no AIN6/AIN7. Both dies have been run on
+//! a board. Other dies have no driver.
 
 use core::marker::PhantomData;
 
 use embassy_hal_internal::PeripheralType;
 
-#[cfg(adc_scan)]
 use crate::dma::Descriptor;
 use crate::gpio::{Flex, Pin, Pull};
 use crate::{interrupt, pac, peripherals, Peri};
@@ -268,8 +270,12 @@ impl<'d, T: Instance> Drop for Adc<'d, T> {
 const SCAN_CFG1_ENTRIES: usize = 8;
 
 /// Sequence entries in `SCAN_CFG2`, after `SCAN_CFG1`.
-#[cfg(adc_scan)]
+#[cfg(all(adc_scan, adc_ch585))]
 const SCAN_CFG2_ENTRIES: usize = 5;
+
+/// Sequence entries in `SCAN_CFG2`, after `SCAN_CFG1`.
+#[cfg(all(adc_scan, adc_ch592))]
+const SCAN_CFG2_ENTRIES: usize = 3;
 
 /// The largest scan sequence the sequencer accepts: `CHANNEL` plus the two
 /// sequence registers.
@@ -341,9 +347,9 @@ impl_scan_pins!(10, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10);
 impl_scan_pins!(11, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11);
 #[cfg(adc_scan)]
 impl_scan_pins!(12, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12);
-#[cfg(adc_scan)]
+#[cfg(all(adc_scan, adc_ch585))]
 impl_scan_pins!(13, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13);
-#[cfg(adc_scan)]
+#[cfg(all(adc_scan, adc_ch585))]
 impl_scan_pins!(14, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14);
 
 /// A scan over an ordered set of channels, with the block's DMA engine storing
@@ -376,6 +382,8 @@ impl<'d, T: Instance, P: ScanPins<T>> Scan<'d, T, P> {
         }
         enable::<T>(channels[0], config, false);
         // The vendor scan setup lengthens the sample window to seven ADC clocks.
+        // CH592 has no sample-time field; its window is fixed.
+        #[cfg(adc_ch585)]
         T::regs().convert().modify(|w| w.set_sample_time(3));
         // Discard the first conversion before the scan source is selected, so
         // it cannot start a pass while the DMA engine is still unarmed.
@@ -452,6 +460,7 @@ impl<T: Instance, P: ScanPins<T>> Drop for Scan<'_, T, P> {
         regs.convert().modify(|w| w.set_start(false));
         regs.ctrl_dma().modify(|w| {
             w.set_dma_enable(false);
+            #[cfg(adc_ch585)]
             w.set_scan_auto_type(false);
             w.set_ie_dma_end(false);
             w.set_auto_en(false);
@@ -559,6 +568,9 @@ impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
         regs.convert().modify(|w| w.set_start(false));
         regs.ctrl_dma().modify(|w| {
             w.set_dma_enable(false);
+            // CH592 has no `SCAN_AUTO_TYPE`; this driver starts every pass with
+            // `CONVERT.START` on both dies.
+            #[cfg(adc_ch585)]
             w.set_scan_auto_type(false);
             w.set_ie_dma_end(false);
         });
@@ -577,6 +589,7 @@ impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
         // `IF_DMA_END` is gated by `IE_DMA_END`, as on the timer and SPI engines.
         regs.ctrl_dma().modify(|w| {
             w.set_dma_enable(true);
+            #[cfg(adc_ch585)]
             w.set_scan_auto_type(true);
             w.set_ie_dma_end(true);
         });
@@ -592,6 +605,7 @@ impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
         regs.convert().modify(|w| w.set_start(false));
         regs.ctrl_dma().modify(|w| {
             w.set_dma_enable(false);
+            #[cfg(adc_ch585)]
             w.set_scan_auto_type(false);
             w.set_ie_dma_end(false);
         });
@@ -609,6 +623,181 @@ impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
 
 #[cfg(adc_scan)]
 impl<T: Instance, P: ScanPins<T>> Drop for ScanTransfer<'_, '_, T, P> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.quiesce();
+        }
+    }
+}
+
+// --- timed auto sampling ---------------------------------------------------
+
+/// Period between automatic conversions.
+///
+/// The hardware converts every `(256 - value) * 16` system clocks, so a larger
+/// register value is a shorter period. At the 6.4 MHz reset clock the range is
+/// 2.5 us to 640 us.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AutoCycle(u8);
+
+impl AutoCycle {
+    /// The longest period, 4096 system clocks.
+    pub const LONGEST: Self = Self(0);
+    /// The shortest period, 16 system clocks.
+    pub const SHORTEST: Self = Self(255);
+
+    /// A raw `AUTO_CYCLE` register value.
+    pub const fn raw(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// The closest period that is not longer than `clocks` system clocks.
+    pub const fn from_clocks(clocks: u32) -> Self {
+        let units = clocks / 16;
+        if units >= 256 {
+            Self::LONGEST
+        } else if units == 0 {
+            Self::SHORTEST
+        } else {
+            Self((256 - units) as u8)
+        }
+    }
+
+    /// The programmed period in system clocks.
+    pub const fn clocks(self) -> u32 {
+        (256 - self.0 as u32) * 16
+    }
+}
+
+impl<'d, T: Instance> Adc<'d, T> {
+    /// Sample the selected channel repeatedly into `buffer`.
+    ///
+    /// The converter converts once every `cycle` and the block's DMA engine
+    /// stores one 16-bit sample per conversion, filling `buffer` in order. The
+    /// sequence in [`Scan`] is not involved: this is the single-channel timed
+    /// mode of datasheet section 15.3.3. `buffer` is exclusive static storage
+    /// and the transfer must be waited on or stopped before it is read.
+    pub fn start_auto(
+        &mut self,
+        buffer: &'static mut [u16],
+        cycle: AutoCycle,
+    ) -> Result<AutoTransfer<'_, 'd, T>, (Error, &'static mut [u16])> {
+        if buffer.is_empty() {
+            return Err((Error::Buffer, buffer));
+        }
+        let Some(bytes) = buffer.len().checked_mul(2) else {
+            return Err((Error::Buffer, buffer));
+        };
+        let descriptor = match Descriptor::bytes(buffer.as_ptr() as usize, bytes) {
+            Ok(descriptor) => descriptor,
+            Err(_) => return Err((Error::Buffer, buffer)),
+        };
+
+        let regs = T::regs();
+        // Stop a previous user of the engine before moving the buffer window.
+        regs.convert().modify(|w| w.set_start(false));
+        regs.ctrl_dma().modify(|w| {
+            w.set_auto_en(false);
+            w.set_dma_enable(false);
+            w.set_ie_dma_end(false);
+        });
+        regs.dma_if().write(|w| {
+            w.set_if_dma_end(true);
+            w.set_if_end(true);
+        });
+        // Both address registers hold halfword offsets.
+        regs.dma_beg()
+            .write(|w| w.set_dma_beg((descriptor.start >> 1) as u16));
+        regs.dma_end()
+            .write(|w| w.set_dma_end((descriptor.end >> 1) as u16));
+        regs.auto_cycle().write(|w| w.set_auto_cycle(cycle.0));
+        crate::dma::fence();
+        // The datasheet sequence starts timed sampling with `AUTO_EN`; it does
+        // not ask for a `CONVERT.START` write.
+        regs.ctrl_dma().modify(|w| {
+            w.set_dma_enable(true);
+            w.set_ie_dma_end(true);
+            w.set_auto_en(true);
+        });
+
+        Ok(AutoTransfer {
+            _adc: self,
+            buffer: Some(buffer),
+            descriptor,
+            finished: false,
+        })
+    }
+}
+
+/// A running timed-sampling transfer.
+///
+/// Created by [`Adc::start_auto`]. Completion means the DMA engine reached the
+/// end of the buffer; the converter keeps sampling until the transfer is
+/// stopped.
+#[must_use = "dropping stops auto sampling; use blocking_wait or stop"]
+pub struct AutoTransfer<'a, 'd, T: Instance> {
+    /// Keeps the converter borrowed while the engine is running.
+    _adc: &'a mut Adc<'d, T>,
+    buffer: Option<&'static mut [u16]>,
+    descriptor: Descriptor,
+    finished: bool,
+}
+
+impl<'a, 'd, T: Instance> AutoTransfer<'a, 'd, T> {
+    /// Samples stored so far, counted from `DMA_NOW`.
+    pub fn position(&self) -> usize {
+        let now = u32::from(T::regs().dma_now().read().dma_now()) << 1;
+        now.saturating_sub(self.descriptor.start) as usize / 2
+    }
+
+    /// Every sample in the buffer has been stored.
+    pub fn is_complete(&self) -> bool {
+        T::regs().dma_if().read().if_dma_end()
+    }
+
+    /// Wait for the buffer to fill, then stop the converter.
+    ///
+    /// The timeout is one millisecond per sample, which covers the longest
+    /// programmed period at the reset clock.
+    pub fn blocking_wait(mut self) -> Result<&'static mut [u16], (Error, &'static mut [u16])> {
+        let timeout = self.descriptor.len() as u64 / 2 + 1;
+        let deadline = deadline_in(timeout);
+        while !self.is_complete() {
+            if timed_out(deadline) {
+                self.quiesce();
+                return Err((Error::Timeout, self.buffer.take().unwrap()));
+            }
+            core::hint::spin_loop();
+        }
+        self.quiesce();
+        Ok(self.buffer.take().unwrap())
+    }
+
+    /// Stop the converter and hand the buffer back with `position()` samples
+    /// valid.
+    pub fn stop(mut self) -> &'static mut [u16] {
+        self.quiesce();
+        self.buffer.take().unwrap()
+    }
+
+    fn quiesce(&mut self) {
+        let regs = T::regs();
+        regs.ctrl_dma().modify(|w| {
+            w.set_auto_en(false);
+            w.set_dma_enable(false);
+            w.set_ie_dma_end(false);
+        });
+        regs.convert().modify(|w| w.set_start(false));
+        regs.dma_if().write(|w| {
+            w.set_if_dma_end(true);
+            w.set_if_end(true);
+        });
+        crate::dma::fence();
+        self.finished = true;
+    }
+}
+
+impl<T: Instance> Drop for AutoTransfer<'_, '_, T> {
     fn drop(&mut self) {
         if !self.finished {
             self.quiesce();
@@ -714,22 +903,52 @@ fn reconnect_channel(channel: u8) {
 /// setup does before disabling the digital input.
 #[cfg(adc_scan)]
 fn prepare_pin(channel: u8) {
-    let Some((0, pin)) = channel_pin(channel) else {
+    let Some((port, pin)) = channel_pin(channel) else {
         return;
     };
     let gpio = pac::GPIO;
-    gpio.pa_dir().modify(|w| w.set_pa_dir(pin as usize, false));
-    gpio.pa_pu().modify(|w| w.set_pa_pu(pin as usize, false));
-    gpio.pa_pd_drv().modify(|w| w.set_pa_pd_drv(pin as usize, false));
+    let pin = pin as usize;
+    if port == 0 {
+        gpio.pa_dir().modify(|w| w.set_pa_dir(pin, false));
+        gpio.pa_pu().modify(|w| w.set_pa_pu(pin, false));
+        gpio.pa_pd_drv().modify(|w| w.set_pa_pd_drv(pin, false));
+    } else {
+        gpio.pb_dir().modify(|w| w.set_pb_dir(pin, false));
+        gpio.pb_pu().modify(|w| w.set_pb_pu(pin, false));
+        gpio.pb_pd_drv().modify(|w| w.set_pb_pd_drv(pin, false));
+    }
 }
 
-/// The pad behind an ADC channel. All external channels are on port A.
-#[cfg(adc_ch585)]
+/// The `(port, pin)` behind an ADC channel.
+#[cfg(all(adc_scan, adc_ch585))]
 fn channel_pin(channel: u8) -> Option<(u8, u8)> {
     // Datasheet table 7-8: A0 is PA4, then PA5, PA12, PA13, PA14, PA15, PA3,
     // PA2, PA1, PA0, PA6, PA7, PA8 and PA9.
     const PINS: [u8; 14] = [4, 5, 12, 13, 14, 15, 3, 2, 1, 0, 6, 7, 8, 9];
     PINS.get(channel as usize).map(|&pin| (0, pin))
+}
+
+/// The `(port, pin)` behind an ADC channel.
+#[cfg(all(adc_scan, adc_ch592))]
+fn channel_pin(channel: u8) -> Option<(u8, u8)> {
+    // Datasheet pin table: A0-A5 are PA4, PA5, PA12, PA13, PA14 and PA15,
+    // A8/A9 are PB0/PB6, and A10-A13 are PA6-PA9. Channels 6 and 7 do not
+    // exist on this die.
+    Some(match channel {
+        0 => (0, 4),
+        1 => (0, 5),
+        2 => (0, 12),
+        3 => (0, 13),
+        4 => (0, 14),
+        5 => (0, 15),
+        8 => (1, 0),
+        9 => (1, 6),
+        10 => (0, 6),
+        11 => (0, 7),
+        12 => (0, 8),
+        13 => (0, 9),
+        _ => return None,
+    })
 }
 
 /// One millisecond from now, in system-clock cycles.
@@ -818,16 +1037,27 @@ macro_rules! impl_channel {
     };
 }
 
-// The channel number is the pin's index in the family pin list.
+// The channel number is the pin's index in the family pin list. CH592 drops
+// AIN6/AIN7 (PA3/PA2) and moves AIN8/AIN9 from PA1/PA0 to PB0/PB6.
 impl_channel!(PA4, 0, 4);
 impl_channel!(PA5, 1, 5);
 impl_channel!(PA12, 2, 12);
 impl_channel!(PA13, 3, 13);
 impl_channel!(PA14, 4, 14);
 impl_channel!(PA15, 5, 15);
+#[cfg(adc_ch585)]
 impl_channel!(PA3, 6, 3);
+#[cfg(adc_ch585)]
 impl_channel!(PA2, 7, 2);
+#[cfg(adc_ch585)]
 impl_channel!(PA1, 8, 1);
+#[cfg(adc_ch585)]
 impl_channel!(PA0, 9, 0);
+#[cfg(adc_ch592)]
+impl_channel!(PB0, 8, 0);
+#[cfg(adc_ch592)]
+impl_channel!(PB6, 9, 6);
 impl_channel!(PA6, 10, 6);
 impl_channel!(PA7, 11, 7);
+impl_channel!(PA8, 12, 8);
+impl_channel!(PA9, 13, 9);

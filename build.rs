@@ -108,15 +108,19 @@ fn main() {
         _ => {}
     }
     // The ADC block is not one layout either, and CH572 has none. CH592 keeps
-    // the CH585 single-conversion, temperature and DMA-into-`DATA` registers
-    // but has no scan sequencer (`SCAN_CFG*`, `SAMPLE_TIME`); the driver gates
-    // the scan API on `adc_scan`. Any other version does not compile the module.
+    // the CH585 single-conversion, temperature and DMA registers and has a
+    // scan sequencer too, but with three `SCAN_CFG2` entries instead of five
+    // and without `SAMPLE_TIME` or `SCAN_AUTO_TYPE`; the driver branches on
+    // the version. Any other version does not compile the module.
     match register_version_opt(&chip_name, "adc").as_deref() {
         Some("ch585") => {
             println!("cargo:rustc-cfg=adc_ch585");
             println!("cargo:rustc-cfg=adc_scan");
         }
-        Some("ch592") => println!("cargo:rustc-cfg=adc_ch592"),
+        Some("ch592") => {
+            println!("cargo:rustc-cfg=adc_ch592");
+            println!("cargo:rustc-cfg=adc_scan");
+        }
         _ => {}
     }
     // The touch-key block is the ADC's charge-transfer front end. CH573, CH583,
