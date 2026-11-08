@@ -27,6 +27,7 @@ before flashing.
 | `clk_pll48` | 48 MHz from the 480 MHz PLL, Flash timing and read-back |
 | `embassy_time` | Embassy time driver; pick SysTick or TMR0–TMR3 with features |
 | `sleep_wake` | `power::halt`/`power::sleep` with RTC wake, self-checked |
+| `timer_counter` | `timer` counters on a no-DMA (TMR0) and a full (TMR2) block |
 | `uart_loopback` | UART0 internal loopback, self-checked |
 
 Self-checking examples log a `SELFTEST PASS` or `SELFTEST FAIL` line, following
@@ -39,8 +40,11 @@ Build for a TMR timebase without editing the manifest:
 cargo build --release --bin embassy_time --no-default-features --features time-driver-tmr1
 ```
 
-All four TMR instances work, including TMR0/TMR3, whose register block omits the
-timer-local DMA registers.
+All four TMR instances work as Embassy timebases, including TMR0/TMR3, whose
+register block omits the timer-local DMA registers. The `timer` and `dma`
+modules now compile on this die; counter, capture, PWM and interrupt APIs are
+available, while `DmaInstance` keeps the DMA entry points off the no-DMA
+instances at compile time.
 
 ## Notes
 
