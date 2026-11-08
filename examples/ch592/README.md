@@ -28,6 +28,7 @@ before flashing.
 | `clk_pll48` | 48 MHz from the 480 MHz PLL, Flash timing and read-back |
 | `embassy_time` | Embassy time driver; pick SysTick or TMR0–TMR3 with features |
 | `i2c_scan` | I2C0 address scan on PB15/PB14 |
+| `pwm_out` | PWM8 on PB6 measured back on PB5; self-checked |
 | `rtc_calendar` | RTC calendar, one-shot alarm and interval timer |
 | `sleep_wake` | `power::halt`/`power::sleep` with RTC wake, self-checked |
 | `spi_loopback` | SPI0 mode 0 and mode 3 loopback; jumper PA14 to PA15 on P2 |
@@ -63,7 +64,8 @@ instances at compile time.
   probe alone does not supply VBUS. Until a host attaches it logs
   `usb attach false` and stays idle.
 - `spi_loopback` needs a jumper from P2 pin 14 (PA14, MOSI) to pin 16 (PA15,
-  MISO). PB14/PB15 are the I2C pair on this die and are also the 2-wire debug
+  MISO), and `pwm_out` needs PB6 shorted to PB5 on the pin header it exposes.
+  PB14/PB15 are the I2C pair on this die and are also the 2-wire debug
   interface while the ISP-config debug enable stays set, so `i2c_scan` sees
   spurious arbitration-loss flags while probe-rs is attached; a real I2C run
   needs the debug interface disabled or a wired slave.

@@ -121,8 +121,12 @@ fn main() {
     }
     // PWMx is one block for PWM4-PWM11. The CH573 and CH572 layouts differ, so
     // the driver only compiles where the family selects the CH585 version.
-    if register_version_opt(&chip_name, "pwmx").as_deref() == Some("ch585") {
-        println!("cargo:rustc-cfg=pwmx_ch585");
+    // CH592 has the same bytes at the same offsets but models the four PWMn_DATA
+    // bytes as 8-bit registers instead of 8-bit fields in two 32-bit words.
+    match register_version_opt(&chip_name, "pwmx").as_deref() {
+        Some("ch585") => println!("cargo:rustc-cfg=pwmx_ch585"),
+        Some("ch592") => println!("cargo:rustc-cfg=pwmx_ch592"),
+        _ => {}
     }
     // The calendar counter is the CH585 layout, which the CH573 version shares.
     // CH572 counts on a different set of registers.

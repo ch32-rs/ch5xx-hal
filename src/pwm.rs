@@ -13,9 +13,11 @@
 //! the shared bit, so every channel has to agree. The block raises `PWMX_SPI1`,
 //! the same line as SPI1; this driver does not claim the interrupt.
 //!
-//! The register layout is the CH585 one (CH581, CH584, CH585). CH595 selects the
-//! same registers but its family file lists no pins. 16-bit cycle mode is not
-//! implemented.
+//! The register layout is the CH585 one (CH581, CH584, CH585). CH592 has the
+//! same bytes at the same offsets but models the duty registers as eight 8-bit
+//! registers instead of four 8-bit fields in two 32-bit words; only the duty
+//! write differs. CH595 selects the same registers but its family file lists
+//! no pins. 16-bit cycle mode is not implemented.
 
 use core::convert::Infallible;
 use core::marker::PhantomData;
@@ -227,6 +229,7 @@ impl<'a, T: Instance> SetDutyCycle for Channel<'a, T> {
 
 fn set_duty<T: Instance>(index: u8, duty: u8) {
     let regs = T::regs();
+    #[cfg(pwmx_ch585)]
     match index {
         0 => regs.pwm4_7_data().modify(|w| w.set_pwm4_data__pwm4_data(duty)),
         1 => regs.pwm4_7_data().modify(|w| w.set_pwm5_data__pwm4_data(duty)),
@@ -236,6 +239,18 @@ fn set_duty<T: Instance>(index: u8, duty: u8) {
         5 => regs.pwm8_11_data().modify(|w| w.set_pwm9_data__pwm6_data(duty)),
         6 => regs.pwm8_11_data().modify(|w| w.set_pwm10_data__pwm7_data(duty)),
         _ => regs.pwm8_11_data().modify(|w| w.set_pwm11_data__pwm7_data(duty)),
+    }
+    // CH592 exposes the same eight bytes as standalone 8-bit registers.
+    #[cfg(pwmx_ch592)]
+    match index {
+        0 => regs.pwm4_data().write(|w| w.set_pwm4_data(duty)),
+        1 => regs.pwm5_data().write(|w| w.set_pwm5_data(duty)),
+        2 => regs.pwm6_data().write(|w| w.set_pwm6_data(duty)),
+        3 => regs.pwm7_data().write(|w| w.set_pwm7_data(duty)),
+        4 => regs.pwm8_data().write(|w| w.set_pwm8_data(duty)),
+        5 => regs.pwm9_data().write(|w| w.set_pwm9_data(duty)),
+        6 => regs.pwm10_data().write(|w| w.set_pwm10_data(duty)),
+        _ => regs.pwm11_data().write(|w| w.set_pwm11_data(duty)),
     }
 }
 
@@ -322,29 +337,29 @@ macro_rules! impl_pin {
     };
 }
 
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PA12, 0, Some(false));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PA6, 0, Some(true));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PA13, 1, Some(false));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PA7, 1, Some(true));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB0, 2, None);
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB4, 3, Some(false));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB1, 3, Some(true));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB6, 4, Some(false));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB2, 4, Some(true));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB7, 5, Some(false));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB3, 5, Some(true));
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB14, 6, None);
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pin!(PB23, 7, None);

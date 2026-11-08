@@ -96,7 +96,7 @@ pub mod delay;
 pub mod dma;
 pub mod gpio;
 pub mod i2c;
-#[cfg(pwmx_ch585)]
+#[cfg(any(pwmx_ch585, pwmx_ch592))]
 pub mod pwm;
 #[cfg(any(power_sleep, power_sleep_ch59x))]
 pub mod power;
