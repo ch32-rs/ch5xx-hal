@@ -26,6 +26,7 @@ before flashing.
 | `hello` | Default 6.4 MHz clock, `delay`, defmt logging |
 | `clk_pll48` | 48 MHz from the 480 MHz PLL, Flash timing and read-back |
 | `embassy_time` | Embassy time driver; pick SysTick or TMR0–TMR3 with features |
+| `sleep_wake` | `power::halt`/`power::sleep` with RTC wake, self-checked |
 | `uart_loopback` | UART0 internal loopback, self-checked |
 
 Self-checking examples log a `SELFTEST PASS` or `SELFTEST FAIL` line, following
@@ -43,6 +44,11 @@ timer-local DMA registers.
 
 ## Notes
 
+- The probe cannot reach the core while it is stopped, so `sleep_wake` ends its
+  RTT session at the first sleep and records its verdict in SRAM instead. Build
+  it without the Embassy time driver so SysTick belongs to the blocking delay:
+  `cargo run --release --bin sleep_wake --no-default-features`, then read the
+  address printed before the first sleep with `probe-rs read`.
 - `probe-rs` now attaches to this die; older versions failed with a bulk-read
   timeout while the stock firmware held the debug pins.
 - The HAL also implements the WCH-Link SDI print channel on CH592
