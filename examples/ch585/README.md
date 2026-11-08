@@ -59,6 +59,8 @@ cargo build --release --bins --no-default-features --features time-driver-tmr0
 | `sleep_wake` | Halt and sleep, waking on the RTC; reports the measured interval and checks the clock afterwards |
 | `usb_cdc_echo` | CDC ACM serial device on PB11/PB10; echoes each received packet |
 | `usbhs_cdc_echo` | High-speed CDC ACM device on PB13/PB12 |
+| `usb_endpoints` | Vendor-class full-speed device that exercises endpoints 1 to 7: three echo pairs and a pattern source |
+| `usbhs_endpoints` | The same endpoint coverage on the high-speed block |
 
 ## Notes
 
