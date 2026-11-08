@@ -14,7 +14,7 @@ Embassy support.
 | Chip | Core | Status |
 | --- | --- | --- |
 | CH585 | QingKe V3C | Exercised on hardware |
-| CH592 | QingKe V3C | Clocks, delay, UART0, SDI print and all four TMR time drivers exercised on hardware; other drivers are being brought up |
+| CH592 | QingKe V3C | Clocks, delay, GPIO, UART0, SPI0, ADC, RTC, watchdog, PWM, timers, power and TouchKey exercised on hardware; USBFS builds, host enumeration and I2C0 pending |
 
 Register access comes from
 [`ch5xx-metapac`](https://github.com/ch32-rs/ch5xx-data). Select exactly one
@@ -30,6 +30,7 @@ chip feature, for example `ch585` or `ch592`.
 | `i2c` | I2C0 master, blocking and async, up to 400 kHz |
 | `spi` | SPI0/SPI1 master, blocking and async, SPI0 local DMA |
 | `adc` | Single conversions, temperature and battery channels, polled DMA scans |
+| `touchkey` | Charge-transfer touch keys through the ADC, polled |
 | `pwm` | PWM4–PWM11 duty control |
 | `rtc` | Calendar, one-shot alarm, interval timer |
 | `watchdog` | Window watchdog, reset cause, battery detector |
@@ -42,11 +43,12 @@ chip feature, for example `ch585` or `ch592`.
 | USB host, BLE, NFC | Not implemented |
 
 DMA engines are peripheral-local. USBFS suspend/resume, USBHS dynamic
-full-speed fallback and isochronous transfers, I2C bus recovery, SPI slave mode
-and ADC touch-key mode are not implemented; each module documents its own
-limits. Drivers whose register block differs per die are compiled only where
-the layout matches: on CH592 that currently excludes `spi`, `adc`, `pwm`,
-`power`, `usb`/`usbhs`, `timer` and `dma`.
+full-speed fallback and isochronous transfers, I2C bus recovery and SPI slave
+mode are not implemented; each module documents its own limits. Blocks that
+differ per die select a variant (CH592 uses `pwmx_ch592`, `usb_ch592`,
+`power_sleep_ch59x` and the mixed FULL/NODMA timer blocks) or are absent there
+(the ADC scan sequencer, SPI1 and USBHS). LCD, BLE and NFC have no driver on
+any die.
 
 ## Quick start
 
