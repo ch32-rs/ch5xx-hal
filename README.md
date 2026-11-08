@@ -31,7 +31,7 @@ chip feature, for example `ch585` or `ch592`.
 | `spi` | SPI0/SPI1 master, blocking and async, SPI0 local DMA |
 | `adc` | Single conversions, temperature and battery channels, polled DMA scans |
 | `touchkey` | Charge-transfer touch keys through the ADC, polled |
-| `pwm` | PWM4–PWM11 duty control |
+| `pwm` | PWM4–PWM11 duty, 16-bit cycle and duty on PWM4–PWM9, channel-pair stagger |
 | `rtc` | Calendar, one-shot alarm, interval timer |
 | `watchdog` | Window watchdog, reset cause, battery detector |
 | `delay` | SysTick or the Embassy timebase |
