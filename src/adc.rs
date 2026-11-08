@@ -706,10 +706,8 @@ impl<'d, T: Instance> Adc<'d, T> {
             w.set_if_end(true);
         });
         // Both address registers hold halfword offsets.
-        regs.dma_beg()
-            .write(|w| w.set_dma_beg((descriptor.start >> 1) as u16));
-        regs.dma_end()
-            .write(|w| w.set_dma_end((descriptor.end >> 1) as u16));
+        regs.dma_beg().write(|w| w.set_dma_beg((descriptor.start >> 1) as u16));
+        regs.dma_end().write(|w| w.set_dma_end((descriptor.end >> 1) as u16));
         regs.auto_cycle().write(|w| w.set_auto_cycle(cycle.0));
         crate::dma::fence();
         // The datasheet sequence starts timed sampling with `AUTO_EN`; it does
