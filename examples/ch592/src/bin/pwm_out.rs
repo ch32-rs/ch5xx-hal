@@ -11,12 +11,11 @@
 //! counts `Fsys`, so the edge-to-edge span in its ticks is the period in clock
 //! cycles and needs no external timebase.
 //!
-//! The period is not timed with the RTC because the 32 kHz domain resets to the
-//! internal RC (`CK32K_CONFIG.RB_CLK_OSC32K_XT` is clear), not the board's
-//! 32.768 kHz crystal. On this board the RC runs about ten percent fast, so an
-//! "RTC second" is short and undercounts the edges; that is what made an
-//! earlier version report 353 Hz. The duty is measured over forty periods, so
-//! the sample count is high enough for a percentage.
+//! The period is timed with TMR2 on `Fsys`, not the RTC: the 32 kHz domain
+//! defaults to the internal RC (`CK32K_CONFIG.RB_CLK_OSC32K_XT` is clear) and
+//! the counter divides by 32768, which does not track the 32.000 kHz nominal
+//! closely enough for a cycle-accurate period. The duty is measured over forty
+//! periods, so the sample count is high enough for a percentage.
 //!
 //! After the plain check, PWM4/PWM5 stagger is enabled with only PWM5 driving.
 //! The pair then takes turns, so PWM5 appears on every other cycle and its
