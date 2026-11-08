@@ -119,6 +119,19 @@ fn main() {
         Some("ch592") => println!("cargo:rustc-cfg=adc_ch592"),
         _ => {}
     }
+    // The touch-key block is the ADC's charge-transfer front end. CH573, CH583,
+    // CH585 and CH592 keep the COUNT/CONVERT pair and the CFG power bit that
+    // the sampling driver programs; CH595 replaced them with the CFG2 transfer
+    // registers and CH572 has no block. Gate on the register set rather than on
+    // the version, because the unused CFG bits differ between the shared dies.
+    if let Some(version) = register_version_opt(&chip_name, "touchkey") {
+        let path = data_root().join(format!("registers/touchkey_{version}.yaml"));
+        let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+        let names = register_names(&text);
+        if names.iter().any(|name| name == "COUNT") && names.iter().any(|name| name == "CONVERT") {
+            println!("cargo:rustc-cfg=touchkey_charge");
+        }
+    }
     // PWMx is one block for PWM4-PWM11. The CH573 and CH572 layouts differ, so
     // the driver only compiles where the family selects the CH585 version.
     // CH592 has the same bytes at the same offsets but models the four PWMn_DATA

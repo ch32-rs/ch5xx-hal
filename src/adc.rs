@@ -633,7 +633,7 @@ const TEMPERATURE_CALIB: u32 = 0x0007_f014;
 /// Touch-key power is cleared first, because the vendor setup treats the two as
 /// mutually exclusive. `differential` selects the input mode the temperature
 /// sensor needs.
-fn enable<T: Instance>(channel: u8, config: Config, differential: bool) {
+pub(crate) fn enable<T: Instance>(channel: u8, config: Config, differential: bool) {
     let regs = T::regs();
     // The touch-key block is the other user of this converter, and the vendor
     // setup powers it down before an ADC conversion.
@@ -738,11 +738,11 @@ fn deadline() -> u64 {
 }
 
 /// `millis` milliseconds from now, in system-clock cycles.
-fn deadline_in(millis: u64) -> u64 {
+pub(crate) fn deadline_in(millis: u64) -> u64 {
     cycles() + u64::from(crate::rcc::clocks().sysclk.0) / 1000 * millis
 }
 
-fn timed_out(deadline: u64) -> bool {
+pub(crate) fn timed_out(deadline: u64) -> bool {
     cycles().wrapping_sub(deadline) < (1 << 63)
 }
 

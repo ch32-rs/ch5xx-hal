@@ -105,6 +105,8 @@ pub mod rtc;
 #[cfg(spi_fifo)]
 pub mod spi;
 pub mod timer;
+#[cfg(all(touchkey_charge, any(adc_ch585, adc_ch592)))]
+pub mod touchkey;
 pub mod uart;
 #[cfg(all(feature = "embassy", any(usbfs_ch585, usb_ch592)))]
 pub mod usb;
