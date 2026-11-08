@@ -29,6 +29,7 @@ before flashing.
 | `sleep_wake` | `power::halt`/`power::sleep` with RTC wake, self-checked |
 | `timer_counter` | `timer` counters on a no-DMA (TMR0) and a full (TMR2) block |
 | `uart_loopback` | UART0 internal loopback, self-checked |
+| `usb_cdc_echo` | USB full-speed CDC ACM echo on PB11/PB10; needs a host cable |
 
 Self-checking examples log a `SELFTEST PASS` or `SELFTEST FAIL` line, following
 the CH585 bench tests: drive both ends inside the chip or with one jumper, then
@@ -53,6 +54,9 @@ instances at compile time.
   it without the Embassy time driver so SysTick belongs to the blocking delay:
   `cargo run --release --bin sleep_wake --no-default-features`, then read the
   address printed before the first sleep with `probe-rs read`.
+- `usb_cdc_echo` needs the board's USB-C connector wired to a host; the debug
+  probe alone does not supply VBUS. Until a host attaches it logs
+  `usb attach false` and stays idle.
 - `probe-rs` now attaches to this die; older versions failed with a bulk-read
   timeout while the stock firmware held the debug pins.
 - The HAL also implements the WCH-Link SDI print channel on CH592
