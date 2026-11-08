@@ -123,14 +123,37 @@ impl Default for Config {
 }
 
 mod channel_sealed {
-    use super::{Config, Instance};
+    use super::{disconnect_pad, prepare_pad, reconnect_pad, release_pad, Config, Instance};
 
     pub trait Channel<T: Instance> {
         /// The hardware channel index.
-        fn channel(&self) -> u8;
+        fn index() -> u8;
+        /// The pad behind an external channel, as `(port, pin)`.
+        fn pad() -> Option<(u8, u8)> {
+            None
+        }
         /// The converter configuration this channel needs, and whether the
         /// conversion is differential.
-        fn config(&self, base: Config) -> (Config, bool);
+        fn config(&self, base: Config) -> (Config, bool) {
+            (base, false)
+        }
+        /// Float the pad and cut its digital input before the converter powers.
+        fn prepare() {
+            if let Some((port, pin)) = Self::pad() {
+                prepare_pad(port, pin);
+                disconnect_pad(port, pin);
+            }
+        }
+        /// Power the converter down and restore the pad.
+        fn release() {
+            release_pad::<T>(Self::pad());
+        }
+        /// Restore the pad without touching the converter.
+        fn restore() {
+            if let Some((port, pin)) = Self::pad() {
+                reconnect_pad(port, pin);
+            }
+        }
     }
 }
 
@@ -151,7 +174,7 @@ pub struct Temperature {
 }
 
 impl channel_sealed::Channel<peripherals::ADC> for Temperature {
-    fn channel(&self) -> u8 {
+    fn index() -> u8 {
         TEMPERATURE_CHANNEL
     }
 
@@ -178,12 +201,8 @@ impl Drop for Temperature {
 pub struct Battery;
 
 impl channel_sealed::Channel<peripherals::ADC> for Battery {
-    fn channel(&self) -> u8 {
+    fn index() -> u8 {
         BATTERY_CHANNEL
-    }
-
-    fn config(&self, base: Config) -> (Config, bool) {
-        (base, false)
     }
 }
 
@@ -210,16 +229,19 @@ impl<'d, T: Instance> Adc<'d, T> {
     /// converter powers up, and restored afterwards. The first conversion
     /// after power-up is stale; as in the vendor flow, the sample returned is
     /// the second one.
-    pub fn blocking_read(&mut self, channel: &mut impl AdcChannel<T>) -> Result<u16, Error> {
-        let index = channel.channel();
-        let (config, differential) = channel.config(self.config);
-        prepare_pin(index);
-        disconnect(index);
-        enable::<T>(index, config, differential);
+    pub fn blocking_read<C: AdcChannel<T>>(&mut self, channel: &mut C) -> Result<u16, Error> {
+        self.begin(channel);
         let result = convert_twice::<T>();
-        T::regs().cfg().modify(|w| w.set_power_on(false));
-        reconnect_channel(index);
+        <C as channel_sealed::Channel<T>>::release();
         result
+    }
+
+    /// Float the pad, cut its digital input and power the converter up.
+    fn begin<C: AdcChannel<T>>(&self, channel: &C) {
+        let index = <C as channel_sealed::Channel<T>>::index();
+        let (config, differential) = channel.config(self.config);
+        <C as channel_sealed::Channel<T>>::prepare();
+        enable::<T>(index, config, differential);
     }
 
     /// Power the internal temperature sensor and return its channel.
@@ -239,16 +261,14 @@ impl<'d, T: Instance> Adc<'d, T> {
     pub fn calibrate(&mut self) -> Result<i16, Error> {
         let regs = T::regs();
         let saved = regs.cfg().read();
-        let (gain, gain2) = Gain::Unity.fields();
-        regs.cfg().write(|w| {
-            w.set_buf_en(true);
-            w.set_diff_en(false);
-            w.set_ofs_test(true);
-            w.set_pga_gain10(gain);
-            w.set_clk_div(self.config.sample_clock as u8);
-            w.set_power_on(true);
-        });
-        regs.convert().modify(|w| w.set_pga_gain2(gain2));
+        let unity = Config {
+            gain: Gain::Unity,
+            sample_clock: self.config.sample_clock,
+        };
+        // The single-ended unity-gain setup also turns the input buffer on,
+        // which the shorted input needs.
+        enable::<T>(regs.channel().read().ch_inx(), unity, false);
+        regs.cfg().modify(|w| w.set_ofs_test(true));
         let result = calibrate_offset::<T>();
         regs.cfg().write_value(saved);
         result
@@ -267,12 +287,6 @@ impl<'d, T: Instance> Adc<'d, T> {
         let reference = if reference == 0 { 25 } else { reference };
         let counts = i32::from(calib as u16);
         reference + (i32::from(sample) - counts) * 100 / 283
-    }
-}
-
-impl<T: Instance> Drop for Adc<'_, T> {
-    fn drop(&mut self) {
-        T::regs().cfg().modify(|w| w.set_power_on(false));
     }
 }
 
@@ -332,13 +346,11 @@ pub const MAX_CHANNELS: usize = 1 + SCAN_CFG1_ENTRIES + SCAN_CFG2_ENTRIES;
 mod scan_sealed {
     use super::{Instance, MAX_CHANNELS};
 
-    pub(crate) trait Entry<T: Instance> {
-        fn scan_channel() -> u8;
-    }
-
     pub(crate) trait Sequence<T: Instance> {
         const COUNT: usize;
         fn channels(sequence: &mut [u8; MAX_CHANNELS]);
+        fn prepare();
+        fn release();
     }
 }
 
@@ -349,24 +361,10 @@ mod scan_sealed {
 /// [`Adc::blocking_read`] or [`Adc::start_auto`].
 #[cfg(adc_scan)]
 #[allow(private_bounds)]
-pub trait ScanEntry<T: Instance>: scan_sealed::Entry<T> {}
-
-#[cfg(adc_scan)]
-impl<'d, T: Instance, P: AdcPin<T>> scan_sealed::Entry<T> for Peri<'d, P> {
-    fn scan_channel() -> u8 {
-        P::channel().0
-    }
-}
+pub trait ScanEntry<T: Instance>: channel_sealed::Channel<T> {}
 
 #[cfg(adc_scan)]
 impl<'d, T: Instance, P: AdcPin<T>> ScanEntry<T> for Peri<'d, P> {}
-
-#[cfg(adc_scan)]
-impl scan_sealed::Entry<peripherals::ADC> for Battery {
-    fn scan_channel() -> u8 {
-        BATTERY_CHANNEL
-    }
-}
 
 #[cfg(adc_scan)]
 impl ScanEntry<peripherals::ADC> for Battery {}
@@ -390,12 +388,19 @@ macro_rules! impl_scan_channels {
             const COUNT: usize = $count;
 
             fn channels(sequence: &mut [u8; MAX_CHANNELS]) {
-                let mut index = 0;
-                $(
-                    sequence[index] = <$ch as scan_sealed::Entry<T>>::scan_channel();
-                    index += 1;
-                )+
-                let _ = index;
+                let entries = [$(
+                    <$ch as channel_sealed::Channel<T>>::index(),
+                )+];
+                sequence[..$count].copy_from_slice(&entries);
+            }
+
+            fn prepare() {
+                $(<$ch as channel_sealed::Channel<T>>::prepare();)+
+            }
+
+            fn release() {
+                T::regs().cfg().modify(|w| w.set_power_on(false));
+                $(<$ch as channel_sealed::Channel<T>>::restore();)+
             }
         }
 
@@ -456,10 +461,7 @@ impl<'d, T: Instance, P: ScanChannels<T>> Scan<'d, T, P> {
     pub fn new(peri: Peri<'d, T>, channels: P, config: Config) -> Self {
         let mut sequence = [0; MAX_CHANNELS];
         P::channels(&mut sequence);
-        for &channel in sequence.iter().take(P::COUNT) {
-            prepare_pin(channel);
-            disconnect(channel);
-        }
+        P::prepare();
         enable::<T>(sequence[0], config, false);
         // The vendor scan setup lengthens the sample window to seven ADC clocks.
         // CH592 has no sample-time field; its window is fixed.
@@ -554,10 +556,7 @@ impl<T: Instance, P: ScanChannels<T>> Drop for Scan<'_, T, P> {
             w.set_if_dma_end(true);
             w.set_if_end(true);
         });
-        regs.cfg().modify(|w| w.set_power_on(false));
-        for &channel in self.channels.iter().take(P::COUNT) {
-            reconnect_channel(channel);
-        }
+        P::release();
     }
 }
 
@@ -757,9 +756,9 @@ impl<'d, T: Instance> Adc<'d, T> {
     /// sequence in [`Scan`] is not involved: this is the single-channel timed
     /// mode of datasheet section 15.3.3. `buffer` is exclusive static storage
     /// and the transfer must be waited on or stopped before it is read.
-    pub fn start_auto(
+    pub fn start_auto<C: AdcChannel<T>>(
         &mut self,
-        channel: &mut impl AdcChannel<T>,
+        channel: &mut C,
         buffer: &'static mut [u16],
         cycle: AutoCycle,
     ) -> Result<AutoTransfer<'_, 'd, T>, (Error, &'static mut [u16])> {
@@ -774,11 +773,7 @@ impl<'d, T: Instance> Adc<'d, T> {
             Err(_) => return Err((Error::Buffer, buffer)),
         };
 
-        let index = channel.channel();
-        let (config, differential) = channel.config(self.config);
-        prepare_pin(index);
-        disconnect(index);
-        enable::<T>(index, config, differential);
+        self.begin(channel);
 
         let regs = T::regs();
         // Stop a previous user of the engine before moving the buffer window.
@@ -809,7 +804,7 @@ impl<'d, T: Instance> Adc<'d, T> {
             _adc: self,
             buffer: Some(buffer),
             descriptor,
-            channel: index,
+            pad: <C as channel_sealed::Channel<T>>::pad(),
             finished: false,
         })
     }
@@ -826,8 +821,8 @@ pub struct AutoTransfer<'a, 'd, T: Instance> {
     _adc: &'a mut Adc<'d, T>,
     buffer: Option<&'static mut [u16]>,
     descriptor: Descriptor,
-    /// Hardware channel, so the pad is restored when the transfer stops.
-    channel: u8,
+    /// Pad behind the channel, so it is restored when the transfer stops.
+    pad: Option<(u8, u8)>,
     finished: bool,
 }
 
@@ -880,8 +875,7 @@ impl<'a, 'd, T: Instance> AutoTransfer<'a, 'd, T> {
             w.set_if_dma_end(true);
             w.set_if_end(true);
         });
-        regs.cfg().modify(|w| w.set_power_on(false));
-        reconnect_channel(self.channel);
+        release_pad::<T>(self.pad);
         crate::dma::fence();
         self.finished = true;
     }
@@ -937,62 +931,8 @@ fn temperature_config() -> Config {
     }
 }
 
-/// Disconnect the digital input of an ADC pin, so the pad driver is out of the way.
-///
-/// CH585 removes the pad's digital input through `PIN_IN_DIS`. CH592 has no
-/// such register: the vendor setup only configures the pin as a floating input
-/// (`GPIO_ModeIN_Floating`), which [`prepare_pin`] already does.
-#[cfg(adc_ch585)]
-fn disconnect(channel: u8) {
-    let Some((port, pin)) = channel_pin(channel) else {
-        return;
-    };
-    pac::SYS.pin_in_dis().modify(|w| {
-        let mut mask = if port == 0 { w.pax_in_dis() } else { w.pblx_in_dis() };
-        mask |= 1 << pin;
-        if port == 0 {
-            w.set_pax_in_dis(mask);
-        } else {
-            w.set_pblx_in_dis(mask);
-        }
-    });
-}
-
-/// Reconnect the digital input of the pin a channel borrowed.
-///
-/// Only the CH585 layout gates the pad's digital input, so this is a no-op
-/// elsewhere.
-#[cfg(adc_ch585)]
-fn reconnect(port: u8, pin: u8) {
-    pac::SYS.pin_in_dis().modify(|w| {
-        let mut mask = if port == 0 { w.pax_in_dis() } else { w.pblx_in_dis() };
-        mask &= !(1 << pin);
-        if port == 0 {
-            w.set_pax_in_dis(mask);
-        } else {
-            w.set_pblx_in_dis(mask);
-        }
-    });
-}
-
-#[cfg(not(adc_ch585))]
-fn disconnect(_channel: u8) {}
-
-#[cfg(not(adc_ch585))]
-fn reconnect(_port: u8, _pin: u8) {}
-
-fn reconnect_channel(channel: u8) {
-    if let Some((port, pin)) = channel_pin(channel) {
-        reconnect(port, pin);
-    }
-}
-
-/// Configure a scan channel as a floating input, which is what the vendor scan
-/// setup does before disabling the digital input.
-fn prepare_pin(channel: u8) {
-    let Some((port, pin)) = channel_pin(channel) else {
-        return;
-    };
+/// Float a pad, so the pin driver does not fight the signal being measured.
+fn prepare_pad(port: u8, pin: u8) {
     let gpio = pac::GPIO;
     let pin = pin as usize;
     if port == 0 {
@@ -1006,36 +946,52 @@ fn prepare_pin(channel: u8) {
     }
 }
 
-/// The `(port, pin)` behind an ADC channel.
+/// Disconnect the digital input of an ADC pin, so the pad driver is out of the way.
+///
+/// CH585 removes the pad's digital input through `PIN_IN_DIS`. CH592 has no
+/// such register and only floats the pad, which [`prepare_pad`] already does.
 #[cfg(adc_ch585)]
-fn channel_pin(channel: u8) -> Option<(u8, u8)> {
-    // Datasheet table 7-8: A0 is PA4, then PA5, PA12, PA13, PA14, PA15, PA3,
-    // PA2, PA1, PA0, PA6, PA7, PA8 and PA9.
-    const PINS: [u8; 14] = [4, 5, 12, 13, 14, 15, 3, 2, 1, 0, 6, 7, 8, 9];
-    PINS.get(channel as usize).map(|&pin| (0, pin))
+fn disconnect_pad(port: u8, pin: u8) {
+    pac::SYS.pin_in_dis().modify(|w| {
+        let mut mask = if port == 0 { w.pax_in_dis() } else { w.pblx_in_dis() };
+        mask |= 1 << pin;
+        if port == 0 {
+            w.set_pax_in_dis(mask);
+        } else {
+            w.set_pblx_in_dis(mask);
+        }
+    });
 }
 
-/// The `(port, pin)` behind an ADC channel.
-#[cfg(adc_ch592)]
-fn channel_pin(channel: u8) -> Option<(u8, u8)> {
-    // Datasheet pin table: A0-A5 are PA4, PA5, PA12, PA13, PA14 and PA15,
-    // A8/A9 are PB0/PB6, and A10-A13 are PA6-PA9. Channels 6 and 7 do not
-    // exist on this die.
-    Some(match channel {
-        0 => (0, 4),
-        1 => (0, 5),
-        2 => (0, 12),
-        3 => (0, 13),
-        4 => (0, 14),
-        5 => (0, 15),
-        8 => (1, 0),
-        9 => (1, 6),
-        10 => (0, 6),
-        11 => (0, 7),
-        12 => (0, 8),
-        13 => (0, 9),
-        _ => return None,
-    })
+#[cfg(not(adc_ch585))]
+fn disconnect_pad(_port: u8, _pin: u8) {}
+
+/// Reconnect the digital input of the pin a channel borrowed.
+///
+/// Only the CH585 layout gates the pad's digital input, so this is a no-op
+/// elsewhere.
+#[cfg(adc_ch585)]
+fn reconnect_pad(port: u8, pin: u8) {
+    pac::SYS.pin_in_dis().modify(|w| {
+        let mut mask = if port == 0 { w.pax_in_dis() } else { w.pblx_in_dis() };
+        mask &= !(1 << pin);
+        if port == 0 {
+            w.set_pax_in_dis(mask);
+        } else {
+            w.set_pblx_in_dis(mask);
+        }
+    });
+}
+
+#[cfg(not(adc_ch585))]
+fn reconnect_pad(_port: u8, _pin: u8) {}
+
+/// Power the converter down and restore a channel's pad.
+fn release_pad<T: Instance>(pad: Option<(u8, u8)>) {
+    T::regs().cfg().modify(|w| w.set_power_on(false));
+    if let Some((port, pin)) = pad {
+        reconnect_pad(port, pin);
+    }
 }
 
 /// One millisecond from now, in system-clock cycles.
@@ -1100,8 +1056,10 @@ impl Instance for peripherals::ADC {
 
 mod pin_sealed {
     pub trait Channel {
-        /// The channel index and the `(port, pin)` whose digital input to cut.
+        /// The channel index and the pad bit this pin measures.
         fn index() -> (u8, u8);
+        /// The pad behind the pin, as `(port, pin)`.
+        fn pad() -> (u8, u8);
     }
 }
 
@@ -1114,22 +1072,26 @@ pub trait AdcPin<T: Instance>: Pin + pin_sealed::Channel {
 }
 
 impl<'d, T: Instance, P: AdcPin<T>> channel_sealed::Channel<T> for Peri<'d, P> {
-    fn channel(&self) -> u8 {
-        P::channel().0
+    fn index() -> u8 {
+        <P as pin_sealed::Channel>::index().0
     }
 
-    fn config(&self, base: Config) -> (Config, bool) {
-        (base, false)
+    fn pad() -> Option<(u8, u8)> {
+        Some(<P as pin_sealed::Channel>::pad())
     }
 }
 
 impl<'d, T: Instance, P: AdcPin<T>> AdcChannel<T> for Peri<'d, P> {}
 
 macro_rules! impl_channel {
-    ($pin:ident, $channel:literal, $bit:literal) => {
+    ($pin:ident, $channel:literal, $bit:literal, $port:literal) => {
         impl pin_sealed::Channel for peripherals::$pin {
             fn index() -> (u8, u8) {
                 ($channel, $bit)
+            }
+
+            fn pad() -> (u8, u8) {
+                ($port, $bit)
             }
         }
         impl AdcPin<peripherals::ADC> for peripherals::$pin {}
@@ -1137,26 +1099,27 @@ macro_rules! impl_channel {
 }
 
 // The channel number is the pin's index in the family pin list. CH592 drops
-// AIN6/AIN7 (PA3/PA2) and moves AIN8/AIN9 from PA1/PA0 to PB0/PB6.
-impl_channel!(PA4, 0, 4);
-impl_channel!(PA5, 1, 5);
-impl_channel!(PA12, 2, 12);
-impl_channel!(PA13, 3, 13);
-impl_channel!(PA14, 4, 14);
-impl_channel!(PA15, 5, 15);
+// AIN6/AIN7 (PA3/PA2) and moves AIN8/AIN9 from PA1/PA0 to PB0/PB6. Arguments
+// are the pin, its channel, its pad bit and its port.
+impl_channel!(PA4, 0, 4, 0);
+impl_channel!(PA5, 1, 5, 0);
+impl_channel!(PA12, 2, 12, 0);
+impl_channel!(PA13, 3, 13, 0);
+impl_channel!(PA14, 4, 14, 0);
+impl_channel!(PA15, 5, 15, 0);
 #[cfg(adc_ch585)]
-impl_channel!(PA3, 6, 3);
+impl_channel!(PA3, 6, 3, 0);
 #[cfg(adc_ch585)]
-impl_channel!(PA2, 7, 2);
+impl_channel!(PA2, 7, 2, 0);
 #[cfg(adc_ch585)]
-impl_channel!(PA1, 8, 1);
+impl_channel!(PA1, 8, 1, 0);
 #[cfg(adc_ch585)]
-impl_channel!(PA0, 9, 0);
+impl_channel!(PA0, 9, 0, 0);
 #[cfg(adc_ch592)]
-impl_channel!(PB0, 8, 0);
+impl_channel!(PB0, 8, 0, 1);
 #[cfg(adc_ch592)]
-impl_channel!(PB6, 9, 6);
-impl_channel!(PA6, 10, 6);
-impl_channel!(PA7, 11, 7);
-impl_channel!(PA8, 12, 8);
-impl_channel!(PA9, 13, 9);
+impl_channel!(PB6, 9, 6, 1);
+impl_channel!(PA6, 10, 6, 0);
+impl_channel!(PA7, 11, 7, 0);
+impl_channel!(PA8, 12, 8, 0);
+impl_channel!(PA9, 13, 9, 0);
