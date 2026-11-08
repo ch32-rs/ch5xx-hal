@@ -6,14 +6,14 @@
 //!
 //! This is the single-conversion path; `adc_scan` and `adc_auto` cover the
 //! scan and timed-DMA modes. The block has no `PIN_IN_DIS`; the vendor only
-//! floats the pad, which `Adc::new_temperature` does not need.
+//! floats the pad, which the temperature channel does not need.
 
 #![no_std]
 #![no_main]
 
 use ch5xx_hal as hal;
 use defmt_rtt as _;
-use hal::adc::Adc;
+use hal::adc::{Adc, Config};
 use panic_halt as _;
 use qingke_rt::entry;
 
@@ -21,11 +21,12 @@ use qingke_rt::entry;
 fn main() -> ! {
     let p = hal::init(Default::default());
 
-    let mut adc = Adc::new_temperature(p.ADC);
+    let mut adc = Adc::new(p.ADC, Config::default());
+    let mut temperature = adc.enable_temperature();
 
     defmt::info!("ADC temperature");
     for _ in 0..4 {
-        match adc.read() {
+        match adc.blocking_read(&mut temperature) {
             Ok(sample) => {
                 let degrees = adc.temperature(sample);
                 defmt::info!("{} counts, {} C", sample, degrees);

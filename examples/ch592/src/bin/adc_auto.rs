@@ -14,7 +14,7 @@
 
 use ch5xx_hal as hal;
 use defmt_rtt as _;
-use hal::adc::{Adc, AutoCycle, Error};
+use hal::adc::{Adc, AutoCycle, Config, Error, Temperature};
 use hal::dma::StaticSampleBuffer;
 use panic_halt as _;
 use qingke_rt::entry;
@@ -26,13 +26,14 @@ static SAMPLES: StaticSampleBuffer<LEN> = StaticSampleBuffer::new([0; LEN]);
 #[entry]
 fn main() -> ! {
     let p = hal::init(Default::default());
-    let mut adc = Adc::new_temperature(p.ADC);
+    let mut adc = Adc::new(p.ADC, Config::default());
+    let mut temperature = adc.enable_temperature();
     let buffer = SAMPLES.take().unwrap();
 
     defmt::info!("ADC auto sampling, {} samples", LEN);
     // The transfer borrows the converter, so it is resolved before the
     // comparison read below.
-    let samples = match adc.start_auto(buffer, AutoCycle::LONGEST) {
+    let samples = match adc.start_auto(&mut temperature, buffer, AutoCycle::LONGEST) {
         Ok(transfer) => match transfer.blocking_wait() {
             Ok(samples) => Some(samples),
             Err((error, _)) => {
@@ -46,7 +47,7 @@ fn main() -> ! {
         }
     };
     if let Some(samples) = samples {
-        report(&mut adc, samples);
+        report(&mut adc, &mut temperature, samples);
     }
 
     loop {
@@ -54,7 +55,7 @@ fn main() -> ! {
     }
 }
 
-fn report(adc: &mut Adc<'_, hal::peripherals::ADC>, samples: &[u16]) {
+fn report(adc: &mut Adc<'_, hal::peripherals::ADC>, temperature: &mut Temperature, samples: &[u16]) {
     let mut min = u16::MAX;
     let mut max = 0;
     let mut sum = 0u32;
@@ -66,7 +67,7 @@ fn report(adc: &mut Adc<'_, hal::peripherals::ADC>, samples: &[u16]) {
     let mean = (sum / samples.len() as u32) as u16;
     let spread = max - min;
 
-    match adc.read() {
+    match adc.blocking_read(temperature) {
         Ok(one_shot) => {
             let difference = mean.abs_diff(one_shot);
             defmt::info!(
