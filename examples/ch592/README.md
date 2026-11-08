@@ -31,6 +31,7 @@ before flashing.
 | `pwm_out` | PWM8 on PB6 measured back on PB5; self-checked |
 | `rtc_calendar` | RTC calendar, one-shot alarm and interval timer |
 | `sleep_wake` | `power::halt`/`power::sleep` with RTC wake, self-checked |
+| `spi_async_loopback` | SPI0 async and local-DMA loopback; same PA14-PA15 jumper |
 | `spi_loopback` | SPI0 mode 0 and mode 3 loopback; jumper PA14 to PA15 on P2 |
 | `timer_counter` | `timer` counters on a no-DMA (TMR0) and a full (TMR2) block |
 | `uart_loopback` | UART0 internal loopback, self-checked |
