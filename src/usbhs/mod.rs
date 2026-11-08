@@ -44,6 +44,8 @@ const STALL: u8 = 1;
 const ACK: u8 = 2;
 const DONE: u8 = 0x80;
 const PRESERVE_FLAGS: u8 = 0xc0;
+/// `ENDP_R_TOG_MATCH`: the received packet's data toggle matched the endpoint's.
+const TOG_MATCH: u8 = 0x10;
 const RESET: u8 = 1;
 const SUSPEND: u8 = 2;
 const RESUME: u8 = 4;
@@ -173,7 +175,9 @@ fn slot(index: usize, incoming: bool) -> usize {
 fn packet_size_valid(speed: Speed, kind: EndpointType, size: u16, interval: u8) -> bool {
     match (speed, kind) {
         (Speed::Full, EndpointType::Bulk) => matches!(size, 8 | 16 | 32 | 64),
-        (Speed::High, EndpointType::Bulk) => size == 512,
+        // USB 2.0 permits any of these for a high-speed bulk endpoint;
+        // embassy classes may ask for less than the usual 512.
+        (Speed::High, EndpointType::Bulk) => matches!(size, 8 | 16 | 32 | 64 | 512),
         (Speed::Full, EndpointType::Interrupt) => (1..=64).contains(&size) && interval != 0,
         (Speed::High, EndpointType::Interrupt) => (1..=1024).contains(&size) && (1..=16).contains(&interval),
         (Speed::Full, EndpointType::Isochronous) => (1..=1023).contains(&size) && (1..=16).contains(&interval),
@@ -683,12 +687,15 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
                         }
                         regs.control(index, true)
                             .write_value(if isochronous { 0 } else { (control ^ 4) & 0x0c });
-                    } else if control & 0x10 != 0 || isochronous {
+                    } else if control & TOG_MATCH != 0 || isochronous {
+                        // A mismatched toggle is a retransmission and is
+                        // discarded; isochronous endpoints do not compare it.
                         endpoint.rx_length = regs.rx_length(index).read();
                         endpoint.rx_ready = true;
                         regs.control(index, false)
                             .write_value(if isochronous { 0 } else { (control ^ 4) & 0x0c });
                     } else {
+                        // Discard the packet and stay ready for the next one.
                         regs.control(index, false).write_value((control & 0x0c) | ACK);
                     }
                     wake |= 1 << slot(index, incoming);
