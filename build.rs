@@ -81,6 +81,22 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=power_sleep");
     }
+    // CH592/CH595 use a newer POWER_PLAN layout (`PWR_RAM24K` and
+    // `PWR_RAM8K` instead of `PWR_RAM32K`/`PWR_RAM96K`, no `PWR_MUST_0010`).
+    // The driver composes that plan from raw bits; CH592 also lacks
+    // `HFCK_PWR_CTRL`, while CH595 keeps it.
+    if sys_has_registers(
+        &chip_name,
+        &[
+            "SLP_WAKE_CTRL",
+            "SLP_POWER_CTRL",
+            "POWER_PLAN",
+            "BAT_DET_CTRL",
+            "PWR_RAM24K",
+        ],
+    ) {
+        println!("cargo:rustc-cfg=power_sleep_ch59x");
+    }
     // The SPI register block is not one layout. The `ch585` and `ch583`
     // versions are the FIFO controller this driver programs; the others are not,
     // and naming their registers would not compile.
