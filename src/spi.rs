@@ -23,8 +23,9 @@
 //! examples drive it from GPIO, and so does [`chip_select`].
 //!
 //! The register block is not shared by every CH5xx. The driver compiles on the
-//! dies that use the CH585 layout (CH581, CH582, CH583, CH584, CH585) and is
-//! absent on the rest. Only CH585 has been run on a board. `SPI1` raises
+//! dies that use the FIFO layout (CH581, CH582, CH583, CH584, CH585, CH592) and
+//! is absent on the rest. CH592 has one controller and 16-bit DMA address
+//! registers. Only CH585 has been run on a board. `SPI1` raises
 //! `PWMX_SPI1`, the same line as the PWM block, so a later async driver has to
 //! share that handler rather than own it.
 
@@ -1277,10 +1278,12 @@ macro_rules! impl_pins {
 
 // Datasheet table 7-8. `PIN_SPI0` clear is PA13/PA14/PA15, set is PB13/PB14/PB15.
 // CH582 and CH583 share this register block but their family files carry no pin
-// list, so the pins are named only where the metadata records them.
-#[cfg(any(ch581, ch584, ch585))]
+// list, so the pins are named only where the metadata records them or the
+// vendor header states the routing; `CH592SFR.h` documents `RB_PIN_SPI0` with
+// the same two sets.
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pins!(SPI0, 0, sck: PA13, mosi: PA14, miso: PA15);
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch584, ch585, ch592))]
 impl_pins!(SPI0, 1, sck: PB13, mosi: PB14, miso: PB15);
 // SPI1 has no remap field. PA0 is SCK, PA1 is MOSI, PA2 is MISO. CH583 has the
 // controller too, but no pins are recorded for it.

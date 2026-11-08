@@ -16,8 +16,8 @@
 //!
 //! `WDOG_COUNT` and `RST_WDOG_CTRL` have the same fields on every selectable
 //! chip except CH564 and CH569, which are not selectable. The battery detector
-//! fields differ, so [`Battery`] compiles for the CH585 layout only. Only CH585
-//! has been run on a board.
+//! fields are the CH585 ones, which CH581 and CH592 share, so [`Battery`]
+//! compiles only where those fields exist. Only CH585 has been run on a board.
 
 use core::marker::PhantomData;
 

@@ -90,7 +90,7 @@ pub(crate) mod _generated {
 
 pub use crate::_generated::{peripherals, Peripherals};
 
-#[cfg(adc_ch585)]
+#[cfg(any(adc_ch585, adc_ch592))]
 pub mod adc;
 pub mod delay;
 pub mod dma;
@@ -102,7 +102,7 @@ pub mod pwm;
 pub mod power;
 #[cfg(rtc_calendar)]
 pub mod rtc;
-#[cfg(spi_ch585)]
+#[cfg(spi_fifo)]
 pub mod spi;
 pub mod timer;
 pub mod uart;

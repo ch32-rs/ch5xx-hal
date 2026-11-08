@@ -23,13 +23,16 @@
 //! measures that offset so a caller can add it.
 //!
 //! The register block differs between dies. The module compiles for the CH585
-//! layout (CH581, CH584, CH585) and is absent on the rest. Only CH585 has been
+//! layout (CH581, CH584, CH585) and for CH592, which keeps the single
+//! conversion, temperature and DMA registers but has no scan sequencer, so
+//! [`Scan`] is absent there. Other dies have no driver. Only CH585 has been
 //! run on a board.
 
 use core::marker::PhantomData;
 
 use embassy_hal_internal::PeripheralType;
 
+#[cfg(adc_scan)]
 use crate::dma::Descriptor;
 use crate::gpio::{Flex, Pin, Pull};
 use crate::{interrupt, pac, peripherals, Peri};
@@ -258,18 +261,22 @@ impl<'d, T: Instance> Drop for Adc<'d, T> {
     }
 }
 
-// --- scan and local DMA ----------------------------------------------------
+// --- scan and local DMA (CH585 layout only) --------------------------------
 
 /// Sequence entries in `SCAN_CFG1`, after the one held by `CHANNEL`.
+#[cfg(adc_scan)]
 const SCAN_CFG1_ENTRIES: usize = 8;
 
 /// Sequence entries in `SCAN_CFG2`, after `SCAN_CFG1`.
+#[cfg(adc_scan)]
 const SCAN_CFG2_ENTRIES: usize = 5;
 
 /// The largest scan sequence the sequencer accepts: `CHANNEL` plus the two
 /// sequence registers.
+#[cfg(adc_scan)]
 pub const MAX_CHANNELS: usize = 1 + SCAN_CFG1_ENTRIES + SCAN_CFG2_ENTRIES;
 
+#[cfg(adc_scan)]
 mod scan_sealed {
     use super::{Instance, MAX_CHANNELS};
 
@@ -286,9 +293,11 @@ mod scan_sealed {
 /// the next eight from `SCAN_CFG1` and the rest from `SCAN_CFG2`. The pins are
 /// configured as floating analog inputs when the [`Scan`] is created, and their
 /// digital inputs are reconnected when it is dropped.
+#[cfg(adc_scan)]
 #[allow(private_bounds)]
 pub trait ScanPins<T: Instance>: scan_sealed::Pins<T> {}
 
+#[cfg(adc_scan)]
 macro_rules! impl_scan_pins {
     ($count:literal, $($pin:ident),+) => {
         impl<'d, T: Instance, $($pin: AdcPin<T>),+> scan_sealed::Pins<T> for ($(Peri<'d, $pin>,)+) {
@@ -308,19 +317,33 @@ macro_rules! impl_scan_pins {
     };
 }
 
+#[cfg(adc_scan)]
 impl_scan_pins!(1, P1);
+#[cfg(adc_scan)]
 impl_scan_pins!(2, P1, P2);
+#[cfg(adc_scan)]
 impl_scan_pins!(3, P1, P2, P3);
+#[cfg(adc_scan)]
 impl_scan_pins!(4, P1, P2, P3, P4);
+#[cfg(adc_scan)]
 impl_scan_pins!(5, P1, P2, P3, P4, P5);
+#[cfg(adc_scan)]
 impl_scan_pins!(6, P1, P2, P3, P4, P5, P6);
+#[cfg(adc_scan)]
 impl_scan_pins!(7, P1, P2, P3, P4, P5, P6, P7);
+#[cfg(adc_scan)]
 impl_scan_pins!(8, P1, P2, P3, P4, P5, P6, P7, P8);
+#[cfg(adc_scan)]
 impl_scan_pins!(9, P1, P2, P3, P4, P5, P6, P7, P8, P9);
+#[cfg(adc_scan)]
 impl_scan_pins!(10, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10);
+#[cfg(adc_scan)]
 impl_scan_pins!(11, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11);
+#[cfg(adc_scan)]
 impl_scan_pins!(12, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12);
+#[cfg(adc_scan)]
 impl_scan_pins!(13, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13);
+#[cfg(adc_scan)]
 impl_scan_pins!(14, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14);
 
 /// A scan over an ordered set of channels, with the block's DMA engine storing
@@ -330,6 +353,7 @@ impl_scan_pins!(14, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P13, P14)
 /// [`Scan::read`] fills a fresh buffer with whole passes over that sequence.
 /// The DMA address registers hold halfword offsets, so a sample count maps
 /// directly onto the sequence position.
+#[cfg(adc_scan)]
 pub struct Scan<'d, T: Instance, P: ScanPins<T>> {
     /// Keeps exclusive ownership of the pads for the scan's lifetime.
     _pins: P,
@@ -337,6 +361,7 @@ pub struct Scan<'d, T: Instance, P: ScanPins<T>> {
     _phantom: PhantomData<&'d mut T>,
 }
 
+#[cfg(adc_scan)]
 impl<'d, T: Instance, P: ScanPins<T>> Scan<'d, T, P> {
     /// Take the pins and configure the converter for a scan sequence.
     ///
@@ -420,6 +445,7 @@ impl<'d, T: Instance, P: ScanPins<T>> Scan<'d, T, P> {
     }
 }
 
+#[cfg(adc_scan)]
 impl<T: Instance, P: ScanPins<T>> Drop for Scan<'_, T, P> {
     fn drop(&mut self) {
         let regs = T::regs();
@@ -451,6 +477,7 @@ impl<T: Instance, P: ScanPins<T>> Drop for Scan<'_, T, P> {
 /// Completion detects a full DMA buffer. When the buffer holds exactly one
 /// pass, the scan-end flag is also accepted, matching the vendor scan example.
 #[must_use = "dropping stops DMA; use blocking_wait or stop"]
+#[cfg(adc_scan)]
 pub struct ScanTransfer<'a, 'd, T: Instance, P: ScanPins<T>> {
     scan: &'a mut Scan<'d, T, P>,
     buffer: Option<&'static mut [u16]>,
@@ -459,6 +486,7 @@ pub struct ScanTransfer<'a, 'd, T: Instance, P: ScanPins<T>> {
     finished: bool,
 }
 
+#[cfg(adc_scan)]
 impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
     /// Samples stored so far, counted from `DMA_NOW`.
     pub fn position(&self) -> usize {
@@ -579,6 +607,7 @@ impl<'a, 'd, T: Instance, P: ScanPins<T>> ScanTransfer<'a, 'd, T, P> {
     }
 }
 
+#[cfg(adc_scan)]
 impl<T: Instance, P: ScanPins<T>> Drop for ScanTransfer<'_, '_, T, P> {
     fn drop(&mut self) {
         if !self.finished {
@@ -630,6 +659,12 @@ fn temperature_config() -> Config {
 }
 
 /// Disconnect the digital input of an ADC pin, so the pad driver is out of the way.
+///
+/// CH585 removes the pad's digital input through `PIN_IN_DIS`. CH592 has no
+/// such register: the vendor setup only configures the pin as a floating input
+/// (`GPIO_ModeIN_Floating`), which [`Adc::new_pin`] already does with
+/// `Flex::set_as_input(Pull::None)`.
+#[cfg(adc_ch585)]
 fn disconnect(channel: u8) {
     let Some((port, pin)) = channel_pin(channel) else {
         return;
@@ -646,6 +681,10 @@ fn disconnect(channel: u8) {
 }
 
 /// Reconnect the digital input of the pin a channel borrowed.
+///
+/// Only the CH585 layout gates the pad's digital input, so this is a no-op
+/// elsewhere.
+#[cfg(adc_ch585)]
 fn reconnect(port: u8, pin: u8) {
     pac::SYS.pin_in_dis().modify(|w| {
         let mut mask = if port == 0 { w.pax_in_dis() } else { w.pblx_in_dis() };
@@ -658,6 +697,13 @@ fn reconnect(port: u8, pin: u8) {
     });
 }
 
+#[cfg(not(adc_ch585))]
+fn disconnect(_channel: u8) {}
+
+#[cfg(not(adc_ch585))]
+fn reconnect(_port: u8, _pin: u8) {}
+
+#[cfg(adc_scan)]
 fn reconnect_channel(channel: u8) {
     if let Some((port, pin)) = channel_pin(channel) {
         reconnect(port, pin);
@@ -666,6 +712,7 @@ fn reconnect_channel(channel: u8) {
 
 /// Configure a scan channel as a floating input, which is what the vendor scan
 /// setup does before disabling the digital input.
+#[cfg(adc_scan)]
 fn prepare_pin(channel: u8) {
     let Some((0, pin)) = channel_pin(channel) else {
         return;
@@ -677,10 +724,11 @@ fn prepare_pin(channel: u8) {
 }
 
 /// The pad behind an ADC channel. All external channels are on port A.
+#[cfg(adc_ch585)]
 fn channel_pin(channel: u8) -> Option<(u8, u8)> {
     // Datasheet table 7-8: A0 is PA4, then PA5, PA12, PA13, PA14, PA15, PA3,
     // PA2, PA1, PA0, PA6, PA7, PA8 and PA9.
-    const PINS: [u8; MAX_CHANNELS] = [4, 5, 12, 13, 14, 15, 3, 2, 1, 0, 6, 7, 8, 9];
+    const PINS: [u8; 14] = [4, 5, 12, 13, 14, 15, 3, 2, 1, 0, 6, 7, 8, 9];
     PINS.get(channel as usize).map(|&pin| (0, pin))
 }
 

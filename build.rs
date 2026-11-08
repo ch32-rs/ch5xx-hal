@@ -97,17 +97,27 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=power_sleep_ch59x");
     }
-    // The SPI register block is not one layout. The `ch585` and `ch583`
-    // versions are the FIFO controller this driver programs; the others are not,
-    // and naming their registers would not compile.
+    // The SPI register block is not one layout. The `ch585`, `ch583` and
+    // `ch592` versions are the FIFO controller this driver programs; the
+    // others are not, and naming their registers would not compile. CH592
+    // narrows the DMA address registers to 16 bits and drops SPI1
+    // (`SPI_NODMA`); the driver casts the addresses to the field width and
+    // gates the second instance.
     match register_version(&chip_name, "spi").as_str() {
-        "ch585" | "ch583" => println!("cargo:rustc-cfg=spi_ch585"),
+        "ch585" | "ch583" | "ch592" => println!("cargo:rustc-cfg=spi_fifo"),
         _ => {}
     }
-    // The ADC block is not one layout either, and CH572 has none. The driver
-    // programs the CH585 field names, so any other version does not compile it.
-    if register_version_opt(&chip_name, "adc").as_deref() == Some("ch585") {
-        println!("cargo:rustc-cfg=adc_ch585");
+    // The ADC block is not one layout either, and CH572 has none. CH592 keeps
+    // the CH585 single-conversion, temperature and DMA-into-`DATA` registers
+    // but has no scan sequencer (`SCAN_CFG*`, `SAMPLE_TIME`); the driver gates
+    // the scan API on `adc_scan`. Any other version does not compile the module.
+    match register_version_opt(&chip_name, "adc").as_deref() {
+        Some("ch585") => {
+            println!("cargo:rustc-cfg=adc_ch585");
+            println!("cargo:rustc-cfg=adc_scan");
+        }
+        Some("ch592") => println!("cargo:rustc-cfg=adc_ch592"),
+        _ => {}
     }
     // PWMx is one block for PWM4-PWM11. The CH573 and CH572 layouts differ, so
     // the driver only compiles where the family selects the CH585 version.
@@ -120,11 +130,11 @@ fn main() {
         Some("ch585" | "ch573") => println!("cargo:rustc-cfg=rtc_calendar"),
         _ => {}
     }
-    // The battery detector fields are the CH585 ones, which CH581 shares. The
-    // window watchdog itself is in `system_control` and is common to every
-    // selectable chip.
+    // The battery detector fields are the CH585 ones, which CH581 shares; CH592
+    // has the same `BAT_DET_*` and `BAT_STATUS` layout. The window watchdog
+    // itself is in `system_control` and is common to every selectable chip.
     match register_version_opt(&chip_name, "sys").as_deref() {
-        Some("ch585" | "ch581") => println!("cargo:rustc-cfg=battery_ch585"),
+        Some("ch585" | "ch581" | "ch592") => println!("cargo:rustc-cfg=battery_ch585"),
         _ => {}
     }
     // CH573's system-control block has no reset-status register. The flag lives
