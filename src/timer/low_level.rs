@@ -47,9 +47,11 @@ impl<'d, T: Instance> Timer<'d, T> {
     pub fn stop(&mut self) {
         self.regs().inter_en().write(|w| w.0 = 0);
         self.regs().ctrl_mod().modify(|w| w.0 &= !0x0c);
-        self.regs().ctrl_dma().write(|w| w.0 = 0);
-        crate::dma::fence();
-        let _ = self.regs().ctrl_dma().read();
+        if T::HAS_DMA {
+            self.regs().ctrl_dma().write(|w| w.0 = 0);
+            crate::dma::fence();
+            let _ = self.regs().ctrl_dma().read();
+        }
         // Serialize prior DMA bus activity before CPU access to its storage.
         crate::dma::fence();
     }

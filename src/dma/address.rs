@@ -85,8 +85,8 @@ mod tests {
         assert_eq!(d.len(), 13);
         assert_eq!(Descriptor::bytes(0x2000_0000, 0), Err(Error::Empty));
         assert_eq!(Descriptor::bytes(0x2000_0001, 1), Err(Error::Unaligned));
-        assert_eq!(Descriptor::bytes(0x2001_ffff, 1), Err(Error::Address));
-        assert_eq!(Descriptor::bytes(usize::MAX - 1, 4), Err(Error::Length));
+        assert_eq!(Descriptor::bytes(0x2001_fffc, 4), Err(Error::Address));
+        assert_eq!(Descriptor::bytes(usize::MAX - 3, 8), Err(Error::Length));
     }
     #[test]
     fn complete_sram_boundary_sweep() {

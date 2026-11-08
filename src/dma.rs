@@ -16,7 +16,7 @@ pub mod address;
 pub use address::{Descriptor, Error};
 
 use crate::timer::low_level::Timer;
-use crate::timer::{Events, Instance};
+use crate::timer::{DmaInstance, Events};
 
 mod buffer;
 pub use buffer::{StaticBuffer, StaticByteBuffer, StaticSampleBuffer};
@@ -45,7 +45,7 @@ pub(crate) fn fence() {
 /// Owns the buffer and borrows the entire timer, including its local DMA engine.
 /// Completion means DMA reached END, *not* that a PWM waveform left the pin.
 #[must_use = "dropping stops DMA; use stop to recover the static storage"]
-pub struct Transfer<'a, 'd, T: Instance> {
+pub struct Transfer<'a, 'd, T: DmaInstance> {
     timer: &'a mut Timer<'d, T>,
     buffer: Option<&'static mut [u32]>,
     descriptor: Descriptor,
@@ -53,7 +53,7 @@ pub struct Transfer<'a, 'd, T: Instance> {
     mode: RunMode,
 }
 
-impl<'a, 'd, T: Instance> Transfer<'a, 'd, T> {
+impl<'a, 'd, T: DmaInstance> Transfer<'a, 'd, T> {
     /// # Safety
     /// Timer mode and signal route must match direction. TX words must all fit
     /// CNT_END; raw circular RX consumption requires a separate ownership proof.
@@ -71,13 +71,13 @@ impl<'a, 'd, T: Instance> Transfer<'a, 'd, T> {
         let r = timer.regs();
         // With requests stopped, move END away from NOW before clearing a
         // potentially level-like DMA_END. Do not enlarge an active descriptor.
-        let now = r.dma_now().read().0 & 0x1fffc;
+        let now = r.dma_now().read().0 as u32 & 0x1fffc;
         r.dma_end().write(|w| {
-            w.0 = if now == descriptor.start {
+            w.0 = (if now == descriptor.start {
                 descriptor.end
             } else {
                 descriptor.start
-            }
+            }) as _;
         });
         r.int_flag().write(|w| w.0 = 31);
         #[cfg(feature = "embassy")]
@@ -88,8 +88,8 @@ impl<'a, 'd, T: Instance> Transfer<'a, 'd, T> {
                 crate::atomic::Ordering::Relaxed,
             );
         }
-        r.dma_beg().write(|w| w.0 = descriptor.start);
-        r.dma_end().write(|w| w.0 = descriptor.end);
+        r.dma_beg().write(|w| w.0 = descriptor.start as _);
+        r.dma_end().write(|w| w.0 = descriptor.end as _);
         fence();
         r.ctrl_dma()
             .write(|w| w.0 = if mode == RunMode::Circular { 5 } else { 1 });
@@ -111,14 +111,15 @@ impl<'a, 'd, T: Instance> Transfer<'a, 'd, T> {
 
     /// Modulo position in words. It cannot count missed complete circular laps.
     pub fn position(&self) -> usize {
-        let now = self.timer.regs().dma_now().read().0 & 0x1fffc;
+        let now = self.timer.regs().dma_now().read().0 as u32 & 0x1fffc;
         now.saturating_sub(self.descriptor.start) as usize / 4
     }
     /// Finite source exhausted, or at least one circular END observed. A sticky
     /// circular event is not a new-lap notification and does not count wraps.
     pub fn is_complete(&self) -> bool {
         self.timer.events().contains(Events::DMA_END)
-            || (self.mode == RunMode::Once && (self.timer.regs().dma_now().read().0 & 0x1fffc) == self.descriptor.end)
+            || (self.mode == RunMode::Once
+                && (self.timer.regs().dma_now().read().0 as u32 & 0x1fffc) == self.descriptor.end)
     }
     /// Conservative RX FIFO fault / best-effort early TX starvation detection.
     /// RX may report overflow caused by delayed servicing *after* DMA END.
@@ -235,20 +236,20 @@ impl<'a, 'd, T: Instance> Transfer<'a, 'd, T> {
     fn quiesce(&mut self) {
         self.timer.stop();
         let r = self.timer.regs();
-        let now = r.dma_now().read().0 & 0x1fffc;
+        let now = r.dma_now().read().0 as u32 & 0x1fffc;
         r.dma_end().write(|w| {
-            w.0 = if now == self.descriptor.start {
+            w.0 = (if now == self.descriptor.start {
                 self.descriptor.end
             } else {
                 self.descriptor.start
-            }
+            }) as _;
         });
         r.int_flag().write(|w| w.0 = 31);
         #[cfg(feature = "embassy")]
         T::state().events.store(0, crate::atomic::Ordering::Relaxed);
     }
 }
-impl<T: Instance> Drop for Transfer<'_, '_, T> {
+impl<T: DmaInstance> Drop for Transfer<'_, '_, T> {
     fn drop(&mut self) {
         self.quiesce();
     }

@@ -93,7 +93,6 @@ pub use crate::_generated::{peripherals, Peripherals};
 #[cfg(adc_ch585)]
 pub mod adc;
 pub mod delay;
-#[cfg(tmr_all_dma)]
 pub mod dma;
 pub mod gpio;
 pub mod i2c;
@@ -105,7 +104,6 @@ pub mod power;
 pub mod rtc;
 #[cfg(spi_ch585)]
 pub mod spi;
-#[cfg(tmr_all_dma)]
 pub mod timer;
 pub mod uart;
 #[cfg(all(feature = "embassy", usbfs_ch585))]

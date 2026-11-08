@@ -135,17 +135,21 @@ fn main() {
     }
     // TMR instances are not all the same block. CH592 and CH595 omit the
     // timer-local DMA registers on TMR0/TMR3, while the other dies have them on
-    // every instance. Emit one cfg per no-DMA instance and a `tmr_all_dma` cfg
-    // for the modules that need every instance to be DMA-capable.
-    let mut all_dma = true;
+    // every instance. Emit one cfg per no-DMA instance so the driver can gate
+    // the DMA entry points.
     for (name, block) in peripheral_blocks(&chip_name, "TMR") {
         if block == "TMR_NODMA" {
             println!("cargo:rustc-cfg={}_nodma", name.to_ascii_lowercase());
-            all_dma = false;
         }
     }
-    if all_dma {
-        println!("cargo:rustc-cfg=tmr_all_dma");
+    // Not every die routes every timer to a pin. The `PIN_TMRn` remap fields
+    // in PIN_ALTERNATE are the metadata's record of it; the pin tables and the
+    // remap writer are gated on them.
+    for name in ["TMR0", "TMR1", "TMR2", "TMR3"] {
+        let field = format!("PIN_{name}");
+        if sys_has_registers(&chip_name, &[field.as_str()]) {
+            println!("cargo:rustc-cfg=remap_{}", name.to_ascii_lowercase());
+        }
     }
     // UART1-3 drop the modem-control block on several dies (CH592, CH583,
     // CH595). The instance type and the register fields differ, so the driver

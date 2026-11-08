@@ -777,7 +777,7 @@ impl<'a, 'd, T: DmaInstance, M: Mode> DmaTransfer<'a, 'd, T, M> {
         let Some(descriptor) = self.descriptor else {
             return 0;
         };
-        let now = T::regs().dma_now().read().dma_now() & 0x0001_ffff;
+        let now = T::regs().dma_now().read().dma_now() as u32 & 0x0001_ffff;
         // `DMA_NOW` is the absolute SRAM offset, so this already counts every
         // completed chunk.
         let done = now.saturating_sub(descriptor.start) as usize;
@@ -857,8 +857,10 @@ impl<'a, 'd, T: DmaInstance, M: Mode> DmaTransfer<'a, 'd, T, M> {
             w.set_if_dma_end(true);
             w.set_if_fifo_ov(true);
         });
-        r.dma_beg().write(|w| w.set_dma_beg(start));
-        r.dma_end().write(|w| w.set_dma_end(end));
+        // Some dies encode the SRAM offset in a 16-bit register; their SRAM is
+        // smaller than 64 KiB, so the truncation is lossless there.
+        r.dma_beg().write(|w| w.set_dma_beg(start as _));
+        r.dma_end().write(|w| w.set_dma_end(end as _));
         // The length goes in before the sources are enabled: `IF_CNT_END` reads
         // as set while `TOTAL_CNT` is zero, and a source enabled in that window
         // would keep re-entering the handler.

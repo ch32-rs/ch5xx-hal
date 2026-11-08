@@ -2,6 +2,9 @@
 //!
 //! Normal counting runs at Fsys without a prescaler. TMR0/3 additionally have
 //! the SDK's NFC clock mode. DMA belongs to the timer, not a separate channel.
+//! On dies where TMR0/TMR3 use the `TMR_NODMA` block (CH592, CH595) those
+//! instances have no DMA registers, so the transfer APIs are bounded on
+//! [`DmaInstance`] and the counter, FIFO and interrupt paths remain available.
 //! Clock changes and deep sleep require stopping and rebuilding active drivers.
 
 use crate::{interrupt, pac, peripherals};
@@ -18,11 +21,25 @@ pub trait Instance: crate::PeripheralType + SealedInstance + Send + 'static {
     type Interrupt: interrupt::typelevel::Interrupt;
 }
 
+/// Timer instances with the timer-local DMA engine.
+///
+/// Some dies omit the DMA registers on TMR0/TMR3 (`TMR_NODMA`); the counter,
+/// capture, PWM and interrupt APIs work there, but no transfer can start.
+pub trait DmaInstance: Instance {}
+
 /// Timer instances supporting the SDK's dedicated NFC clock.
 pub trait NfcClockInstance: Instance {}
 
 pub(crate) trait SealedInstance {
+    /// The full (DMA-capable) register block.
+    ///
+    /// A no-DMA instance shares every offset this driver uses except the
+    /// timer-local DMA registers, which the DMA entry points never touch
+    /// because they require [`DmaInstance`]. The pointer cast keeps one
+    /// implementation for both block types instead of duplicating the driver.
     fn regs() -> pac::tmr::TmrFull;
+    /// Whether the instance has the timer-local DMA engine.
+    const HAS_DMA: bool;
     unsafe fn set_remap(remap: bool);
     #[cfg(feature = "embassy")]
     fn state() -> &'static State;
@@ -36,13 +53,18 @@ pub(crate) struct State {
 }
 
 macro_rules! instance {
-    ($name:ident, $set:ident) => {
+    ($name:ident, $set:ident, $nodma:ident, $remapcfg:ident) => {
         impl SealedInstance for peripherals::$name {
             fn regs() -> pac::tmr::TmrFull {
-                pac::$name
+                unsafe { pac::tmr::TmrFull::from_ptr(pac::$name.as_ptr()) }
             }
+            const HAS_DMA: bool = !cfg!($nodma);
             unsafe fn set_remap(remap: bool) {
+                #[cfg($remapcfg)]
                 pac::SYS.pin_alternate().modify(|w| w.$set(remap));
+                // Dies without this remap field route the timer to a fixed pin.
+                #[cfg(not($remapcfg))]
+                let _ = remap;
             }
             #[cfg(feature = "embassy")]
             fn state() -> &'static State {
@@ -57,16 +79,18 @@ macro_rules! instance {
         impl Instance for peripherals::$name {
             type Interrupt = interrupt::typelevel::$name;
         }
+        #[cfg(not($nodma))]
+        impl DmaInstance for peripherals::$name {}
     };
 }
 #[cfg(not(feature = "time-driver-tmr0"))]
-instance!(TMR0, set_pin_tmr0);
+instance!(TMR0, set_pin_tmr0, tmr0_nodma, remap_tmr0);
 #[cfg(not(feature = "time-driver-tmr1"))]
-instance!(TMR1, set_pin_tmr1);
+instance!(TMR1, set_pin_tmr1, tmr1_nodma, remap_tmr1);
 #[cfg(not(feature = "time-driver-tmr2"))]
-instance!(TMR2, set_pin_tmr2);
+instance!(TMR2, set_pin_tmr2, tmr2_nodma, remap_tmr2);
 #[cfg(not(feature = "time-driver-tmr3"))]
-instance!(TMR3, set_pin_tmr3);
+instance!(TMR3, set_pin_tmr3, tmr3_nodma, remap_tmr3);
 #[cfg(not(feature = "time-driver-tmr0"))]
 impl NfcClockInstance for peripherals::TMR0 {}
 #[cfg(not(feature = "time-driver-tmr3"))]
@@ -84,21 +108,21 @@ macro_rules! pin {
         impl TimerPin<peripherals::$tmr, $remap> for peripherals::$pin {}
     };
 }
-#[cfg(not(feature = "time-driver-tmr0"))]
+#[cfg(all(not(feature = "time-driver-tmr0"), remap_tmr0))]
 pin!(TMR0, 0, PA9);
-#[cfg(not(feature = "time-driver-tmr0"))]
+#[cfg(all(not(feature = "time-driver-tmr0"), remap_tmr0))]
 pin!(TMR0, 1, PB23);
-#[cfg(not(feature = "time-driver-tmr1"))]
+#[cfg(all(not(feature = "time-driver-tmr1"), remap_tmr1))]
 pin!(TMR1, 0, PA10);
-#[cfg(not(feature = "time-driver-tmr1"))]
+#[cfg(all(not(feature = "time-driver-tmr1"), remap_tmr1))]
 pin!(TMR1, 1, PB10);
-#[cfg(not(feature = "time-driver-tmr2"))]
+#[cfg(all(not(feature = "time-driver-tmr2"), remap_tmr2))]
 pin!(TMR2, 0, PA11);
-#[cfg(not(feature = "time-driver-tmr2"))]
+#[cfg(all(not(feature = "time-driver-tmr2"), remap_tmr2))]
 pin!(TMR2, 1, PB11);
-#[cfg(not(feature = "time-driver-tmr3"))]
+#[cfg(all(not(feature = "time-driver-tmr3"), remap_tmr3))]
 pin!(TMR3, 0, PB22);
-#[cfg(not(feature = "time-driver-tmr3"))]
+#[cfg(all(not(feature = "time-driver-tmr3"), remap_tmr3))]
 pin!(TMR3, 1, PA2);
 
 /// One handler for the instance's currently enabled timer events.
@@ -115,7 +139,10 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         let r = T::regs();
         let events = r.int_flag().read().0 & r.inter_en().read().0;
         r.inter_en().modify(|w| w.0 &= !events);
-        if events & Events::DMA_END.bits() != 0 && T::state().rx_finite.load(crate::atomic::Ordering::Relaxed) {
+        if T::HAS_DMA
+            && events & Events::DMA_END.bits() != 0
+            && T::state().rx_finite.load(crate::atomic::Ordering::Relaxed)
+        {
             // Do not let an exhausted finite capture fill/overflow the FIFO
             // while its task is waiting to resume. TX must instead drain.
             r.ctrl_mod().modify(|w| w.set_count_en(false));
