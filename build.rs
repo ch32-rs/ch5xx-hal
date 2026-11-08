@@ -117,6 +117,28 @@ fn main() {
         Some("ch585" | "ch583" | "ch592" | "ch595" | "ch572") => println!("cargo:rustc-cfg=reset_status"),
         _ => {}
     }
+    // TMR instances are not all the same block. CH592 and CH595 omit the
+    // timer-local DMA registers on TMR0/TMR3, while the other dies have them on
+    // every instance. Emit one cfg per no-DMA instance and a `tmr_all_dma` cfg
+    // for the modules that need every instance to be DMA-capable.
+    let mut all_dma = true;
+    for (name, block) in peripheral_blocks(&chip_name, "TMR") {
+        if block == "TMR_NODMA" {
+            println!("cargo:rustc-cfg={}_nodma", name.to_ascii_lowercase());
+            all_dma = false;
+        }
+    }
+    if all_dma {
+        println!("cargo:rustc-cfg=tmr_all_dma");
+    }
+    // UART1-3 drop the modem-control block on several dies (CH592, CH583,
+    // CH595). The instance type and the register fields differ, so the driver
+    // needs to know which block each instance is.
+    for (name, block) in peripheral_blocks(&chip_name, "UART") {
+        if block == "UART_NOMODEM" {
+            println!("cargo:rustc-cfg={}_nomodem", name.to_ascii_lowercase());
+        }
+    }
     // USBFS is the WCH full-speed device controller. USBHS is a separate block
     // and is not this driver.
     if register_version_opt(&chip_name, "usbfs").as_deref() == Some("ch585") {
@@ -286,6 +308,43 @@ fn sys_has_registers(chip: &str, names: &[&str]) -> bool {
 
 fn data_root() -> PathBuf {
     PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../ch5xx-data/data")
+}
+
+/// `(instance name, block)` for every peripheral whose name starts with
+/// `prefix`, e.g. `TMR` or `UART`.
+///
+/// The family file names the register block next to each instance so a die can
+/// mix block variants (DMA-capable and DMA-less timers, full and no-modem
+/// UARTs); the HAL keys its instance types on this instead of assuming one
+/// block for the whole group.
+fn peripheral_blocks(chip: &str, prefix: &str) -> Vec<(String, String)> {
+    let chip_path = data_root().join(format!("chips/{}.yaml", chip.to_ascii_uppercase()));
+    let family = family_file(
+        &fs::read_to_string(&chip_path).unwrap_or_else(|err| panic!("reading {}: {err}", chip_path.display())),
+    );
+    let family_path = data_root().join(format!("family/{family}"));
+    let text =
+        fs::read_to_string(&family_path).unwrap_or_else(|err| panic!("reading {}: {err}", family_path.display()));
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut blocks = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(name) = line.trim().strip_prefix("- name: ") else {
+            continue;
+        };
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        // The block sits in the same `registers:` entry, before the next one.
+        let block = lines[index + 1..]
+            .iter()
+            .map(|candidate| candidate.trim())
+            .take_while(|candidate| !candidate.starts_with("- name:"))
+            .find_map(|candidate| candidate.strip_prefix("block: "))
+            .unwrap_or_else(|| panic!("{name} has no register block"));
+        blocks.push((name.to_string(), block.to_string()));
+    }
+    blocks
 }
 
 /// The `version:` of the `kind` register block the chip's family selects.
