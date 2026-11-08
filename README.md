@@ -29,7 +29,7 @@ chip feature, for example `ch585` or `ch592`.
 | `uart` | UART0–UART3, blocking and async, typed remapping, `embedded-io` traits |
 | `i2c` | I2C0 master, blocking and async, up to 400 kHz |
 | `spi` | SPI0/SPI1 master, blocking and async, SPI0 local DMA |
-| `adc` | Single conversions, temperature and battery channels, polled DMA scans |
+| `adc` | Single conversions, temperature and battery channels, polled DMA scans on CH585 and CH592, timed auto-DMA |
 | `touchkey` | Charge-transfer touch keys through the ADC, polled |
 | `pwm` | PWM4–PWM11 duty, 16-bit cycle and duty on PWM4–PWM9, channel-pair stagger |
 | `rtc` | Calendar, one-shot alarm, interval timer |
@@ -47,8 +47,7 @@ full-speed fallback and isochronous transfers, I2C bus recovery and SPI slave
 mode are not implemented; each module documents its own limits. Blocks that
 differ per die select a variant (CH592 uses `pwmx_ch592`, `usb_ch592`,
 `power_sleep_ch59x` and the mixed FULL/NODMA timer blocks) or are absent there
-(the ADC scan sequencer, SPI1 and USBHS). LCD, BLE and NFC have no driver on
-any die.
+(SPI1 and USBHS). LCD, BLE and NFC have no driver on any die.
 
 ## Quick start
 
