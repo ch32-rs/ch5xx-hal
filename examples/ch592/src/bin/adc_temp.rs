@@ -4,8 +4,8 @@
 //! turned into degrees Celsius with the calibration value stored in the info
 //! flash. A room-temperature result is the check; the raw count is logged too.
 //!
-//! CH592 keeps the CH585 converter but has no scan sequencer, so this is the
-//! single-conversion path. The block also has no `PIN_IN_DIS`; the vendor only
+//! This is the single-conversion path; `adc_scan` and `adc_auto` cover the
+//! scan and timed-DMA modes. The block has no `PIN_IN_DIS`; the vendor only
 //! floats the pad, which `Adc::new_temperature` does not need.
 
 #![no_std]
