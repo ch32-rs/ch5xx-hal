@@ -1,0 +1,18 @@
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+# Flash, reset and stream defmt over RTT in one step. With several WCH-Links
+# attached, select yours with `PROBE_RS_PROBE=<VID:PID:SERIAL>` or
+# `cargo run ... -- --probe <VID:PID:SERIAL>`; a bare run picks the first one.
+runner = "probe-rs run --chip CH582"
+# The QingKe V4A implements RV32IMAC. Unlike the V3C on CH585 there is no
+# ratified B extension, and `+xwchc` is left out until it has been tried on
+# this die.
+rustflags = []
+
+[unstable]
+build-std = ["core"]
+
+[env]
+DEFMT_LOG = "info"

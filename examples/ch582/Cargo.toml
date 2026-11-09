@@ -1,0 +1,39 @@
+[package]
+name = "ch582-examples"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# No Embassy example yet, so the reset default keeps the crate usable without
+# pulling the executor and a time driver in.
+default = []
+time-driver-systick = ["ch5xx-hal/time-driver-systick"]
+time-driver-tmr0 = ["ch5xx-hal/time-driver-tmr0"]
+time-driver-tmr1 = ["ch5xx-hal/time-driver-tmr1"]
+time-driver-tmr2 = ["ch5xx-hal/time-driver-tmr2"]
+time-driver-tmr3 = ["ch5xx-hal/time-driver-tmr3"]
+
+[dependencies]
+ch5xx-hal = { path = "../../", features = ["ch582", "rt", "memory-x"] }
+
+panic-halt = "1.0"
+qingke = "0.8.4"
+qingke-rt = "0.8.4"
+defmt = "1.0"
+defmt-rtt = "1.3"
+embedded-hal = "1.0.0"
+
+# QingKe V4A implements A, but the HAL's atomics go through
+# `portable-atomic` / critical sections, matching the other CH5xx parts.
+# The matching `riscv32imac` target makes the compiler emit `amo*` freely;
+# this dependency choice only covers the HAL's own code.
+portable-atomic = { version = "1.11", features = ["critical-section"] }
+
+[profile.release]
+strip = false
+debug = 2
+lto = true
+opt-level = "s"
+
+[profile.dev]
+overflow-checks = false
