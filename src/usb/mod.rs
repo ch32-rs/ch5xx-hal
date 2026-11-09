@@ -6,9 +6,9 @@
 //! Buffers are 4-byte aligned and the DMA register takes the low 16 bits of the
 //! address, which is how the vendor code programs it.
 //!
-//! On CH585 and CH592, the driver covers endpoints 0 to 7. Endpoint 4 has no DMA address of its
-//! own; its OUT and IN buffers sit one and two packets after endpoint 0's. It
-//! also ignores `AUTO_TOG` (the bit reads back zero), so the handler advances
+//! On CH585 and CH592, the driver covers endpoints 0 to 7. Endpoint 4 has no
+//! DMA address of its own; its single-direction buffer follows endpoint 0's.
+//! It also ignores `AUTO_TOG` (the bit reads back zero), so the handler advances
 //! its data toggles by hand. Endpoints 5 to 7 are enabled through `UEP567_MOD`
 //! and have their own DMA registers. The host port is not implemented.
 //!
@@ -252,8 +252,7 @@ impl State {
             irq_resume: AtomicBool::new(false),
             ep0_buffers: UnsafeCell::new(Ep0Buffers {
                 control: Buffer::new(),
-                ep4_out: Buffer::new(),
-                ep4_in: Buffer::new(),
+                ep4: Buffer::new(),
             }),
             ep_buffer: UnsafeCell::new([const { Buffer::new() }; 7]),
         }
@@ -295,14 +294,12 @@ impl Buffer {
     }
 }
 
-/// Endpoint 0's buffer, then endpoint 4's OUT and IN buffers. Endpoint 4 has
-/// no DMA register and uses the two packets after endpoint 0's, so all three
-/// must stay adjacent.
+/// Endpoint 4 has no DMA register. Its single-direction buffer immediately
+/// follows endpoint 0's; allocation forbids using both directions at once.
 #[repr(C, align(4))]
 struct Ep0Buffers {
     control: Buffer,
-    ep4_out: Buffer,
-    ep4_in: Buffer,
+    ep4: Buffer,
 }
 
 fn buffer<T: Instance>(index: usize, direction: Direction) -> &'static mut Buffer {
@@ -310,8 +307,7 @@ fn buffer<T: Instance>(index: usize, direction: Direction) -> &'static mut Buffe
     unsafe {
         match (index, direction) {
             (0, _) => &mut (*state.ep0_buffers.get()).control,
-            (4, Direction::Out) => &mut (*state.ep0_buffers.get()).ep4_out,
-            (4, Direction::In) => &mut (*state.ep0_buffers.get()).ep4_in,
+            (4, _) => &mut (*state.ep0_buffers.get()).ep4,
             (i, _) => &mut *state.ep_buffer.get().cast::<Buffer>().add(i - 1),
         }
     }
@@ -1217,9 +1213,12 @@ fn enable_in<T: Instance>(index: usize) {
             uep2_3_mod!(regs).modify(|w| set_uep3_tx_en_field!(w, true));
         }
         4 => {
-            // Endpoint 4's buffer follows endpoint 0's, so there is no DMA
-            // register to write here.
-            regs.uep4_1_mod().modify(|w| w.set_uep4_tx_en(true));
+            // The allocator permits only one direction, so force IN-only
+            // mode: in this mode the buffer starts at EP0 DMA + 64.
+            regs.uep4_1_mod().modify(|w| {
+                w.set_uep4_rx_en(false);
+                w.set_uep4_tx_en(true);
+            });
         }
         5 => {
             regs.uep5_dma().write(|w| w.set_uep5_dma(dma));
@@ -1264,7 +1263,10 @@ fn enable_out<T: Instance>(index: usize) {
             uep2_3_mod!(regs).modify(|w| w.set_uep3_rx_en(true));
         }
         4 => {
-            regs.uep4_1_mod().modify(|w| w.set_uep4_rx_en(true));
+            regs.uep4_1_mod().modify(|w| {
+                w.set_uep4_tx_en(false);
+                w.set_uep4_rx_en(true);
+            });
         }
         5 => {
             regs.uep5_dma().write(|w| w.set_uep5_dma(dma));
@@ -1448,10 +1450,11 @@ impl sealed::Instance for peripherals::USB2 {
 #[cfg(usb_ch583)]
 impl Instance for peripherals::USB2 {}
 
-#[cfg(all(test, usb_ch583))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(usb_ch583)]
     #[test]
     fn controllers_have_independent_state_and_dma() {
         let first = <peripherals::USB as sealed::Instance>::state();
@@ -1476,10 +1479,24 @@ mod tests {
         assert!(!second.in_done[1].load(Ordering::Relaxed));
     }
 
+    #[cfg(not(usb_ch583))]
+    #[test]
+    fn ep4_single_direction_uses_first_packet_after_ep0() {
+        #[cfg(usbfs_ch585)]
+        type Usb = peripherals::USBFS;
+        #[cfg(usb_ch592)]
+        type Usb = peripherals::USB;
+        let ep0 = buffer::<Usb>(0, Direction::Out) as *mut Buffer as usize;
+        let ep4_in = buffer::<Usb>(4, Direction::In) as *mut Buffer as usize;
+        let ep4_out = buffer::<Usb>(4, Direction::Out) as *mut Buffer as usize;
+        assert_eq!(ep4_in, ep0 + MAX_PACKET);
+        assert_eq!(ep4_out, ep4_in);
+    }
+
     #[test]
     fn ep0_and_ep4_dma_layout_is_preserved() {
         assert_eq!(core::mem::align_of::<Ep0Buffers>(), 4);
-        assert_eq!(core::mem::offset_of!(Ep0Buffers, ep4_out), MAX_PACKET);
-        assert_eq!(core::mem::offset_of!(Ep0Buffers, ep4_in), 2 * MAX_PACKET);
+        assert_eq!(core::mem::offset_of!(Ep0Buffers, ep4), MAX_PACKET);
+        assert_eq!(core::mem::size_of::<Ep0Buffers>(), 2 * MAX_PACKET);
     }
 }
