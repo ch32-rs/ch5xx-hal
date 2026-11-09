@@ -39,9 +39,9 @@ pub struct Config {
     pub discharge: u8,
     /// Select the 70 µA charge current (`CFG.CURRENT`) instead of 35 µA.
     ///
-    /// The vendor touch library always selects the higher current; with the
-    /// lower one a small pad saturates `ADC.DATA` after one or two charge
-    /// clocks.
+    /// The CH592 vendor touch library selects the higher current; with the
+    /// lower one a small pad can saturate `ADC.DATA` after one or two charge
+    /// clocks. The CH582/CH583 SDK preserves the existing current setting.
     pub high_current: bool,
     /// Enable the drive shield (`CFG.DRV_EN`), when the board wires one.
     pub shield: bool,
@@ -53,12 +53,21 @@ impl Default for Config {
     fn default() -> Self {
         // The vendor touch library's working point: two charge clocks, three
         // discharge clocks and the 70 µA current.
+        // CH582/CH583's vendor touch setup uses -6 dB and the first clock
+        // setting, unlike the newer ADC blocks.
+        #[cfg(adc_ch583)]
+        let adc = adc::Config {
+            gain: adc::Gain::Div2,
+            sample_clock: adc::SampleClock::Divide1,
+        };
+        #[cfg(not(adc_ch583))]
+        let adc = adc::Config::default();
         Self {
             charge: 2,
             discharge: 3,
             high_current: true,
             shield: false,
-            adc: adc::Config::default(),
+            adc,
         }
     }
 }

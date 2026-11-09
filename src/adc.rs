@@ -1,11 +1,11 @@
 //! ADC conversions and scans.
 //!
-//! CH585 has one converter, clocked from its own divider rather than `Fsys`.
+//! The converter is clocked from its own divider rather than `Fsys`.
 //! [`Adc`] is a controller handle: [`Adc::blocking_read`] takes the pin or
-//! internal source ([`AdcChannel`]) to convert, as in `embassy-stm32`. [`Scan`]
-//! samples an ordered sequence of channels and stores the samples with the
-//! block's local DMA engine; one pass can cover up to fourteen channels on
-//! CH585 and twelve on CH592. [`Adc::start_auto`] instead repeats one channel
+//! internal source ([`AdcChannel`]) to convert, as in `embassy-stm32`. On
+//! CH585 and CH592, scan mode samples an ordered sequence with the block's
+//! local DMA engine; one pass can cover fourteen channels on CH585 or twelve on
+//! CH592. [`Adc::start_auto`] instead repeats one channel
 //! at a fixed interval, with the same DMA engine filling the buffer. Touch-key
 //! mode shares the same converter and is left untouched.
 //!
@@ -20,7 +20,7 @@
 //! A channel has to be selected before the converter is powered, which is the
 //! order the vendor setup uses. On CH585 an external channel also disconnects
 //! the pad's digital input through `PIN_IN_DIS`, or the pin driver fights the
-//! signal being measured; CH592 has no such register and only floats the pad.
+//! signal being measured; CH592 and CH583 use floating pad configuration.
 //! Each read powers the converter up and down and restores the pad.
 //!
 //! The raw result is 12 bits. The vendor notes an offset near the ends of the
@@ -28,10 +28,11 @@
 //! [`Adc::calibrate`] measures that offset so a caller can add it.
 //!
 //! The register block differs between dies. The module compiles for the CH585
-//! layout (CH581, CH584, CH585) and for CH592. CH592 has three `SCAN_CFG2`
-//! entries instead of five, no `SAMPLE_TIME` and no `SCAN_AUTO_TYPE`; it also
-//! routes AIN8/AIN9 to PB0/PB6 and has no AIN6/AIN7. Both dies have been run on
-//! a board. Other dies have no driver.
+//! layout (CH581, CH584, CH585), CH592, and CH583 (CH582 and CH583).
+//! CH583 has no scan sequencer and uses 15-bit byte-addressed DMA offsets.
+//! CH592 has three `SCAN_CFG2` entries instead of five, no `SAMPLE_TIME` or
+//! `SCAN_AUTO_TYPE`, routes AIN8/AIN9 to PB0/PB6, and has no AIN6/AIN7.
+//! CH585 and CH592 have been run on a board; CH583 is not yet board tested.
 
 use core::marker::PhantomData;
 
@@ -63,11 +64,14 @@ pub enum Gain {
     Unity,
     /// 6 dB, two.
     X2,
-    /// 12 dB, four.
+    /// 12 dB, four. Not available on CH582/CH583.
+    #[cfg(not(adc_ch583))]
     X4,
-    /// 18 dB, eight.
+    /// 18 dB, eight. Not available on CH582/CH583.
+    #[cfg(not(adc_ch583))]
     X8,
-    /// 24 dB, sixteen.
+    /// 24 dB, sixteen. Not available on CH582/CH583.
+    #[cfg(not(adc_ch583))]
     X16,
 }
 
@@ -82,8 +86,11 @@ impl Gain {
             Gain::Div2 => (1, false),
             Gain::Unity => (2, false),
             Gain::X2 => (3, false),
+            #[cfg(not(adc_ch583))]
             Gain::X4 => (1, true),
+            #[cfg(not(adc_ch583))]
             Gain::X8 => (2, true),
+            #[cfg(not(adc_ch583))]
             Gain::X16 => (3, true),
         }
     }
@@ -93,7 +100,7 @@ impl Gain {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum SampleClock {
-    /// The fastest setting, which the vendor restricts to a 32 MHz clock source.
+    /// Divide by one on newer blocks; 3.2 MHz from CK32M on CH582/CH583.
     Divide1 = 0,
     /// 8 MHz from a 32 MHz source, 4 MHz otherwise. The vendor's default.
     Divide2 = 1,
@@ -167,8 +174,9 @@ pub trait AdcChannel<T: Instance>: channel_sealed::Channel<T> {}
 
 /// The internal temperature sensor, from [`Adc::enable_temperature`].
 ///
-/// Dropping it powers the sensor down. It overrides the controller's gain and
-/// clock: the vendor setup forces differential mode and a gain of two.
+/// The sensor is powered for each conversion or auto transfer, not for the
+/// lifetime of this token. The vendor setup forces differential mode and a gain
+/// of two.
 pub struct Temperature {
     _private: (),
 }
@@ -181,20 +189,18 @@ impl channel_sealed::Channel<peripherals::ADC> for Temperature {
     fn config(&self, _base: Config) -> (Config, bool) {
         (temperature_config(), true)
     }
+
+    fn prepare() {
+        pac::ADC.tem_sensor().write(|w| w.set_tem_sen_pwr_on(true));
+    }
 }
 
 impl AdcChannel<peripherals::ADC> for Temperature {}
 
-impl Drop for Temperature {
-    fn drop(&mut self) {
-        pac::ADC.tem_sensor().write(|w| w.set_tem_sen_pwr_on(false));
-    }
-}
-
 /// The divided battery-voltage channel.
 ///
 /// Nothing needs powering on, so the token is built directly and can be used
-/// with [`Adc::blocking_read`] or put in a [`Scan`] sequence. The vendor setup
+/// with [`Adc::blocking_read`] or put in a scan sequence where available. The vendor setup
 /// uses a gain of one quarter and the input buffer, since the battery is
 /// divided down to the converter's range; pass such a [`Config`] to
 /// [`Adc::new`].
@@ -244,12 +250,11 @@ impl<'d, T: Instance> Adc<'d, T> {
         enable::<T>(index, config, differential);
     }
 
-    /// Power the internal temperature sensor and return its channel.
+    /// Return a channel for the internal temperature sensor.
     ///
     /// [`Adc::temperature`] turns a raw sample into a temperature with the
     /// value stored in the info flash.
     pub fn enable_temperature(&mut self) -> Temperature {
-        T::regs().tem_sensor().write(|w| w.set_tem_sen_pwr_on(true));
         Temperature { _private: () }
     }
 
@@ -267,10 +272,17 @@ impl<'d, T: Instance> Adc<'d, T> {
         };
         // The single-ended unity-gain setup also turns the input buffer on,
         // which the shorted input needs.
-        enable::<T>(regs.channel().read().ch_inx(), unity, false);
+        let channel = regs.channel().read().ch_inx();
+        // The CH583 SDK specifies channel 1 for the shorted-input test.
+        #[cfg(adc_ch583)]
+        let calibration_channel = 1;
+        #[cfg(not(adc_ch583))]
+        let calibration_channel = channel;
+        enable::<T>(calibration_channel, unity, false);
         regs.cfg().modify(|w| w.set_ofs_test(true));
         let result = calibrate_offset::<T>();
         regs.cfg().write_value(saved);
+        regs.channel().write(|w| w.set_ch_inx(channel));
         result
     }
 
@@ -278,15 +290,18 @@ impl<'d, T: Instance> Adc<'d, T> {
     ///
     /// The info flash holds the sample the sensor produced at its reference
     /// temperature, and that temperature in the upper half when it is not zero.
-    /// The vendor slope is 283 counts per 100 degrees. A converter that is not
-    /// on the temperature channel still computes the number, but it does not
-    /// mean anything.
+    /// The vendor uses 10/27 degrees per count on CH582/CH583 and 100/283
+    /// on CH585/CH592. A sample from another channel has no meaning here.
     pub fn temperature(&self, sample: u16) -> i32 {
         let calib = unsafe { (TEMPERATURE_CALIB as *const u32).read_volatile() };
         let reference = i32::from((calib >> 16) as u16);
         let reference = if reference == 0 { 25 } else { reference };
         let counts = i32::from(calib as u16);
-        reference + (i32::from(sample) - counts) * 100 / 283
+        #[cfg(adc_ch583)]
+        let delta = (i32::from(sample) - counts) * 10 / 27;
+        #[cfg(not(adc_ch583))]
+        let delta = (i32::from(sample) - counts) * 100 / 283;
+        reference + delta
     }
 }
 
@@ -314,7 +329,12 @@ fn convert_once<T: Instance>() -> Result<u16, Error> {
     let deadline = deadline();
     loop {
         let state = regs.convert().read();
-        if !state.start() && !state.eoc_x() {
+        // The CH583 SDK polls START alone; its EOC_X polarity is not used.
+        #[cfg(adc_ch583)]
+        let complete = !state.start();
+        #[cfg(not(adc_ch583))]
+        let complete = !state.start() && !state.eoc_x();
+        if complete {
             return Ok(u16::from(regs.data().read().data()));
         }
         if timed_out(deadline) {
@@ -753,15 +773,18 @@ impl<'d, T: Instance> Adc<'d, T> {
     ///
     /// The converter converts once every `cycle` and the block's DMA engine
     /// stores one 16-bit sample per conversion, filling `buffer` in order. The
-    /// sequence in [`Scan`] is not involved: this is the single-channel timed
+    /// scan sequencer is not involved: this is the single-channel timed
     /// mode of datasheet section 15.3.3. `buffer` is exclusive static storage
-    /// and the transfer must be waited on or stopped before it is read.
-    pub fn start_auto<C: AdcChannel<T>>(
-        &mut self,
-        channel: &mut C,
+    /// and the transfer must be waited on or stopped before it is read. On
+    /// CH582/CH583 the entire buffer, including its exclusive end address,
+    /// must fit in the first 32 KiB of SRAM. The channel remains borrowed until
+    /// the transfer is stopped or dropped.
+    pub fn start_auto<'a, C: AdcChannel<T>>(
+        &'a mut self,
+        channel: &'a mut C,
         buffer: &'static mut [u16],
         cycle: AutoCycle,
-    ) -> Result<AutoTransfer<'_, 'd, T>, (Error, &'static mut [u16])> {
+    ) -> Result<AutoTransfer<'a, 'd, T>, (Error, &'static mut [u16])> {
         if buffer.is_empty() {
             return Err((Error::Buffer, buffer));
         }
@@ -773,23 +796,43 @@ impl<'d, T: Instance> Adc<'d, T> {
             Err(_) => return Err((Error::Buffer, buffer)),
         };
 
-        self.begin(channel);
+        // CH583 decodes only 15 bits of its byte-addressed DMA registers
+        // (manual section 15.2). Exclusive END must itself be representable.
+        #[cfg(adc_ch583)]
+        if descriptor.end >= 0x8000 {
+            return Err((Error::Buffer, buffer));
+        }
 
         let regs = T::regs();
-        // Stop a previous user of the engine before moving the buffer window.
+        // Stop a previous user of the engine before starting a conversion.
         regs.convert().modify(|w| w.set_start(false));
         regs.ctrl_dma().modify(|w| {
             w.set_auto_en(false);
             w.set_dma_enable(false);
             w.set_ie_dma_end(false);
+            #[cfg(adc_ch583)]
+            {
+                w.set_dma_loop(false);
+                w.set_cont_en(false);
+            }
         });
+        self.begin(channel);
+        // Discard the stale conversion before arming DMA, as for blocking reads.
+        if let Err(error) = convert_once::<T>() {
+            <C as channel_sealed::Channel<T>>::release();
+            return Err((error, buffer));
+        }
         regs.dma_if().write(|w| {
             w.set_if_dma_end(true);
             w.set_if_end(true);
         });
-        // Both address registers hold halfword offsets.
-        regs.dma_beg().write(|w| w.set_dma_beg((descriptor.start >> 1) as u16));
-        regs.dma_end().write(|w| w.set_dma_end((descriptor.end >> 1) as u16));
+        // CH583 uses byte offsets; the newer blocks use halfword offsets.
+        #[cfg(adc_ch583)]
+        let (start, end) = (descriptor.start, descriptor.end);
+        #[cfg(not(adc_ch583))]
+        let (start, end) = (descriptor.start >> 1, descriptor.end >> 1);
+        regs.dma_beg().write(|w| w.set_dma_beg(start as u16));
+        regs.dma_end().write(|w| w.set_dma_end(end as u16));
         regs.auto_cycle().write(|w| w.set_auto_cycle(cycle.0));
         crate::dma::fence();
         // The datasheet sequence starts timed sampling with `AUTO_EN`; it does
@@ -802,6 +845,7 @@ impl<'d, T: Instance> Adc<'d, T> {
 
         Ok(AutoTransfer {
             _adc: self,
+            _channel: PhantomData,
             buffer: Some(buffer),
             descriptor,
             pad: <C as channel_sealed::Channel<T>>::pad(),
@@ -819,6 +863,8 @@ impl<'d, T: Instance> Adc<'d, T> {
 pub struct AutoTransfer<'a, 'd, T: Instance> {
     /// Keeps the converter borrowed while the engine is running.
     _adc: &'a mut Adc<'d, T>,
+    // Retain the channel borrow until DMA has been stopped.
+    _channel: PhantomData<&'a mut ()>,
     buffer: Option<&'static mut [u16]>,
     descriptor: Descriptor,
     /// Pad behind the channel, so it is restored when the transfer stops.
@@ -829,7 +875,9 @@ pub struct AutoTransfer<'a, 'd, T: Instance> {
 impl<'a, 'd, T: Instance> AutoTransfer<'a, 'd, T> {
     /// Samples stored so far, counted from `DMA_NOW`.
     pub fn position(&self) -> usize {
-        let now = u32::from(T::regs().dma_now().read().dma_now()) << 1;
+        let now = u32::from(T::regs().dma_now().read().dma_now());
+        #[cfg(not(adc_ch583))]
+        let now = now << 1;
         now.saturating_sub(self.descriptor.start) as usize / 2
     }
 
@@ -916,10 +964,16 @@ pub(crate) fn enable<T: Instance>(channel: u8, config: Config, differential: boo
     regs.cfg().write(|w| {
         w.set_buf_en(!differential);
         w.set_diff_en(differential);
+        #[cfg(adc_ch583)]
+        w.set_pga_gain(gain);
+        #[cfg(not(adc_ch583))]
         w.set_pga_gain10(gain);
         w.set_clk_div(config.sample_clock as u8);
     });
+    #[cfg(not(adc_ch583))]
     regs.convert().modify(|w| w.set_pga_gain2(gain2));
+    #[cfg(adc_ch583)]
+    let _ = gain2;
     regs.cfg().modify(|w| w.set_power_on(true));
 }
 
@@ -989,6 +1043,7 @@ fn reconnect_pad(_port: u8, _pin: u8) {}
 /// Power the converter down and restore a channel's pad.
 fn release_pad<T: Instance>(pad: Option<(u8, u8)>) {
     T::regs().cfg().modify(|w| w.set_power_on(false));
+    T::regs().tem_sensor().write(|w| w.set_tem_sen_pwr_on(false));
     if let Some((port, pin)) = pad {
         reconnect_pad(port, pin);
     }
@@ -1107,13 +1162,13 @@ impl_channel!(PA12, 2, 12, 0);
 impl_channel!(PA13, 3, 13, 0);
 impl_channel!(PA14, 4, 14, 0);
 impl_channel!(PA15, 5, 15, 0);
-#[cfg(adc_ch585)]
+#[cfg(any(adc_ch585, adc_ch583))]
 impl_channel!(PA3, 6, 3, 0);
-#[cfg(adc_ch585)]
+#[cfg(any(adc_ch585, adc_ch583))]
 impl_channel!(PA2, 7, 2, 0);
-#[cfg(adc_ch585)]
+#[cfg(any(adc_ch585, adc_ch583))]
 impl_channel!(PA1, 8, 1, 0);
-#[cfg(adc_ch585)]
+#[cfg(any(adc_ch585, adc_ch583))]
 impl_channel!(PA0, 9, 0, 0);
 #[cfg(adc_ch592)]
 impl_channel!(PB0, 8, 0, 1);

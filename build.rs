@@ -81,6 +81,20 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=power_sleep");
     }
+    // CH582/CH583 split the main SRAM retention differently: `PWR_RAM2K` is
+    // the 2 KB block, `PWR_RAM30K` the 30 KB main block, and there is no
+    // `PWR_LDO_EN`. The driver needs its own retention names and plan
+    // composition.
+    if register_version_opt(&chip_name, "sys").as_deref() == Some("ch583") {
+        println!("cargo:rustc-cfg=power_plan_ch58x");
+    }
+    // CH592 and CH582/CH583 have the same shape of clock tree: a 32 MHz
+    // crystal as the only high-speed source and a 480 MHz PLL. The register
+    // fields and the safe-access window still differ, so only the tree model,
+    // presets and validation are shared.
+    if chip_name == "ch592" || register_version_opt(&chip_name, "sys").as_deref() == Some("ch583") {
+        println!("cargo:rustc-cfg=xtal480");
+    }
     // CH592/CH595 use a newer POWER_PLAN layout (`PWR_RAM24K` and
     // `PWR_RAM8K` instead of `PWR_RAM32K`/`PWR_RAM96K`, no `PWR_MUST_0010`).
     // The driver composes that plan from raw bits; CH592 also lacks
@@ -107,16 +121,14 @@ fn main() {
         "ch585" | "ch583" | "ch592" => println!("cargo:rustc-cfg=spi_fifo"),
         _ => {}
     }
-    // The ADC block is not one layout either, and CH572 has none. CH592 keeps
-    // the CH585 single-conversion, temperature and DMA registers and has a
-    // scan sequencer too, but with three `SCAN_CFG2` entries instead of five
-    // and without `SAMPLE_TIME` or `SCAN_AUTO_TYPE`; the driver branches on
-    // the version. Any other version does not compile the module.
+    // CH583 has single conversion and DMA but no scan sequencer. CH592 has
+    // a shorter scan sequencer than CH585; other layouts are not supported.
     match register_version_opt(&chip_name, "adc").as_deref() {
         Some("ch585") => {
             println!("cargo:rustc-cfg=adc_ch585");
             println!("cargo:rustc-cfg=adc_scan");
         }
+        Some("ch583") => println!("cargo:rustc-cfg=adc_ch583"),
         Some("ch592") => {
             println!("cargo:rustc-cfg=adc_ch592");
             println!("cargo:rustc-cfg=adc_scan");
@@ -136,11 +148,10 @@ fn main() {
             println!("cargo:rustc-cfg=touchkey_charge");
         }
     }
-    // PWMx is one block for PWM4-PWM11. The CH573 and CH572 layouts differ, so
-    // the driver only compiles where the family selects the CH585 version.
-    // CH592 has the same bytes at the same offsets but models the four PWMn_DATA
-    // bytes as 8-bit registers instead of 8-bit fields in two 32-bit words.
+    // PWMx is one block for PWM4-PWM11; the CH573 layout has byte duty
+    // registers and fixed 31/32-clock periods instead of the wide mode.
     match register_version_opt(&chip_name, "pwmx").as_deref() {
+        Some("ch573") => println!("cargo:rustc-cfg=pwmx_ch573"),
         Some("ch585") => println!("cargo:rustc-cfg=pwmx_ch585"),
         Some("ch592") => println!("cargo:rustc-cfg=pwmx_ch592"),
         _ => {}
@@ -200,6 +211,9 @@ fn main() {
     // this layout has no host-mode aliases, which the driver does not use.
     if register_version_opt(&chip_name, "usb").as_deref() == Some("ch592") {
         println!("cargo:rustc-cfg=usb_ch592");
+    }
+    if register_version_opt(&chip_name, "usb").as_deref() == Some("ch583") {
+        println!("cargo:rustc-cfg=usb_ch583");
     }
     // USBHS has a separate controller, PHY and device interrupt.
     if register_version_opt(&chip_name, "usbhs").as_deref() == Some("ch585") {

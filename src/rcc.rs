@@ -33,15 +33,20 @@
 //! 32 kHz mode is deliberately not offered: it requires the whole program in
 //! RAM.
 //!
-//! # CH592
+//! # CH592 and CH58x
 //!
-//! CH592 has no internal high-speed oscillator. Its tree starts at the 32 MHz
-//! crystal and has a 480 MHz PLL: `CLK_SYS_MOD = 00` divides the crystal (at
-//! least by 2, so 16 MHz is the maximum here), `01` divides the PLL, and `11`
-//! selects 32 kHz. The reset default is 32 MHz / 5 = 6.4 MHz. The Flash timing
-//! byte in `R8_FLASH_CFG` is part of a clock change on this die, and the
-//! safe-access window is only ~16 `Tsys`, so `with_safe_access` flushes the
-//! instruction prefetch around it.
+//! CH592 and CH582/CH583 have no internal high-speed oscillator. Their tree
+//! starts at the 32 MHz crystal and has a 480 MHz PLL: `CLK_SYS_MOD = 00`
+//! divides the crystal (at least by 2, so 16 MHz is the maximum here), `01`
+//! divides the PLL, and `11` selects 32 kHz. The reset default is 32 MHz / 5 =
+//! 6.4 MHz. The Flash timing byte in `R8_FLASH_CFG` is part of a clock change
+//! on these dies, and the safe-access window is only ~16 `Tsys`, so
+//! `with_safe_access` flushes the instruction prefetch around it.
+//!
+//! On CH58x the oscillator power bits live in `HFCK_PWR_CTRL` instead of
+//! `CLK_CFG`, and WCH's `SetSysClock` adds a `PLL_CONFIG` bit 5 clear / bit 7
+//! set around the change plus a third Flash timing value (0x02) for the 80 MHz
+//! PLL setting.
 //!
 //! # Defaults
 //!
@@ -82,11 +87,11 @@ use crate::time::Hertz;
 /// Starting value for the cache, until [`set_config`] runs.
 ///
 /// This is the reset default: HSI 16 MHz divided by 3 on CH585, and the 32 MHz
-/// crystal divided by 5 (6.4 MHz) on CH592, which has no internal high-speed
-/// oscillator.
-#[cfg(not(ch592))]
+/// crystal divided by 5 (6.4 MHz) on CH592 and CH58x, which have no internal
+/// high-speed oscillator.
+#[cfg(not(xtal480))]
 pub const DEFAULT_FREQUENCY: Hertz = Hertz(5_333_333);
-#[cfg(ch592)]
+#[cfg(xtal480)]
 pub const DEFAULT_FREQUENCY: Hertz = Hertz(6_400_000);
 
 static SYSCLK_HZ: AtomicU32 = AtomicU32::new(DEFAULT_FREQUENCY.0);
@@ -99,7 +104,7 @@ const SAFE_ACCESS_SIG0: u8 = 0x00;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Osc {
     /// Internal 16 MHz RC oscillator (HSI). Always available on CH585; CH592
-    /// has no such oscillator, so only [`Osc::Hse32`] is valid there.
+    /// and CH58x have no such oscillator, so only [`Osc::Hse32`] is valid there.
     Hsi16,
     /// External 32 MHz crystal (HSE) on X32MI/X32MO. Requires the crystal.
     Hse32,
@@ -177,7 +182,7 @@ pub struct Config {
 
 impl Default for Config {
     /// The datasheet reset value.
-    #[cfg(not(ch592))]
+    #[cfg(not(xtal480))]
     fn default() -> Self {
         Self {
             osc: Osc::Hsi16,
@@ -186,11 +191,11 @@ impl Default for Config {
         }
     }
 
-    /// The CH592 reset value: 32 MHz crystal divided by 5 (6.4 MHz).
+    /// The CH592 and CH58x reset value: 32 MHz crystal divided by 5 (6.4 MHz).
     ///
-    /// CH592 has no internal high-speed oscillator, so the crystal is the only
-    /// source.
-    #[cfg(ch592)]
+    /// These dies have no internal high-speed oscillator, so the crystal is the
+    /// only source.
+    #[cfg(xtal480)]
     fn default() -> Self {
         Self {
             osc: Osc::Hse32,
@@ -236,7 +241,7 @@ impl Config {
     /// read any register. The value is only meaningful for a configuration
     /// whose divisors are in range (see [`set_config`]).
     pub const fn sysclk(&self) -> Hertz {
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         {
             let base = match self.osc {
                 Osc::Hsi16 => 16_000_000,
@@ -248,8 +253,8 @@ impl Config {
                 Sys::Pll(div) => Hertz(312_000_000 / div as u32),
             }
         }
-        // CH592 has one oscillator (32 MHz HSE) and a 480 MHz PLL.
-        #[cfg(ch592)]
+        // CH592/CH58x have one oscillator (32 MHz HSE) and a 480 MHz PLL.
+        #[cfg(xtal480)]
         match self.sys {
             Sys::Direct => Hertz(32_000_000),
             Sys::Divided(div) => Hertz(32_000_000 / div as u32),
@@ -262,15 +267,15 @@ impl Config {
     /// Ties go to the lower frequency. Use [`Config::sysclk`] to see what was
     /// chosen; a request outside 1..=78 MHz is still clamped to the tree.
     ///
-    /// CH592 has no HSI: this always panics there, and [`Config::hse_nearest`]
-    /// is the equivalent.
+    /// CH592 and CH58x have no HSI: this always panics there, and
+    /// [`Config::hse_nearest`] is the equivalent.
     pub const fn hsi_nearest(hz: Hertz) -> Self {
-        #[cfg(ch592)]
+        #[cfg(xtal480)]
         {
             let _ = hz;
-            panic!("CH592 has no internal 16 MHz oscillator; use Config::hse_nearest")
+            panic!("this chip has no internal 16 MHz oscillator; use Config::hse_nearest")
         }
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         {
             let mut best = 16_000_000;
             let mut sys = Sys::Direct;
@@ -306,26 +311,26 @@ impl Config {
     /// Closest achievable clock driven by the 32 MHz crystal.
     ///
     /// Same selection rules as [`Config::hsi_nearest`], but divided and
-    /// undivided branches use HSE, which reaches 32 MHz on CH585 and 16 MHz on
-    /// CH592 (whose divided branch needs a minimum divisor of 2).
+    /// divided branches use HSE, which reaches 32 MHz on CH585 and 16 MHz on
+    /// CH592 and CH58x (whose divided branch needs a minimum divisor of 2).
     pub const fn hse_nearest(hz: Hertz) -> Self {
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         let mut best = 32_000_000;
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         let mut sys = Sys::Direct;
 
-        // CH592's reset default, and the highest clock without a divisor.
-        #[cfg(ch592)]
+        // Reset default, and the highest clock without a divisor.
+        #[cfg(xtal480)]
         let mut best = 16_000_000;
-        #[cfg(ch592)]
+        #[cfg(xtal480)]
         let mut sys = Sys::Divided(2);
 
         let mut div = 2u8;
         while div <= 32 {
             let freq = 32_000_000 / div as u32;
-            #[cfg(ch592)]
-            let allowed = fsys_allowed_ch592(freq);
-            #[cfg(not(ch592))]
+            #[cfg(xtal480)]
+            let allowed = fsys_allowed_crystal(freq);
+            #[cfg(not(xtal480))]
             let allowed = true;
             if allowed && closer(hz.0, freq, best) {
                 best = freq;
@@ -334,13 +339,13 @@ impl Config {
             div += 1;
         }
 
-        #[cfg(ch592)]
+        #[cfg(xtal480)]
         let pll_base = 480_000_000u32;
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         let pll_base = 312_000_000u32;
-        #[cfg(ch592)]
+        #[cfg(xtal480)]
         let pll_first = 6u8;
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         let pll_first = 4u8;
 
         let mut div = pll_first;
@@ -362,31 +367,31 @@ impl Config {
 
     presets! {
         /// 16 MHz, HSI undivided (`CLK_SOURCE_HSI_16MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_16MHZ = Hsi16, Sys::Direct;
 
         /// 8 MHz, HSI / 2 (`CLK_SOURCE_HSI_8MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_8MHZ = Hsi16, Sys::Divided(2);
 
         /// 5.333 MHz, HSI / 3 (`CLK_SOURCE_HSI_5_3MHz`). The reset default.
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_5_33MHZ = Hsi16, Sys::Divided(3);
 
         /// 4 MHz, HSI / 4 (`CLK_SOURCE_HSI_4MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_4MHZ = Hsi16, Sys::Divided(4);
 
         /// 2 MHz, HSI / 8 (`CLK_SOURCE_HSI_2MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_2MHZ = Hsi16, Sys::Divided(8);
 
         /// 1 MHz, HSI / 16 (`CLK_SOURCE_HSI_1MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_1MHZ = Hsi16, Sys::Divided(16);
 
         /// 32 MHz, HSE undivided (`CLK_SOURCE_HSE_32MHz`). Needs the crystal.
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_32MHZ = Hse32, Sys::Direct;
 
         /// 16 MHz, HSE / 2 (`CLK_SOURCE_HSE_16MHz`). Needs the crystal.
@@ -405,23 +410,23 @@ impl Config {
         HSE_2MHZ = Hse32, Sys::Divided(16);
 
         /// 78 MHz, PLL / 4 (`CLK_SOURCE_HSI_PLL_78MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_PLL_78MHZ = Hsi16, Sys::Pll(4);
 
         /// 62.4 MHz, PLL / 5 (`CLK_SOURCE_HSI_PLL_62_4MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_PLL_62_4MHZ = Hsi16, Sys::Pll(5);
 
         /// 52 MHz, PLL / 6 (`CLK_SOURCE_HSI_PLL_52MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_PLL_52MHZ = Hsi16, Sys::Pll(6);
 
         /// 39 MHz, PLL / 8 (`CLK_SOURCE_HSI_PLL_39MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_PLL_39MHZ = Hsi16, Sys::Pll(8);
 
         /// 26 MHz, PLL / 12 (`CLK_SOURCE_HSI_PLL_26MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_PLL_26MHZ = Hsi16, Sys::Pll(12);
 
         /// 24 MHz, PLL / 13 (`CLK_SOURCE_HSI_PLL_24MHz`).
@@ -429,70 +434,71 @@ impl Config {
         /// 115200 baud becomes `DL = 26` = 115385 (+0.16%), inside the
         /// datasheet's 0.5% transmit budget, so this is the cheapest way to get
         /// a usable 115200 on a board without a crystal.
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_PLL_24MHZ = Hsi16, Sys::Pll(13);
 
         /// 19.5 MHz, PLL / 16 (`CLK_SOURCE_HSI_PLL_19_5MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_PLL_19_5MHZ = Hsi16, Sys::Pll(16);
 
         /// 13 MHz, PLL / 24 (`CLK_SOURCE_HSI_PLL_13MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSI_PLL_13MHZ = Hsi16, Sys::Pll(24);
 
         /// 78 MHz, PLL / 4 from the crystal (`CLK_SOURCE_HSE_PLL_78MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_PLL_78MHZ = Hse32, Sys::Pll(4);
 
         /// 62.4 MHz, PLL / 5 from the crystal (`CLK_SOURCE_HSE_PLL_62_4MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_PLL_62_4MHZ = Hse32, Sys::Pll(5);
 
         /// 52 MHz, PLL / 6 from the crystal (`CLK_SOURCE_HSE_PLL_52MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_PLL_52MHZ = Hse32, Sys::Pll(6);
 
         /// 39 MHz, PLL / 8 from the crystal (`CLK_SOURCE_HSE_PLL_39MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_PLL_39MHZ = Hse32, Sys::Pll(8);
 
         /// 26 MHz, PLL / 12 from the crystal (`CLK_SOURCE_HSE_PLL_26MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_PLL_26MHZ = Hse32, Sys::Pll(12);
 
         /// 24 MHz, PLL / 13 from the crystal (`CLK_SOURCE_HSE_PLL_24MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_PLL_24MHZ = Hse32, Sys::Pll(13);
 
         /// 19.5 MHz, PLL / 16 from the crystal (`CLK_SOURCE_HSE_PLL_19_5MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_PLL_19_5MHZ = Hse32, Sys::Pll(16);
 
         /// 13 MHz, PLL / 24 from the crystal (`CLK_SOURCE_HSE_PLL_13MHz`).
-        #[cfg(not(ch592))]
+        #[cfg(not(xtal480))]
         HSE_PLL_13MHZ = Hse32, Sys::Pll(24);
 
-        // CH592's PLL is 480 MHz and always runs from the 32 MHz crystal, so
-        // its dividers differ from the CH585 table above (`CH59x_clk.h`).
+        // The CH592/CH58x PLL is 480 MHz and always runs from the 32 MHz
+        // crystal, so its dividers differ from the CH585 table above
+        // (`CH59x_clk.h`, `CH58x_clk.h`).
 
-        /// 80 MHz, PLL / 6. The highest clock the CH592 tree produces.
-        #[cfg(ch592)]
+        /// 80 MHz, PLL / 6. The highest clock these trees produce.
+        #[cfg(xtal480)]
         PLL_80MHZ = Hse32, Sys::Pll(6);
 
         /// 60 MHz, PLL / 8 (`CLK_SOURCE_PLL_60MHz`).
-        #[cfg(ch592)]
+        #[cfg(xtal480)]
         PLL_60MHZ = Hse32, Sys::Pll(8);
 
         /// 48 MHz, PLL / 10 (`CLK_SOURCE_PLL_48MHz`). The USB rate.
-        #[cfg(ch592)]
+        #[cfg(xtal480)]
         PLL_48MHZ = Hse32, Sys::Pll(10);
 
         /// 32 MHz, PLL / 15 (`CLK_SOURCE_PLL_32MHz`).
-        #[cfg(ch592)]
+        #[cfg(xtal480)]
         PLL_32MHZ = Hse32, Sys::Pll(15);
 
         /// 24 MHz, PLL / 20 (`CLK_SOURCE_PLL_24MHz`).
-        #[cfg(ch592)]
+        #[cfg(xtal480)]
         PLL_24MHZ = Hse32, Sys::Pll(20);
     }
 }
@@ -506,12 +512,12 @@ const fn abs_diff(a: u32, b: u32) -> u32 {
     }
 }
 
-/// Whether CH592 can run at `hz`.
+/// Whether CH592/CH58x can run at `hz`.
 ///
 /// Datasheet 6.3: `Fsys` is 32 kHz, 2–10 MHz or 15–80 MHz. The gap excludes
 /// the 32 MHz crystal divided by 3 (10.67 MHz).
-#[cfg(ch592)]
-const fn fsys_allowed_ch592(hz: u32) -> bool {
+#[cfg(xtal480)]
+const fn fsys_allowed_crystal(hz: u32) -> bool {
     (hz >= 2_000_000 && hz <= 10_000_000) || (hz >= 15_000_000 && hz <= 80_000_000)
 }
 
@@ -571,7 +577,7 @@ pub fn clocks() -> Clocks {
 /// Stop and quiesce active Timer/DMA/NFC sessions before changing clocks, then
 /// rebuild their timing state. Dedicated NFC clock mode does not remove its
 /// system-clock precondition or make a live session safe across this change.
-#[cfg(not(ch592))]
+#[cfg(not(any(ch592, power_plan_ch58x)))]
 pub unsafe fn set_config(config: Config) -> Clocks {
     validate(&config);
 
@@ -679,9 +685,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     // The vendor sequence starts by clearing bit 5 of PLL_CONFIG, which is
     // inside the reserved-by-name `RB_PLL_CFG_DAT` field of the PAC.
     with_safe_access(|| {
-        pac::SYSTEM_CONTROL
-            .pll_config()
-            .modify(|w| w.0 &= !(1 << 5));
+        pac::SYSTEM_CONTROL.pll_config().modify(|w| w.0 &= !(1 << 5));
     });
 
     with_safe_access(|| {
@@ -725,9 +729,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     // WCH sets bit 7 after the Flash timing write. It is outside the PAC's
     // `pll_cfg_dat` mask, so write the raw field.
     with_safe_access(|| {
-        pac::SYSTEM_CONTROL
-            .pll_config()
-            .modify(|w| w.0 |= 1 << 7);
+        pac::SYSTEM_CONTROL.pll_config().modify(|w| w.0 |= 1 << 7);
     });
 
     // A SAM window that expired early drops the write silently, so prove it.
@@ -739,38 +741,133 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     Clocks { sysclk }
 }
 
+/// Apply `config` to the hardware and update [`clocks`], on CH582/CH583.
+///
+/// The switch executes entirely in SRAM, including the flash timing update.
+/// With `rt`, the chip feature enables qingke-rt's `highcode` relocation.
+/// Without `rt`, the application must link `.highcode` into executable SRAM
+/// and copy it there before calling `init` or this function. The address is
+/// checked before the switch; the application is responsible for the copy.
+///
+/// # Safety
+///
+/// The requirements on clock-dependent peripheral state described above apply.
+/// Interrupts must not access flash through NMI or other unmaskable exceptions
+/// during the switch. The external crystal must already be running.
+#[cfg(power_plan_ch58x)]
+pub unsafe fn set_config(config: Config) -> Clocks {
+    validate(&config);
+    let sysclk = config.sysclk();
+    let (sys_mod, div, flash_cfg) = match config.sys {
+        Sys::Direct => unreachable!("validate rejects Direct on CH58x"),
+        Sys::Divided(div) => (0, div, 0x51),
+        Sys::Pll(div) => (1, div, if div == 6 { 0x02 } else { 0x52 }),
+    };
+
+    // Catch a missing SRAM linker placement even with a custom runtime. This
+    // cannot prove that a custom startup copied the section's contents.
+    let addr = ch58x_switch as *const () as usize;
+    assert!(
+        (0x2000_0000..0x2000_8000).contains(&addr),
+        "rcc: .highcode must execute from SRAM"
+    );
+
+    with_safe_access(|| {
+        pac::SYSTEM_CONTROL
+            .xt32m_tune()
+            .modify(|w| w.set_xt32m_c_load(config.hse_cap as u8));
+    });
+
+    // Keep interrupts masked across the *whole* sequence. No Rust or PAC
+    // helper is called from the SRAM function, even in an unoptimized build.
+    critical_section::with(|_| {
+        ch58x_switch((sys_mod << 6) | (u32::from(div) & 0x1f), flash_cfg, sys_mod);
+    });
+
+    let after = pac::SYS.clk_cfg().read();
+    assert_eq!(after.clk_sys_mod(), sys_mod as u8, "rcc: CLK_SYS_MOD did not stick");
+    assert_eq!(after.clk_pll_div(), div & 0x1f, "rcc: CLK_PLL_DIV did not stick");
+    SYSCLK_HZ.store(sysclk.0, Ordering::Relaxed);
+    Clocks { sysclk }
+}
+
+// WCH CH583EVT CH58x_sys.c SetSysClock. A single asm block prevents calls,
+// literal pools or compiler-generated flash accesses in the critical interval.
+// Every SAM window is fenced and closed; four nops follow the clock write.
+#[cfg(power_plan_ch58x)]
+#[link_section = ".highcode"]
+#[inline(never)]
+unsafe fn ch58x_switch(clock: u32, flash: u32, pll: u32) {
+    core::arch::asm!(
+        "li {base}, 0x40001000",
+        "li {sig1}, 0x57",
+        "li {sig2}, 0xa8",
+        // PLL_CONFIG bit 5 clear.
+        "fence.i", "sb {sig1}, 64({base})", "sb {sig2}, 64({base})", "fence.i",
+        "lbu {tmp}, 75({base})", "andi {tmp}, {tmp}, -33", "sb {tmp}, 75({base})",
+        "sb zero, 64({base})", "fence.i",
+        // The crystal must run in both modes. Power and settle if needed.
+        "lbu {tmp}, 10({base})", "andi {count}, {tmp}, 4", "bnez {count}, 3f",
+        "ori {tmp}, {tmp}, 4",
+        "fence.i", "sb {sig1}, 64({base})", "sb {sig2}, 64({base})", "fence.i",
+        "sb {tmp}, 10({base})", "sb zero, 64({base})", "fence.i",
+        "li {count}, 1200", "2:", "nop", "nop", "addi {count}, {count}, -1", "bnez {count}, 2b",
+        "3:",
+        // PLL mode powers and settles the PLL when necessary.
+        "beqz {pll}, 5f", "lbu {tmp}, 10({base})", "andi {count}, {tmp}, 16", "bnez {count}, 5f",
+        "ori {tmp}, {tmp}, 16",
+        "fence.i", "sb {sig1}, 64({base})", "sb {sig2}, 64({base})", "fence.i",
+        "sb {tmp}, 10({base})", "sb zero, 64({base})", "fence.i",
+        "li {count}, 2000", "4:", "nop", "nop", "addi {count}, {count}, -1", "bnez {count}, 4b",
+        "5:",
+        // Clock switch, then immediately program flash timing as in the EVT.
+        "fence.i", "sb {sig1}, 64({base})", "sb {sig2}, 64({base})", "fence.i",
+        "sh {clock}, 8({base})", "nop", "nop", "nop", "nop",
+        "sb zero, 64({base})", "fence.i",
+        "fence.i", "sb {sig1}, 64({base})", "sb {sig2}, 64({base})", "fence.i",
+        "addi {tmp}, {base}, 2047", "sb {flash}, 8({tmp})", "sb zero, 64({base})", "fence.i",
+        "fence.i", "sb {sig1}, 64({base})", "sb {sig2}, 64({base})", "fence.i",
+        "lbu {tmp}, 75({base})", "ori {tmp}, {tmp}, 128", "sb {tmp}, 75({base})",
+        "sb zero, 64({base})", "fence.i",
+        clock = in(reg) clock, flash = in(reg) flash, pll = in(reg) pll,
+        base = out(reg) _, sig1 = out(reg) _, sig2 = out(reg) _,
+        tmp = out(reg) _, count = out(reg) _,
+        options(nostack),
+    );
+}
+
 /// Reject configurations the clock tree cannot produce.
 fn validate(config: &Config) {
-    #[cfg(ch592)]
+    #[cfg(xtal480)]
     {
         assert!(
             config.osc == Osc::Hse32,
-            "rcc: CH592 has no internal 16 MHz oscillator"
+            "rcc: this chip has no internal 16 MHz oscillator"
         );
         assert!(
             (config.hse_cap as u8) <= 7,
-            "rcc: CH592's HSE load capacitance is 10..=24 pF"
+            "rcc: this chip's HSE load capacitance is 10..=24 pF"
         );
         match config.sys {
-            Sys::Direct => panic!("rcc: CH592 has no undivided system clock"),
+            Sys::Direct => panic!("rcc: this chip has no undivided system clock"),
             Sys::Divided(div) => {
                 assert!((2..=32).contains(&div), "rcc: CLK_PLL_DIV must be 2..=32");
                 assert!(
-                    fsys_allowed_ch592(32_000_000 / div as u32),
-                    "rcc: Fsys outside CH592's 2-10 MHz or 15-80 MHz ranges"
+                    fsys_allowed_crystal(32_000_000 / div as u32),
+                    "rcc: Fsys outside the 2-10 MHz or 15-80 MHz ranges"
                 );
             }
             Sys::Pll(div) => {
-                assert!((6..=32).contains(&div), "rcc: CH592 PLL divider must be 6..=32");
+                assert!((6..=32).contains(&div), "rcc: PLL divider must be 6..=32");
                 assert!(
-                    fsys_allowed_ch592(480_000_000 / div as u32),
-                    "rcc: Fsys outside CH592's 15-80 MHz PLL range"
+                    fsys_allowed_crystal(480_000_000 / div as u32),
+                    "rcc: Fsys outside the 15-80 MHz PLL range"
                 );
             }
         }
     }
 
-    #[cfg(not(ch592))]
+    #[cfg(not(xtal480))]
     {
         match config.sys {
             Sys::Direct => {}
@@ -798,18 +895,21 @@ fn validate(config: &Config) {
 pub(crate) fn with_safe_access<R>(f: impl FnOnce() -> R) -> R {
     critical_section::with(|_| {
         let sig = pac::SYSTEM_CONTROL.safe_access_sig();
+        // The CH58x and CH592 vendor safe-access sequences flush the
+        // instruction prefetch around their shorter access windows.
+        #[cfg(any(ch592, power_plan_ch58x))]
+        unsafe {
+            core::arch::asm!("fence.i");
+        }
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG1));
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG2));
-        // CH592's window is only ~16 Tsys and WCH flushes the instruction
-        // prefetch before the protected access (`SAFEOPERATE`); do the same so
-        // prefetched instructions cannot outlive the window.
-        #[cfg(ch592)]
+        #[cfg(any(ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }
         let result = f();
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG0));
-        #[cfg(ch592)]
+        #[cfg(any(ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }

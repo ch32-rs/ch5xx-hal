@@ -90,25 +90,25 @@ pub(crate) mod _generated {
 
 pub use crate::_generated::{peripherals, Peripherals};
 
-#[cfg(any(adc_ch585, adc_ch592))]
+#[cfg(any(adc_ch583, adc_ch585, adc_ch592))]
 pub mod adc;
 pub mod delay;
 pub mod dma;
 pub mod gpio;
 pub mod i2c;
-#[cfg(any(pwmx_ch585, pwmx_ch592))]
-pub mod pwm;
 #[cfg(any(power_sleep, power_sleep_ch59x))]
 pub mod power;
+#[cfg(any(pwmx_ch573, pwmx_ch585, pwmx_ch592))]
+pub mod pwm;
 #[cfg(rtc_calendar)]
 pub mod rtc;
 #[cfg(spi_fifo)]
 pub mod spi;
 pub mod timer;
-#[cfg(all(touchkey_charge, any(adc_ch585, adc_ch592)))]
+#[cfg(all(touchkey_charge, any(adc_ch583, adc_ch585, adc_ch592)))]
 pub mod touchkey;
 pub mod uart;
-#[cfg(all(feature = "embassy", any(usbfs_ch585, usb_ch592)))]
+#[cfg(all(feature = "embassy", any(usbfs_ch585, usb_ch592, usb_ch583)))]
 pub mod usb;
 #[cfg(all(feature = "embassy", usbhs_ch585))]
 pub mod usbhs;

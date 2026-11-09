@@ -59,24 +59,27 @@ ch5xx-metapac = { git = "https://github.com/ch32-rs/ch5xx-metapac", rev = "63f42
 
 [features]
 default = ["rt"]
-rt = ["dep:qingke-rt", "qingke-rt/v3c", "qingke/v3c"]
+rt = ["dep:qingke-rt"]
 
 # Chip-selection features. Exactly one must be enabled; `ch5xx-metapac` panics
-# otherwise. All of these cores are QingKe V3C on the parts covered so far.
+# otherwise. Each also selects the QingKe core, because Cargo cannot select a
+# dependency feature from `rt` based on another feature: V3A on CH572/CH573,
+# V3C on CH581/CH584/CH585/CH592/CH595 and V4A on CH582/CH583.
 #
-# `ch585` is the only chip exercised on hardware. The others select a PAC and
-# exist so a shared driver can be compiled against their register block; they
-# do not claim a board run. CH564 and CH569 are absent because their GPIO
-# blocks are not the 16-bit port registers this driver programs.
-ch572 = ["ch5xx-metapac/ch572"]
-ch573 = ["ch5xx-metapac/ch573"]
-ch581 = ["ch5xx-metapac/ch581"]
-ch582 = ["ch5xx-metapac/ch582"]
-ch583 = ["ch5xx-metapac/ch583"]
-ch584 = ["ch5xx-metapac/ch584"]
-ch585 = ["ch5xx-metapac/ch585"]
-ch592 = ["ch5xx-metapac/ch592"]
-ch595 = ["ch5xx-metapac/ch595"]
+# `qingke-rt?/<core>` only applies when `rt` has pulled the optional runtime
+# in. CH582 and CH583 are on hardware; the others select a PAC and exist so a
+# shared driver can be compiled against their register block. CH564 and CH569
+# are absent because their GPIO blocks are not the 16-bit port registers this
+# driver programs.
+ch572 = ["ch5xx-metapac/ch572", "qingke/v3a", "qingke-rt?/v3a"]
+ch573 = ["ch5xx-metapac/ch573", "qingke/v3a", "qingke-rt?/v3a"]
+ch581 = ["ch5xx-metapac/ch581", "qingke/v3c", "qingke-rt?/v3c"]
+ch582 = ["ch5xx-metapac/ch582", "qingke/v4a", "qingke-rt?/v4a", "qingke-rt?/highcode"]
+ch583 = ["ch5xx-metapac/ch583", "qingke/v4a", "qingke-rt?/v4a", "qingke-rt?/highcode"]
+ch584 = ["ch5xx-metapac/ch584", "qingke/v3c", "qingke-rt?/v3c"]
+ch585 = ["ch5xx-metapac/ch585", "qingke/v3c", "qingke-rt?/v3c"]
+ch592 = ["ch5xx-metapac/ch592", "qingke/v3c", "qingke-rt?/v3c"]
+ch595 = ["ch5xx-metapac/ch595", "qingke/v3c", "qingke-rt?/v3c"]
 
 ## Embassy support. This only pulls the deps in; pick a driver with one of the
 ## `time-driver-*` features below.

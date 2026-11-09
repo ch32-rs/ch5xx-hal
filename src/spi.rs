@@ -1276,14 +1276,12 @@ macro_rules! impl_pins {
     };
 }
 
-// Datasheet table 7-8. `PIN_SPI0` clear is PA13/PA14/PA15, set is PB13/PB14/PB15.
-// CH582 and CH583 share this register block but their family files carry no pin
-// list, so the pins are named only where the metadata records them or the
-// vendor header states the routing; `CH592SFR.h` documents `RB_PIN_SPI0` with
-// the same two sets.
-#[cfg(any(ch581, ch584, ch585, ch592))]
+// `PIN_SPI0` clear is PA13/PA14/PA15, set is PB13/PB14/PB15.
+// CH582/CH583 routing is documented in the CH583/CH582 datasheet pin table
+// and the CH583 EVT register header, despite missing family pin metadata.
+#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
 impl_pins!(SPI0, 0, sck: PA13, mosi: PA14, miso: PA15);
-#[cfg(any(ch581, ch584, ch585, ch592))]
+#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
 impl_pins!(SPI0, 1, sck: PB13, mosi: PB14, miso: PB15);
 // SPI1 has no remap field. PA0 is SCK, PA1 is MOSI, PA2 is MISO. CH583 has the
 // controller too, but no pins are recorded for it.

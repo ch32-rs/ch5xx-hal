@@ -83,7 +83,7 @@ const RTC_HZ: u32 = 32_768;
 #[inline(always)]
 fn rtc_count() -> u16 {
     // `CNT_32K` is the 16-bit register at 0x38. It wraps every 2 s, but the
-    // calibration window is only 31 ms, so the low half alone is enough —
+    // calibration window is at least 125 ms, so the low half alone is enough —
     // `wrapping_sub` handles the one wrap that could occur.
     unsafe { core::ptr::read_volatile((RTC_BASE + 0x38) as *const u16) }
 }
@@ -242,17 +242,21 @@ unsafe fn calibrate() -> u32 {
         // brick boot, so fall back rather than hang: the guard is far larger
         // than the loop can run in 125 ms at any supported clock.
         let mut guard = 0u32;
-        while rtc_count().wrapping_sub(rtc_start) < CAL_COUNTS {
+        let rtc_delta = loop {
+            let delta = rtc_count().wrapping_sub(rtc_start);
+            if delta >= CAL_COUNTS {
+                break delta;
+            }
             guard += 1;
             if guard > 200_000_000 {
                 return crate::rcc::clocks().sysclk.0;
             }
             core::hint::spin_loop();
-        }
+        };
 
         let stk_end = SYSTICK.stk_cntl().read().cntl();
         let ticks = stk_end.wrapping_sub(stk_start) as u64;
-        let rtc_delta = CAL_COUNTS as u64;
+        let rtc_delta = rtc_delta as u64;
 
         // ticks per second = ticks * RTC_HZ / rtc_delta
         *sample = (ticks * RTC_HZ as u64 / rtc_delta) as u32;
