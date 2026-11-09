@@ -6,16 +6,16 @@
 //! Buffers are 4-byte aligned and the DMA register takes the low 16 bits of the
 //! address, which is how the vendor code programs it.
 //!
-//! This driver covers endpoints 0 to 7. Endpoint 4 has no DMA address of its
+//! On CH585 and CH592, the driver covers endpoints 0 to 7. Endpoint 4 has no DMA address of its
 //! own; its OUT and IN buffers sit one and two packets after endpoint 0's. It
 //! also ignores `AUTO_TOG` (the bit reads back zero), so the handler advances
 //! its data toggles by hand. Endpoints 5 to 7 are enabled through `UEP567_MOD`
 //! and have their own DMA registers. The host port is not implemented.
 //!
 //! `INT_BUSY` makes the serial engine answer NAK while a transfer completion is
-//! pending. The handler clears that flag and NAKs the endpoint, so no new packet
-//! can overwrite the buffer before the future has copied it. A read or write
-//! re-arms ACK when it starts.
+//! pending. The handler NAKs the endpoint before clearing that flag, and a read
+//! or write re-arms ACK when it starts. This does not establish exclusive CPU
+//! ownership of the shared EP0 buffer; see the limitation below.
 //!
 //! A received packet only counts when `U_TOG_OK` says the data toggle matched
 //! (datasheet §17.2: a packet whose toggle does not match is discarded). A
@@ -24,12 +24,21 @@
 //!
 //! Endpoint 0 toggles are manual: a SETUP leaves both at DATA1, each data packet
 //! flips its direction, and the status stage stays DATA1. The other endpoints
-//! use `AUTO_TOG`, except endpoint 4, whose toggles the handler advances.
+//! use `AUTO_TOG` on CH585 and CH592, except endpoint 4, whose toggles the
+//! handler advances. CH582 and CH583 use software toggles for endpoints 1–3.
 //!
-//! The register block is the CH585 one (CH572, CH581, CH584, CH585, CH595).
-//! CH585 control and CDC bulk transfers have been run on a board; EP4 and
-//! suspend/resume have not. USBHS is a different peripheral.
+//! CH585 and CH592 use endpoints 0 to 7. CH582 and CH583 currently expose
+//! only endpoints 0 to 3, with software toggles for non-control transfers.
+//! USB2 is not exposed: the CH583 PAC lacks its clock-gate field. In addition,
+//! masking CPU interrupts does not prevent a new SETUP from DMA-writing EP0
+//! while software copies a previous packet. An old IN response can overwrite
+//! that SETUP; safe packet handoff is unresolved. A SETUP can also be reported
+//! alongside an earlier token: CH585 and CH592 currently do not process that
+//! earlier token as required by their manuals. The USB driver is experimental.
+//! CH585 control and CDC bulk transfers have been run on a board; CH582 and
+//! CH583 have not been hardware-tested. USBHS is a different peripheral.
 
+use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
@@ -40,7 +49,7 @@ use embassy_usb_driver::{
     Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointInfo, EndpointType, Event,
 };
 
-use crate::atomic::{compiler_fence, AtomicBool, AtomicU16, Ordering};
+use crate::atomic::{compiler_fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
 use crate::interrupt::typelevel::Interrupt;
 use crate::{interrupt, pac, peripherals, rcc, Peri, PeripheralType};
 
@@ -57,30 +66,37 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         if flags.uif_bus_rst__uif_detect() {
             // A reset aborts every transfer and returns the address to zero.
             regs.dev_ad().write(|w| w.set_mask_usb_addr(0));
+            T::state().ep0_reset_generation.fetch_add(1, Ordering::Relaxed);
+            T::state().ep0_setup.store(false, Ordering::Relaxed);
+            T::state().in_done[0].store(false, Ordering::Relaxed);
+            T::state().out_done[0].store(false, Ordering::Relaxed);
             for index in 0..EP_COUNT {
-                STATE.enabled[index].store(false, Ordering::Relaxed);
-                EP_IN_WAKERS[index].wake();
-                EP_OUT_WAKERS[index].wake();
+                T::state().enabled[index].store(false, Ordering::Relaxed);
+                T::state().ep_in_wakers[index].wake();
+                T::state().ep_out_wakers[index].wake();
             }
             // Endpoint 0 answers the next SETUP, nothing else.
             set_response::<T>(0, Direction::Out, Response::Ack);
             set_response::<T>(0, Direction::In, Response::Nak);
             set_toggle::<T>(0, Direction::In, false);
             set_toggle::<T>(0, Direction::Out, false);
-            IRQ_RESET.store(true, Ordering::Relaxed);
-            regs.int_fg().write(|w| w.set_uif_bus_rst__uif_detect(true));
-            BUS_WAKER.wake();
+            T::state().irq_reset.store(true, Ordering::Relaxed);
+            regs.int_fg().write(|w| {
+                w.set_uif_bus_rst__uif_detect(true);
+                w.set_uif_transfer(flags.uif_transfer());
+            });
+            T::state().bus_waker.wake();
         }
 
         if flags.uif_suspend() {
             // The same flag covers suspend and resume; the level says which.
             if regs.mis_st().read().ums_suspend() {
-                IRQ_SUSPEND.store(true, Ordering::Relaxed);
+                T::state().irq_suspend.store(true, Ordering::Relaxed);
             } else {
-                IRQ_RESUME.store(true, Ordering::Relaxed);
+                T::state().irq_resume.store(true, Ordering::Relaxed);
             }
             regs.int_fg().write(|w| w.set_uif_suspend(true));
-            BUS_WAKER.wake();
+            T::state().bus_waker.wake();
         }
 
         // A FIFO overflow drops whatever was queued. The endpoint state is
@@ -90,7 +106,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             regs.int_fg().write(|w| w.set_uif_fifo_ov(true));
         }
 
-        if flags.uif_transfer() {
+        if flags.uif_transfer() && !flags.uif_bus_rst__uif_detect() {
             let status = regs.int_st().read();
             let endpoint = status.mask_uis_h_res__mask_uis_endp() as usize;
             let token = Token::from_bits(status.mask_uis_token());
@@ -102,46 +118,54 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             // A packet whose data toggle did not match does not belong to this
             // transfer and must be discarded (datasheet §17.2).
             let accepted = flags.u_tog_ok();
-            if setup {
-                // A SETUP can only target endpoint 0. The endpoint and token
-                // fields of `INT_ST` are not updated by a SETUP, so they may
-                // still hold the previous transaction (or the reset value
-                // 0xF), and `UIS_SETUP_ACT` is the only reliable indicator.
-                STATE.out_len[0].store(8, Ordering::Relaxed);
-                EP0_SETUP.store(true, Ordering::Relaxed);
-                STATE.out_done[0].store(true, Ordering::Relaxed);
-                set_response::<T>(0, Direction::Out, Response::Nak);
-                EP_OUT_WAKERS[0].wake();
-            } else if endpoint < EP_COUNT {
+            // Datasheet section 17.2.1 requires acknowledging a pending token
+            // before a simultaneously reported SETUP, then acknowledging SETUP.
+            if endpoint < EP_COUNT {
                 match token {
                     Token::In => {
                         // The toggle check applies to received data; an IN
                         // transaction that completes was ACKed by the host.
                         set_response::<T>(endpoint, Direction::In, Response::Nak);
-                        if endpoint == 4 {
+                        if endpoint == 4 || (cfg!(usb_ch583) && endpoint != 0) {
                             flip_toggle::<T>(endpoint, Direction::In);
                         }
-                        STATE.in_done[endpoint].store(true, Ordering::Relaxed);
-                        EP_IN_WAKERS[endpoint].wake();
+                        T::state().in_done[endpoint].store(true, Ordering::Relaxed);
+                        T::state().ep_in_wakers[endpoint].wake();
                     }
                     Token::Out => {
                         if accepted {
-                            STATE.out_len[endpoint]
-                                .store(regs.rx_len().read().rx_len() as u16, Ordering::Relaxed);
+                            T::state().out_len[endpoint].store(regs.rx_len().read().rx_len() as u16, Ordering::Relaxed);
                             set_response::<T>(endpoint, Direction::Out, Response::Nak);
-                            if endpoint == 4 {
+                            if endpoint == 4 || (cfg!(usb_ch583) && endpoint != 0) {
                                 flip_toggle::<T>(endpoint, Direction::Out);
                             }
-                            STATE.out_done[endpoint].store(true, Ordering::Relaxed);
-                            EP_OUT_WAKERS[endpoint].wake();
+                            T::state().out_done[endpoint].store(true, Ordering::Relaxed);
+                            T::state().ep_out_wakers[endpoint].wake();
                         } else {
                             // A retransmitted packet: discard it and keep
                             // receiving.
                             set_response::<T>(endpoint, Direction::Out, Response::Ack);
                         }
                     }
-                    Token::Setup | Token::Sof => {}
+                    Token::Idle | Token::Sof => {}
                 }
+            }
+            if setup && token != Token::Idle {
+                regs.int_fg().write(|w| w.set_uif_transfer(true));
+            }
+            if setup {
+                // A SETUP can only target endpoint 0. The endpoint and token
+                // fields of `INT_ST` are not updated by a SETUP, so they may
+                // still hold the previous transaction (or the reset value
+                // 0xF), and `UIS_SETUP_ACT` is the only reliable indicator.
+                T::state().out_len[0].store(8, Ordering::Relaxed);
+                T::state().in_done[0].store(false, Ordering::Relaxed);
+                T::state().ep0_setup.store(true, Ordering::Relaxed);
+                T::state().out_done[0].store(true, Ordering::Relaxed);
+                set_response::<T>(0, Direction::In, Response::Nak);
+                set_response::<T>(0, Direction::Out, Response::Nak);
+                T::state().ep_out_wakers[0].wake();
+                T::state().ep_in_wakers[0].wake();
             }
             // Clearing the flag lets the serial engine leave its busy NAK.
             regs.int_fg().write(|w| w.set_uif_transfer(true));
@@ -155,7 +179,7 @@ enum Token {
     Out = 0,
     Sof = 1,
     In = 2,
-    Setup = 3,
+    Idle = 3,
 }
 
 impl Token {
@@ -163,7 +187,7 @@ impl Token {
         match bits & 0b11 {
             1 => Token::Sof,
             2 => Token::In,
-            3 => Token::Setup,
+            3 => Token::Idle,
             _ => Token::Out,
         }
     }
@@ -178,35 +202,67 @@ enum Response {
     Stall = 0b11,
 }
 
+#[cfg(not(usb_ch583))]
 const EP_COUNT: usize = 8;
+// Only endpoints 1–3 have documented automatic-toggle support on CH583.
+#[cfg(usb_ch583)]
+const EP_COUNT: usize = 4;
 /// Largest packet this driver accepts. The length registers are 7 bits.
 const MAX_PACKET: usize = 64;
 
 const NEW_AW: AtomicWaker = AtomicWaker::new();
-static BUS_WAKER: AtomicWaker = NEW_AW;
-static EP0_SETUP: AtomicBool = AtomicBool::new(false);
-static EP_IN_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_AW; EP_COUNT];
-static EP_OUT_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_AW; EP_COUNT];
-static IRQ_RESET: AtomicBool = AtomicBool::new(false);
-static IRQ_SUSPEND: AtomicBool = AtomicBool::new(false);
-static IRQ_RESUME: AtomicBool = AtomicBool::new(false);
 
-/// Endpoint bookkeeping shared with the interrupt handler.
-struct State {
+/// Bookkeeping and DMA storage belonging to one controller.
+#[doc(hidden)]
+pub struct State {
     allocated: [AtomicBool; EP_COUNT],
     enabled: [AtomicBool; EP_COUNT],
     in_done: [AtomicBool; EP_COUNT],
     out_done: [AtomicBool; EP_COUNT],
     out_len: [AtomicU16; EP_COUNT],
+    bus_waker: AtomicWaker,
+    ep0_setup: AtomicBool,
+    ep0_reset_generation: AtomicU32,
+    ep_in_wakers: [AtomicWaker; EP_COUNT],
+    ep_out_wakers: [AtomicWaker; EP_COUNT],
+    irq_reset: AtomicBool,
+    irq_suspend: AtomicBool,
+    irq_resume: AtomicBool,
+    ep0_buffers: UnsafeCell<Ep0Buffers>,
+    ep_buffer: UnsafeCell<[Buffer; 7]>,
 }
 
-static STATE: State = State {
-    allocated: [const { AtomicBool::new(false) }; EP_COUNT],
-    enabled: [const { AtomicBool::new(false) }; EP_COUNT],
-    in_done: [const { AtomicBool::new(false) }; EP_COUNT],
-    out_done: [const { AtomicBool::new(false) }; EP_COUNT],
-    out_len: [const { AtomicU16::new(0) }; EP_COUNT],
-};
+// Each controller is exclusively owned; endpoint allocation prevents two
+// endpoints from sharing a DMA buffer. EP0 access is protected by the driver.
+unsafe impl Sync for State {}
+
+impl State {
+    const fn new() -> Self {
+        Self {
+            allocated: [const { AtomicBool::new(false) }; EP_COUNT],
+            enabled: [const { AtomicBool::new(false) }; EP_COUNT],
+            in_done: [const { AtomicBool::new(false) }; EP_COUNT],
+            out_done: [const { AtomicBool::new(false) }; EP_COUNT],
+            out_len: [const { AtomicU16::new(0) }; EP_COUNT],
+            bus_waker: NEW_AW,
+            ep0_setup: AtomicBool::new(false),
+            ep0_reset_generation: AtomicU32::new(0),
+            ep_in_wakers: [NEW_AW; EP_COUNT],
+            ep_out_wakers: [NEW_AW; EP_COUNT],
+            irq_reset: AtomicBool::new(false),
+            irq_suspend: AtomicBool::new(false),
+            irq_resume: AtomicBool::new(false),
+            ep0_buffers: UnsafeCell::new(Ep0Buffers {
+                control: Buffer::new(),
+                ep4_out: Buffer::new(),
+                ep4_in: Buffer::new(),
+            }),
+            ep_buffer: UnsafeCell::new([const { Buffer::new() }; 7]),
+        }
+    }
+}
+
+static USB_STATE: State = State::new();
 
 /// Endpoint packet buffer. DMA reads and writes it, so access is volatile.
 #[repr(C, align(4))]
@@ -249,22 +305,14 @@ struct Ep0Buffers {
     ep4_in: Buffer,
 }
 
-static mut EP0_BUFFERS: Ep0Buffers = Ep0Buffers {
-    control: Buffer::new(),
-    ep4_out: Buffer::new(),
-    ep4_in: Buffer::new(),
-};
-/// One buffer for each of endpoints 1 to 7. The endpoint 4 slot is unused:
-/// that endpoint's buffers must stay adjacent to endpoint 0's.
-static mut EP_BUFFER: [Buffer; 7] = [const { Buffer::new() }; 7];
-
-fn buffer(index: usize, direction: Direction) -> &'static mut Buffer {
+fn buffer<T: Instance>(index: usize, direction: Direction) -> &'static mut Buffer {
+    let state = T::state();
     unsafe {
         match (index, direction) {
-            (0, _) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.control),
-            (4, Direction::Out) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.ep4_out),
-            (4, Direction::In) => &mut *core::ptr::addr_of_mut!(EP0_BUFFERS.ep4_in),
-            (i, _) => &mut *core::ptr::addr_of_mut!(EP_BUFFER[i - 1]),
+            (0, _) => &mut (*state.ep0_buffers.get()).control,
+            (4, Direction::Out) => &mut (*state.ep0_buffers.get()).ep4_out,
+            (4, Direction::In) => &mut (*state.ep0_buffers.get()).ep4_in,
+            (i, _) => &mut *state.ep_buffer.get().cast::<Buffer>().add(i - 1),
         }
     }
 }
@@ -279,25 +327,24 @@ pub struct Driver<'d, T: Instance> {
 impl<'d, T: Instance> Driver<'d, T> {
     /// Take the peripheral and leave it reset, with the pull-up off.
     ///
-    /// [`Bus::enable`] connects the pull-up. The pins are PB11 (D+) and PB10
-    /// (D-); `PIN_USB_EN` connects them, so they are not GPIO.
+    /// [`Bus::enable`] connects the instance's USB pins and pull-up.
     pub fn new(
         _peri: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
         for index in 0..EP_COUNT {
-            STATE.allocated[index].store(false, Ordering::Relaxed);
-            STATE.enabled[index].store(false, Ordering::Relaxed);
-            STATE.in_done[index].store(false, Ordering::Relaxed);
-            STATE.out_done[index].store(false, Ordering::Relaxed);
-            STATE.out_len[index].store(0, Ordering::Relaxed);
+            T::state().allocated[index].store(false, Ordering::Relaxed);
+            T::state().enabled[index].store(false, Ordering::Relaxed);
+            T::state().in_done[index].store(false, Ordering::Relaxed);
+            T::state().out_done[index].store(false, Ordering::Relaxed);
+            T::state().out_len[index].store(0, Ordering::Relaxed);
         }
-        EP0_SETUP.store(false, Ordering::Relaxed);
-        IRQ_RESET.store(false, Ordering::Relaxed);
-        IRQ_SUSPEND.store(false, Ordering::Relaxed);
-        IRQ_RESUME.store(false, Ordering::Relaxed);
+        T::state().ep0_setup.store(false, Ordering::Relaxed);
+        T::state().irq_reset.store(false, Ordering::Relaxed);
+        T::state().irq_suspend.store(false, Ordering::Relaxed);
+        T::state().irq_resume.store(false, Ordering::Relaxed);
 
-        // The USB clock is gated in the safe-access sleep-clock byte.
+        // Leave the controller clock enabled after acquisition.
         rcc::with_safe_access(|| {
             pac::SYS.slp_clk_off1().modify(|w| w.set_slp_clk_usb(false));
         });
@@ -330,7 +377,7 @@ impl<'d, T: Instance> Driver<'d, T> {
                     return Err(EndpointAllocError);
                 }
                 let index = address.index();
-                if index == 0 || index >= EP_COUNT || STATE.allocated[index].swap(true, Ordering::Relaxed) {
+                if index == 0 || index >= EP_COUNT || T::state().allocated[index].swap(true, Ordering::Relaxed) {
                     return Err(EndpointAllocError);
                 }
                 Ok(index)
@@ -341,13 +388,13 @@ impl<'d, T: Instance> Driver<'d, T> {
                     Direction::Out => &mut self.alloc_out,
                 };
                 let mut index = *cursor;
-                while index < EP_COUNT && STATE.allocated[index].load(Ordering::Relaxed) {
+                while index < EP_COUNT && T::state().allocated[index].load(Ordering::Relaxed) {
                     index += 1;
                 }
                 if index >= EP_COUNT {
                     return Err(EndpointAllocError);
                 }
-                STATE.allocated[index].store(true, Ordering::Relaxed);
+                T::state().allocated[index].store(true, Ordering::Relaxed);
                 *cursor = index + 1;
                 Ok(index)
             }
@@ -413,7 +460,7 @@ impl<'d, T: Instance> driver::Driver<'d> for Driver<'d, T> {
             "usb control packet larger than 64 bytes"
         );
         let regs = T::regs();
-        let control = buffer(0, Direction::Out);
+        let control = buffer::<T>(0, Direction::Out);
         regs.uep0_dma().write(|w| w.set_uep0_dma(control.dma_address()));
         regs.uep0_t_len().write(|w| w.set_uep0_t_len(0));
         // Answer SETUP, hold everything else.
@@ -427,6 +474,7 @@ impl<'d, T: Instance> driver::Driver<'d> for Driver<'d, T> {
             },
             ControlPipe {
                 max_packet_size: control_max_packet_size as usize,
+                reset_generation: T::state().ep0_reset_generation.load(Ordering::Relaxed),
                 _phantom: PhantomData,
             },
         )
@@ -444,21 +492,16 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
         let regs = T::regs();
         // Connect D+/D- and the device pull-up. `INT_BUSY` holds the bus in NAK
         // while a completion flag is set, and DMA moves the packets.
-        #[cfg(usbfs_ch585)]
-        pac::SYS.pin_config().modify(|w| {
-            w.set_pin_usb_en(true);
-            w.set_udp_pu_en(true);
-        });
-        // CH592 has the analog-pin enable in PIN_ANALOG_IE, the vendor's
-        // `R16_PIN_ANALOG_IE |= RB_PIN_USB_IE | RB_PIN_USB_DP_PU`.
-        #[cfg(usb_ch592)]
-        pac::SYS.pin_analog_ie().modify(|w| {
-            w.set_pin_usb_ie(true);
-            w.set_pin_usb_dp_pu(true);
-        });
+        T::set_pins(true);
+        #[cfg(not(usb_ch583))]
         regs.udev_ctrl().write(|w| {
             w.set_ud_port_en(true);
             w.set_ud_pd_dis(true);
+        });
+        #[cfg(usb_ch583)]
+        regs.udev_ctrl__uhost_ctrl().write(|w| {
+            w.set_ud_port_en__uh_port_en(true);
+            w.set_ud_pd_dis__uh_pd_dis(true);
         });
         regs.ctrl().write(|w| {
             w.set_uc_dma_en(true);
@@ -476,17 +519,14 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
 
     async fn disable(&mut self) {
         T::Interrupt::disable();
+        T::state().ep0_reset_generation.fetch_add(1, Ordering::Relaxed);
+        T::state().ep0_setup.store(false, Ordering::Relaxed);
+        T::state().in_done[0].store(false, Ordering::Relaxed);
+        T::state().out_done[0].store(false, Ordering::Relaxed);
+        T::state().ep_in_wakers[0].wake();
+        T::state().ep_out_wakers[0].wake();
         T::regs().ctrl().write(|w| w.set_uc_dev_pu_en(false));
-        #[cfg(usbfs_ch585)]
-        pac::SYS.pin_config().modify(|w| {
-            w.set_udp_pu_en(false);
-            w.set_pin_usb_en(false);
-        });
-        #[cfg(usb_ch592)]
-        pac::SYS.pin_analog_ie().modify(|w| {
-            w.set_pin_usb_ie(false);
-            w.set_pin_usb_dp_pu(false);
-        });
+        T::set_pins(false);
     }
 
     async fn poll(&mut self) -> Event {
@@ -499,12 +539,12 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
         }
 
         poll_fn(|cx| {
-            BUS_WAKER.register(cx.waker());
-            if IRQ_RESET.swap(false, Ordering::Relaxed) {
+            T::state().bus_waker.register(cx.waker());
+            if T::state().irq_reset.swap(false, Ordering::Relaxed) {
                 Poll::Ready(Event::Reset)
-            } else if IRQ_SUSPEND.swap(false, Ordering::Relaxed) {
+            } else if T::state().irq_suspend.swap(false, Ordering::Relaxed) {
                 Poll::Ready(Event::Suspend)
-            } else if IRQ_RESUME.swap(false, Ordering::Relaxed) {
+            } else if T::state().irq_resume.swap(false, Ordering::Relaxed) {
                 Poll::Ready(Event::Resume)
             } else {
                 Poll::Pending
@@ -518,15 +558,15 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
         if index == 0 || index >= EP_COUNT {
             return;
         }
-        STATE.enabled[index].store(enabled, Ordering::Relaxed);
+        T::state().enabled[index].store(enabled, Ordering::Relaxed);
         if enabled {
             // A newly enabled endpoint starts at DATA0 with no stale completion,
             // and stays NAK until a read or write arms it. The DMA address and
             // the `UEPn_MOD` enable bits are rewritten here as well: a bus reset
             // or a `disable`/`enable` cycle may have dropped them, and embassy
             // re-enables the endpoints through this call after every reset.
-            STATE.in_done[index].store(false, Ordering::Relaxed);
-            STATE.out_done[index].store(false, Ordering::Relaxed);
+            T::state().in_done[index].store(false, Ordering::Relaxed);
+            T::state().out_done[index].store(false, Ordering::Relaxed);
             match ep_addr.direction() {
                 Direction::In => enable_in::<T>(index),
                 Direction::Out => enable_out::<T>(index),
@@ -535,8 +575,8 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
             set_toggle::<T>(index, Direction::Out, false);
             set_response::<T>(index, Direction::In, Response::Nak);
             set_response::<T>(index, Direction::Out, Response::Nak);
-            EP_IN_WAKERS[index].wake();
-            EP_OUT_WAKERS[index].wake();
+            T::state().ep_in_wakers[index].wake();
+            T::state().ep_out_wakers[index].wake();
         } else {
             set_response::<T>(index, Direction::In, Response::Nak);
             set_response::<T>(index, Direction::Out, Response::Nak);
@@ -572,30 +612,52 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
 /// Endpoint 0, both directions.
 pub struct ControlPipe<'d, T: Instance> {
     max_packet_size: usize,
+    reset_generation: u32,
     _phantom: PhantomData<&'d mut T>,
 }
 
 /// Wait for one endpoint 0 completion. A new SETUP abandons the stage.
-async fn wait_ep0<T: Instance>(direction: Direction) -> Result<(), EndpointError> {
+async fn wait_ep0<T: Instance>(direction: Direction, reset_generation: u32) -> Result<(), EndpointError> {
     poll_fn(|cx| {
         match direction {
-            Direction::In => EP_IN_WAKERS[0].register(cx.waker()),
-            Direction::Out => EP_OUT_WAKERS[0].register(cx.waker()),
+            Direction::In => T::state().ep_in_wakers[0].register(cx.waker()),
+            Direction::Out => T::state().ep_out_wakers[0].register(cx.waker()),
         }
-        if EP0_SETUP.load(Ordering::Relaxed) {
-            return Poll::Ready(Err(EndpointError::Disabled));
-        }
-        let done = match direction {
-            Direction::In => STATE.in_done[0].swap(false, Ordering::Relaxed),
-            Direction::Out => STATE.out_done[0].swap(false, Ordering::Relaxed),
-        };
-        if done {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
-        }
+        critical_section::with(|_| {
+            if T::state().ep0_setup.load(Ordering::Relaxed)
+                || T::state().ep0_reset_generation.load(Ordering::Relaxed) != reset_generation
+            {
+                return Poll::Ready(Err(EndpointError::Disabled));
+            }
+            let done = match direction {
+                Direction::In => T::state().in_done[0].swap(false, Ordering::Relaxed),
+                Direction::Out => T::state().out_done[0].swap(false, Ordering::Relaxed),
+            };
+            if done {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
     })
     .await
+}
+
+impl<T: Instance> ControlPipe<'_, T> {
+    async fn accept_status(&mut self) -> Result<(), EndpointError> {
+        critical_section::with(|_| {
+            if T::state().ep0_setup.load(Ordering::Relaxed)
+                || T::state().ep0_reset_generation.load(Ordering::Relaxed) != self.reset_generation
+            {
+                return Err(EndpointError::Disabled);
+            }
+            T::state().in_done[0].store(false, Ordering::Relaxed);
+            T::regs().uep0_t_len().write(|w| w.set_uep0_t_len(0));
+            set_response::<T>(0, Direction::In, Response::Ack);
+            Ok(())
+        })?;
+        wait_ep0::<T>(Direction::In, self.reset_generation).await
+    }
 }
 
 impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
@@ -604,38 +666,42 @@ impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
     }
 
     async fn setup(&mut self) -> [u8; 8] {
-        set_response::<T>(0, Direction::Out, Response::Ack);
-        poll_fn(|cx| {
-            EP_OUT_WAKERS[0].register(cx.waker());
-            if EP0_SETUP.swap(false, Ordering::Relaxed) {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
+        let (packet, generation) = poll_fn(|cx| {
+            T::state().ep_out_wakers[0].register(cx.waker());
+            critical_section::with(|_| {
+                if T::state().ep0_setup.swap(false, Ordering::Relaxed) {
+                    let mut packet = [0u8; 8];
+                    buffer::<T>(0, Direction::Out).read(&mut packet);
+                    T::state().out_done[0].store(false, Ordering::Relaxed);
+                    // SETUP is DATA0; the data stage begins at DATA1.
+                    set_toggle::<T>(0, Direction::In, true);
+                    set_toggle::<T>(0, Direction::Out, true);
+                    set_response::<T>(0, Direction::Out, Response::Nak);
+                    set_response::<T>(0, Direction::In, Response::Nak);
+                    Poll::Ready((packet, T::state().ep0_reset_generation.load(Ordering::Relaxed)))
+                } else {
+                    set_response::<T>(0, Direction::Out, Response::Ack);
+                    Poll::Pending
+                }
+            })
         })
         .await;
-
-        let mut packet = [0u8; 8];
-        buffer(0, Direction::Out).read(&mut packet);
-        STATE.out_done[0].store(false, Ordering::Relaxed);
-        // SETUP is DATA0, so the data stage starts at DATA1 in both directions.
-        set_toggle::<T>(0, Direction::In, true);
-        set_toggle::<T>(0, Direction::Out, true);
-        set_response::<T>(0, Direction::Out, Response::Nak);
-        set_response::<T>(0, Direction::In, Response::Nak);
+        self.reset_generation = generation;
         packet
     }
 
     async fn data_out(&mut self, buf: &mut [u8], _first: bool, _last: bool) -> Result<usize, EndpointError> {
         poll_fn(|cx| {
-            EP_OUT_WAKERS[0].register(cx.waker());
+            T::state().ep_out_wakers[0].register(cx.waker());
             // A packet that already completed is consumed as-is; arming ACK is
             // only for the next one. The critical section keeps the handler from
             // completing a packet, or a new SETUP, between the check and the arm.
             critical_section::with(|_| {
-                if EP0_SETUP.load(Ordering::Relaxed) {
+                if T::state().ep0_setup.load(Ordering::Relaxed)
+                    || T::state().ep0_reset_generation.load(Ordering::Relaxed) != self.reset_generation
+                {
                     Poll::Ready(Err(EndpointError::Disabled))
-                } else if STATE.out_done[0].swap(false, Ordering::Relaxed) {
+                } else if T::state().out_done[0].swap(false, Ordering::Relaxed) {
                     Poll::Ready(Ok(()))
                 } else {
                     set_response::<T>(0, Direction::Out, Response::Ack);
@@ -645,49 +711,82 @@ impl<'d, T: Instance> driver::ControlPipe for ControlPipe<'d, T> {
         })
         .await?;
 
-        let len = STATE.out_len[0].load(Ordering::Relaxed) as usize;
-        let len = len.min(buf.len());
-        buffer(0, Direction::Out).read(&mut buf[..len]);
-        flip_toggle::<T>(0, Direction::Out);
-        Ok(len)
+        critical_section::with(|_| {
+            if T::state().ep0_setup.load(Ordering::Relaxed)
+                || T::state().ep0_reset_generation.load(Ordering::Relaxed) != self.reset_generation
+            {
+                return Err(EndpointError::Disabled);
+            }
+            let len = (T::state().out_len[0].load(Ordering::Relaxed) as usize).min(buf.len());
+            buffer::<T>(0, Direction::Out).read(&mut buf[..len]);
+            flip_toggle::<T>(0, Direction::Out);
+            Ok(len)
+        })
     }
 
     async fn data_in(&mut self, data: &[u8], _first: bool, last: bool) -> Result<(), EndpointError> {
         if data.len() > self.max_packet_size {
             return Err(EndpointError::BufferOverflow);
         }
-        STATE.in_done[0].store(false, Ordering::Relaxed);
-        buffer(0, Direction::In).write(data);
-        compiler_fence(Ordering::SeqCst);
-        T::regs().uep0_t_len().write(|w| w.set_uep0_t_len(data.len() as u8));
-        set_response::<T>(0, Direction::In, Response::Ack);
-        wait_ep0::<T>(Direction::In).await?;
-        flip_toggle::<T>(0, Direction::In);
-
+        critical_section::with(|_| {
+            if T::state().ep0_setup.load(Ordering::Relaxed)
+                || T::state().ep0_reset_generation.load(Ordering::Relaxed) != self.reset_generation
+            {
+                return Err(EndpointError::Disabled);
+            }
+            T::state().in_done[0].store(false, Ordering::Relaxed);
+            buffer::<T>(0, Direction::In).write(data);
+            compiler_fence(Ordering::SeqCst);
+            T::regs().uep0_t_len().write(|w| w.set_uep0_t_len(data.len() as u8));
+            set_response::<T>(0, Direction::In, Response::Ack);
+            Ok(())
+        })?;
+        wait_ep0::<T>(Direction::In, self.reset_generation).await?;
+        critical_section::with(|_| {
+            if T::state().ep0_setup.load(Ordering::Relaxed)
+                || T::state().ep0_reset_generation.load(Ordering::Relaxed) != self.reset_generation
+            {
+                return Err(EndpointError::Disabled);
+            }
+            flip_toggle::<T>(0, Direction::In);
+            if last {
+                // The status stage of a control read is an empty OUT, still DATA1.
+                set_response::<T>(0, Direction::Out, Response::Ack);
+            }
+            Ok(())
+        })?;
         if last {
-            // The status stage of a control read is an empty OUT, still DATA1.
-            set_response::<T>(0, Direction::Out, Response::Ack);
-            wait_ep0::<T>(Direction::Out).await?;
+            wait_ep0::<T>(Direction::Out, self.reset_generation).await?;
         }
         Ok(())
     }
 
     async fn accept(&mut self) {
         // The status stage of a control write is an empty IN.
-        STATE.in_done[0].store(false, Ordering::Relaxed);
-        T::regs().uep0_t_len().write(|w| w.set_uep0_t_len(0));
-        set_response::<T>(0, Direction::In, Response::Ack);
-        let _ = wait_ep0::<T>(Direction::In).await;
+        let _ = self.accept_status().await;
     }
 
     async fn reject(&mut self) {
-        set_response::<T>(0, Direction::In, Response::Stall);
-        set_response::<T>(0, Direction::Out, Response::Stall);
+        critical_section::with(|_| {
+            if !T::state().ep0_setup.load(Ordering::Relaxed)
+                && T::state().ep0_reset_generation.load(Ordering::Relaxed) == self.reset_generation
+            {
+                set_response::<T>(0, Direction::In, Response::Stall);
+                set_response::<T>(0, Direction::Out, Response::Stall);
+            }
+        });
     }
 
     async fn accept_set_address(&mut self, addr: u8) {
-        self.accept().await;
-        T::regs().dev_ad().write(|w| w.set_mask_usb_addr(addr));
+        if self.accept_status().await.is_ok() {
+            critical_section::with(|_| {
+                if !T::state().ep0_setup.load(Ordering::Relaxed)
+                    && T::state().ep0_reset_generation.load(Ordering::Relaxed) == self.reset_generation
+                {
+                    T::regs().dev_ad().write(|w| w.set_mask_usb_addr(addr));
+                }
+            });
+        }
     }
 }
 
@@ -710,9 +809,9 @@ impl<'d, T: Instance, D> driver::Endpoint for Endpoint<'d, T, D> {
     async fn wait_enabled(&mut self) {
         poll_fn(|cx| {
             let index = self.info.addr.index();
-            EP_IN_WAKERS[index].register(cx.waker());
-            EP_OUT_WAKERS[index].register(cx.waker());
-            if STATE.enabled[index].load(Ordering::Relaxed) {
+            T::state().ep_in_wakers[index].register(cx.waker());
+            T::state().ep_out_wakers[index].register(cx.waker());
+            if T::state().enabled[index].load(Ordering::Relaxed) {
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -725,15 +824,15 @@ impl<'d, T: Instance, D> driver::Endpoint for Endpoint<'d, T, D> {
 impl<'d, T: Instance> driver::EndpointOut for Endpoint<'d, T, Out> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
         let index = self.info.addr.index();
-        if !STATE.enabled[index].load(Ordering::Relaxed) {
+        if !T::state().enabled[index].load(Ordering::Relaxed) {
             return Err(EndpointError::Disabled);
         }
         poll_fn(|cx| {
-            EP_OUT_WAKERS[index].register(cx.waker());
+            T::state().ep_out_wakers[index].register(cx.waker());
             critical_section::with(|_| {
-                if !STATE.enabled[index].load(Ordering::Relaxed) {
+                if !T::state().enabled[index].load(Ordering::Relaxed) {
                     Poll::Ready(Err(EndpointError::Disabled))
-                } else if STATE.out_done[index].swap(false, Ordering::Relaxed) {
+                } else if T::state().out_done[index].swap(false, Ordering::Relaxed) {
                     Poll::Ready(Ok(()))
                 } else {
                     // Arm ACK only when there is no completed packet to consume.
@@ -744,9 +843,9 @@ impl<'d, T: Instance> driver::EndpointOut for Endpoint<'d, T, Out> {
         })
         .await?;
 
-        let len = STATE.out_len[index].load(Ordering::Relaxed) as usize;
+        let len = T::state().out_len[index].load(Ordering::Relaxed) as usize;
         let len = len.min(buf.len()).min(self.info.max_packet_size as usize);
-        buffer(index, Direction::Out).read(&mut buf[..len]);
+        buffer::<T>(index, Direction::Out).read(&mut buf[..len]);
         Ok(len)
     }
 }
@@ -754,23 +853,23 @@ impl<'d, T: Instance> driver::EndpointOut for Endpoint<'d, T, Out> {
 impl<'d, T: Instance> driver::EndpointIn for Endpoint<'d, T, In> {
     async fn write(&mut self, buf: &[u8]) -> Result<(), EndpointError> {
         let index = self.info.addr.index();
-        if !STATE.enabled[index].load(Ordering::Relaxed) {
+        if !T::state().enabled[index].load(Ordering::Relaxed) {
             return Err(EndpointError::Disabled);
         }
         if buf.len() > self.info.max_packet_size as usize {
             return Err(EndpointError::BufferOverflow);
         }
-        STATE.in_done[index].store(false, Ordering::Relaxed);
-        buffer(index, Direction::In).write(buf);
+        T::state().in_done[index].store(false, Ordering::Relaxed);
+        buffer::<T>(index, Direction::In).write(buf);
         compiler_fence(Ordering::SeqCst);
         set_tx_len::<T>(index, buf.len() as u8);
         set_response::<T>(index, Direction::In, Response::Ack);
 
         poll_fn(|cx| {
-            EP_IN_WAKERS[index].register(cx.waker());
-            if !STATE.enabled[index].load(Ordering::Relaxed) {
+            T::state().ep_in_wakers[index].register(cx.waker());
+            if !T::state().enabled[index].load(Ordering::Relaxed) {
                 Poll::Ready(Err(EndpointError::Disabled))
-            } else if STATE.in_done[index].swap(false, Ordering::Relaxed) {
+            } else if T::state().in_done[index].swap(false, Ordering::Relaxed) {
                 Poll::Ready(Ok(()))
             } else {
                 Poll::Pending
@@ -782,6 +881,148 @@ impl<'d, T: Instance> driver::EndpointIn for Endpoint<'d, T, In> {
 
 // --- endpoint registers --------------------------------------------------------
 
+// CH583 retains host/device aliases in the generated device registers.
+#[cfg(not(usb_ch583))]
+macro_rules! ep1_ctrl {
+    ($regs:expr) => {
+        $regs.uep1_ctrl()
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! ep1_ctrl {
+    ($regs:expr) => {
+        $regs.uep1_ctrl__uh_setup()
+    };
+}
+#[cfg(not(usb_ch583))]
+macro_rules! ep2_ctrl {
+    ($regs:expr) => {
+        $regs.uep2_ctrl()
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! ep2_ctrl {
+    ($regs:expr) => {
+        $regs.uep2_ctrl_uh_rx_ctrl()
+    };
+}
+#[cfg(not(usb_ch583))]
+macro_rules! ep3_ctrl {
+    ($regs:expr) => {
+        $regs.uep3_ctrl()
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! ep3_ctrl {
+    ($regs:expr) => {
+        $regs.uep3_ctrl__uh_tx_ctrl()
+    };
+}
+
+#[cfg(not(usb_ch583))]
+macro_rules! uep2_dma {
+    ($regs:expr) => {
+        $regs.uep2_dma()
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! uep2_dma {
+    ($regs:expr) => {
+        $regs.uep2_dma__uh_rx_dma()
+    };
+}
+
+#[cfg(not(usb_ch583))]
+macro_rules! uep3_dma {
+    ($regs:expr) => {
+        $regs.uep3_dma()
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! uep3_dma {
+    ($regs:expr) => {
+        $regs.uep3_dma__uh_tx_dma()
+    };
+}
+
+#[cfg(not(usb_ch583))]
+macro_rules! uep2_3_mod {
+    ($regs:expr) => {
+        $regs.uep2_3_mod()
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! uep2_3_mod {
+    ($regs:expr) => {
+        $regs.uep2_3_mod__uh_ep_mod()
+    };
+}
+
+#[cfg(not(usb_ch583))]
+macro_rules! uep2_t_len {
+    ($regs:expr) => {
+        $regs.uep2_t_len()
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! uep2_t_len {
+    ($regs:expr) => {
+        $regs.uep2_t_len_uh_ep_pid()
+    };
+}
+
+#[cfg(not(usb_ch583))]
+macro_rules! uep3_t_len {
+    ($regs:expr) => {
+        $regs.uep3_t_len()
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! uep3_t_len {
+    ($regs:expr) => {
+        $regs.uep3_t_len__uh_tx_len()
+    };
+}
+
+#[cfg(not(usb_ch583))]
+macro_rules! set_uep2_rx_en_field {
+    ($w:expr, $v:expr) => {
+        $w.set_uep2_rx_en($v)
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! set_uep2_rx_en_field {
+    ($w:expr, $v:expr) => {
+        $w.set_uep2_rx_en__uh_ep_rx_en($v)
+    };
+}
+
+#[cfg(not(usb_ch583))]
+macro_rules! set_uep3_tx_en_field {
+    ($w:expr, $v:expr) => {
+        $w.set_uep3_tx_en($v)
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! set_uep3_tx_en_field {
+    ($w:expr, $v:expr) => {
+        $w.set_uep3_tx_en__uh_ep_tx_en($v)
+    };
+}
+
+#[cfg(not(usb_ch583))]
+macro_rules! set_uep3_t_len_field {
+    ($w:expr, $v:expr) => {
+        $w.set_uep3_t_len($v)
+    };
+}
+#[cfg(usb_ch583)]
+macro_rules! set_uep3_t_len_field {
+    ($w:expr, $v:expr) => {
+        $w.set_uep3_t_len__uh_tx_len($v)
+    };
+}
+
 // Each endpoint's control register is a distinct PAC type, even though the
 // fields are identical. The macro repeats the body per endpoint instead of
 // pretending they share a type.
@@ -789,9 +1030,9 @@ macro_rules! modify_ctrl {
     ($regs:expr, $index:expr, |$w:ident| $body:expr) => {
         match $index {
             0 => $regs.uep0_ctrl().modify(|$w| $body),
-            1 => $regs.uep1_ctrl().modify(|$w| $body),
-            2 => $regs.uep2_ctrl().modify(|$w| $body),
-            3 => $regs.uep3_ctrl().modify(|$w| $body),
+            1 => ep1_ctrl!($regs).modify(|$w| $body),
+            2 => ep2_ctrl!($regs).modify(|$w| $body),
+            3 => ep3_ctrl!($regs).modify(|$w| $body),
             4 => $regs.uep4_ctrl().modify(|$w| $body),
             5 => $regs.uep5_ctrl().modify(|$w| $body),
             6 => $regs.uep6_ctrl().modify(|$w| $body),
@@ -808,15 +1049,15 @@ macro_rules! read_ctrl {
                 $body
             }
             1 => {
-                let $w = $regs.uep1_ctrl().read();
+                let $w = ep1_ctrl!($regs).read();
                 $body
             }
             2 => {
-                let $w = $regs.uep2_ctrl().read();
+                let $w = ep2_ctrl!($regs).read();
                 $body
             }
             3 => {
-                let $w = $regs.uep3_ctrl().read();
+                let $w = ep3_ctrl!($regs).read();
                 $body
             }
             4 => {
@@ -864,6 +1105,7 @@ fn endpoint_response<T: Instance>(index: usize, direction: Direction) -> Respons
     }
 }
 
+#[cfg(not(usb_ch583))]
 fn set_toggle<T: Instance>(index: usize, direction: Direction, data1: bool) {
     let regs = T::regs();
     modify_ctrl!(regs, index, |w| {
@@ -874,6 +1116,7 @@ fn set_toggle<T: Instance>(index: usize, direction: Direction, data1: bool) {
     });
 }
 
+#[cfg(not(usb_ch583))]
 fn flip_toggle<T: Instance>(index: usize, direction: Direction) {
     let regs = T::regs();
     modify_ctrl!(regs, index, |w| {
@@ -884,13 +1127,74 @@ fn flip_toggle<T: Instance>(index: usize, direction: Direction) {
     });
 }
 
+#[cfg(usb_ch583)]
+fn set_toggle<T: Instance>(index: usize, direction: Direction, data1: bool) {
+    let regs = T::regs();
+    match index {
+        0 => regs.uep0_ctrl().modify(|w| match direction {
+            Direction::In => w.set_uep_t_tog(data1),
+            Direction::Out => w.set_uep_r_tog(data1),
+        }),
+        1 => regs.uep1_ctrl__uh_setup().modify(|w| match direction {
+            Direction::In => w.set_uep_t_tog__uh_sof_en(data1),
+            Direction::Out => w.set_uep_r_tog__uh_pre_pid_en(data1),
+        }),
+        2 => regs.uep2_ctrl_uh_rx_ctrl().modify(|w| match direction {
+            Direction::In => w.set_uep_t_tog(data1),
+            Direction::Out => w.set_uep_r_tog__uh_r_tog(data1),
+        }),
+        3 => regs.uep3_ctrl__uh_tx_ctrl().modify(|w| match direction {
+            Direction::In => w.set_uep_t_tog_rb_uh_t_tog(data1),
+            Direction::Out => w.set_uep_r_tog(data1),
+        }),
+        _ => unreachable!(),
+    }
+}
+
+#[cfg(usb_ch583)]
+fn flip_toggle<T: Instance>(index: usize, direction: Direction) {
+    let regs = T::regs();
+    let data1 = match index {
+        0 => {
+            let w = regs.uep0_ctrl().read();
+            match direction {
+                Direction::In => w.uep_t_tog(),
+                Direction::Out => w.uep_r_tog(),
+            }
+        }
+        1 => {
+            let w = regs.uep1_ctrl__uh_setup().read();
+            match direction {
+                Direction::In => w.uep_t_tog__uh_sof_en(),
+                Direction::Out => w.uep_r_tog__uh_pre_pid_en(),
+            }
+        }
+        2 => {
+            let w = regs.uep2_ctrl_uh_rx_ctrl().read();
+            match direction {
+                Direction::In => w.uep_t_tog(),
+                Direction::Out => w.uep_r_tog__uh_r_tog(),
+            }
+        }
+        3 => {
+            let w = regs.uep3_ctrl__uh_tx_ctrl().read();
+            match direction {
+                Direction::In => w.uep_t_tog_rb_uh_t_tog(),
+                Direction::Out => w.uep_r_tog(),
+            }
+        }
+        _ => unreachable!(),
+    };
+    set_toggle::<T>(index, direction, !data1);
+}
+
 fn set_tx_len<T: Instance>(index: usize, len: u8) {
     let regs = T::regs();
     match index {
         0 => regs.uep0_t_len().write(|w| w.set_uep0_t_len(len)),
         1 => regs.uep1_t_len().write(|w| w.set_uep1_t_len(len)),
-        2 => regs.uep2_t_len().write(|w| w.set_uep2_t_len(len)),
-        3 => regs.uep3_t_len().write(|w| w.set_uep3_t_len(len)),
+        2 => uep2_t_len!(regs).write(|w| w.set_uep2_t_len(len)),
+        3 => uep3_t_len!(regs).write(|w| set_uep3_t_len_field!(w, len)),
         4 => regs.uep4_t_len().write(|w| w.set_uep4_t_len(len)),
         5 => regs.uep5_t_len().write(|w| w.set_uep5_t_len(len)),
         6 => regs.uep6_t_len().write(|w| w.set_uep6_t_len(len)),
@@ -900,19 +1204,19 @@ fn set_tx_len<T: Instance>(index: usize, len: u8) {
 
 fn enable_in<T: Instance>(index: usize) {
     let regs = T::regs();
-    let dma = buffer(index, Direction::In).dma_address();
+    let dma = buffer::<T>(index, Direction::In).dma_address();
     match index {
         1 => {
             regs.uep1_dma().write(|w| w.set_uep1_dma(dma));
             regs.uep4_1_mod().modify(|w| w.set_uep1_tx_en(true));
         }
         2 => {
-            regs.uep2_dma().write(|w| w.set_uep2_dma(dma));
-            regs.uep2_3_mod().modify(|w| w.set_uep2_tx_en(true));
+            uep2_dma!(regs).write(|w| w.set_uep2_dma(dma));
+            uep2_3_mod!(regs).modify(|w| w.set_uep2_tx_en(true));
         }
         3 => {
-            regs.uep3_dma().write(|w| w.set_uep3_dma(dma));
-            regs.uep2_3_mod().modify(|w| w.set_uep3_tx_en(true));
+            uep3_dma!(regs).write(|w| w.set_uep3_dma(dma));
+            uep2_3_mod!(regs).modify(|w| set_uep3_tx_en_field!(w, true));
         }
         4 => {
             // Endpoint 4's buffer follows endpoint 0's, so there is no DMA
@@ -935,7 +1239,9 @@ fn enable_in<T: Instance>(index: usize) {
     // Endpoint 4 does not implement the automatic toggle: `UEP4_CTRL.AUTO_TOG`
     // writes are dropped and read back as zero. Its toggle starts at DATA0 and
     // the interrupt handler advances it after each transfer.
-    if index == 4 {
+    if index == 4 || cfg!(usb_ch583) {
+        #[cfg(usb_ch583)]
+        auto_toggle::<T>(index);
         set_toggle::<T>(index, Direction::In, false);
     } else {
         auto_toggle::<T>(index);
@@ -945,19 +1251,19 @@ fn enable_in<T: Instance>(index: usize) {
 
 fn enable_out<T: Instance>(index: usize) {
     let regs = T::regs();
-    let dma = buffer(index, Direction::Out).dma_address();
+    let dma = buffer::<T>(index, Direction::Out).dma_address();
     match index {
         1 => {
             regs.uep1_dma().write(|w| w.set_uep1_dma(dma));
             regs.uep4_1_mod().modify(|w| w.set_uep1_rx_en(true));
         }
         2 => {
-            regs.uep2_dma().write(|w| w.set_uep2_dma(dma));
-            regs.uep2_3_mod().modify(|w| w.set_uep2_rx_en(true));
+            uep2_dma!(regs).write(|w| w.set_uep2_dma(dma));
+            uep2_3_mod!(regs).modify(|w| set_uep2_rx_en_field!(w, true));
         }
         3 => {
-            regs.uep3_dma().write(|w| w.set_uep3_dma(dma));
-            regs.uep2_3_mod().modify(|w| w.set_uep3_rx_en(true));
+            uep3_dma!(regs).write(|w| w.set_uep3_dma(dma));
+            uep2_3_mod!(regs).modify(|w| w.set_uep3_rx_en(true));
         }
         4 => {
             regs.uep4_1_mod().modify(|w| w.set_uep4_rx_en(true));
@@ -976,7 +1282,9 @@ fn enable_out<T: Instance>(index: usize) {
         }
     }
     // See the note in `enable_in`: endpoint 4 toggles by hand.
-    if index == 4 {
+    if index == 4 || cfg!(usb_ch583) {
+        #[cfg(usb_ch583)]
+        auto_toggle::<T>(index);
         set_toggle::<T>(index, Direction::Out, false);
     } else {
         auto_toggle::<T>(index);
@@ -984,9 +1292,25 @@ fn enable_out<T: Instance>(index: usize) {
     set_response::<T>(index, Direction::Out, Response::Nak);
 }
 
+#[cfg(not(usb_ch583))]
 fn auto_toggle<T: Instance>(index: usize) {
     let regs = T::regs();
     modify_ctrl!(regs, index, |w| w.set_uep_auto_tog(true));
+}
+
+#[cfg(usb_ch583)]
+fn auto_toggle<T: Instance>(index: usize) {
+    let regs = T::regs();
+    match index {
+        1 => regs.uep1_ctrl__uh_setup().modify(|w| w.set_uep_auto_tog(false)),
+        2 => regs
+            .uep2_ctrl_uh_rx_ctrl()
+            .modify(|w| w.set_uep_auto_tog__uh_r_auto_tog(false)),
+        3 => regs
+            .uep3_ctrl__uh_tx_ctrl()
+            .modify(|w| w.set_uep_auto_tog_rb_uh_t_auto_tog(false)),
+        _ => unreachable!(),
+    }
 }
 
 // --- instance ------------------------------------------------------------------
@@ -996,13 +1320,15 @@ mod sealed {
 
     #[cfg(usbfs_ch585)]
     pub type Regs = pac::usbfs::Usbfs;
-    #[cfg(usb_ch592)]
+    #[cfg(any(usb_ch592, usb_ch583))]
     pub type Regs = pac::usb::Usb;
 
     pub trait Instance {
         type Interrupt: crate::interrupt::typelevel::Interrupt;
 
         fn regs() -> Regs;
+        fn state() -> &'static super::State;
+        fn set_pins(enabled: bool);
     }
 }
 
@@ -1016,6 +1342,19 @@ impl sealed::Instance for peripherals::USBFS {
 
     fn regs() -> pac::usbfs::Usbfs {
         pac::USBFS
+    }
+
+    fn state() -> &'static State {
+        &USB_STATE
+    }
+
+    fn set_pins(enabled: bool) {
+        critical_section::with(|_| {
+            pac::SYS.pin_config().modify(|w| {
+                w.set_pin_usb_en(enabled);
+                w.set_udp_pu_en(enabled);
+            })
+        });
     }
 }
 
@@ -1031,7 +1370,84 @@ impl sealed::Instance for peripherals::USB {
     fn regs() -> pac::usb::Usb {
         pac::USB
     }
+
+    fn state() -> &'static State {
+        &USB_STATE
+    }
+
+    fn set_pins(enabled: bool) {
+        critical_section::with(|_| {
+            pac::SYS.pin_analog_ie().modify(|w| {
+                w.set_pin_usb_ie(enabled);
+                w.set_pin_usb_dp_pu(enabled);
+            })
+        });
+    }
 }
 
 #[cfg(usb_ch592)]
 impl Instance for peripherals::USB {}
+
+#[cfg(usb_ch583)]
+impl sealed::Instance for peripherals::USB {
+    type Interrupt = interrupt::typelevel::USB;
+
+    fn regs() -> pac::usb::Usb {
+        pac::USB
+    }
+
+    fn state() -> &'static State {
+        &USB_STATE
+    }
+
+    fn set_pins(enabled: bool) {
+        critical_section::with(|_| {
+            pac::SYS.pin_analog_ie().modify(|w| {
+                w.set_pin_usb_ie(enabled);
+                w.set_pin_usb_dp_pu(enabled);
+            })
+        });
+    }
+}
+
+#[cfg(usb_ch583)]
+impl Instance for peripherals::USB {}
+
+// USB2 needs its own clock-gate field in the generated CH583 PAC before it
+// can be exposed. See CH583 datasheet section 5.2, SLP_CLK_OFF1 bit 5.
+
+#[cfg(all(test, usb_ch583))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controllers_have_independent_state_and_dma() {
+        let first = State::new();
+        let second = State::new();
+        assert!(!core::ptr::eq(&first, &second));
+        assert_ne!(first.ep0_buffers.get(), second.ep0_buffers.get());
+        assert_ne!(first.ep_buffer.get(), second.ep_buffer.get());
+        assert!(!core::ptr::eq(&first.bus_waker, &second.bus_waker));
+        assert!(!core::ptr::eq(&first.ep_in_wakers[0], &second.ep_in_wakers[0]));
+        assert!(!core::ptr::eq(&first.ep_out_wakers[0], &second.ep_out_wakers[0]));
+    }
+
+    #[test]
+    fn controller_events_do_not_cross() {
+        let first = State::new();
+        let second = State::new();
+        first.irq_reset.store(true, Ordering::Relaxed);
+        first.ep0_reset_generation.fetch_add(1, Ordering::Relaxed);
+        first.in_done[1].store(true, Ordering::Relaxed);
+        assert!(!second.irq_reset.load(Ordering::Relaxed));
+        assert_eq!(second.ep0_reset_generation.load(Ordering::Relaxed), 0);
+        assert!(!second.in_done[1].load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn ep0_and_ep4_dma_layout_is_preserved() {
+        assert_eq!(core::mem::align_of::<Ep0Buffers>(), 4);
+        assert_eq!(core::mem::offset_of!(Ep0Buffers, ep4_out), MAX_PACKET);
+        assert_eq!(core::mem::offset_of!(Ep0Buffers, ep4_in), 2 * MAX_PACKET);
+    }
+}
