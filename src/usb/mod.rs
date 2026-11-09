@@ -36,6 +36,9 @@
 //! CH585 control and CDC bulk transfers have been run on a board; CH582 and
 //! CH583 have not been hardware-tested. USBHS is a different peripheral.
 
+mod buffer;
+
+use buffer::{Buffer, Ep0Buffers};
 use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
@@ -263,54 +266,9 @@ static USB_STATE: State = State::new();
 #[cfg(usb_ch583)]
 static USB2_STATE: State = State::new();
 
-/// Endpoint packet buffer. DMA reads and writes it, so access is volatile.
-#[repr(C, align(4))]
-struct Buffer {
-    data: [u8; MAX_PACKET],
-}
-
-impl Buffer {
-    const fn new() -> Self {
-        Self { data: [0; MAX_PACKET] }
-    }
-
-    fn read(&self, out: &mut [u8]) {
-        for (slot, byte) in out.iter_mut().enumerate() {
-            *byte = unsafe { core::ptr::read_volatile(self.data.as_ptr().add(slot)) };
-        }
-    }
-
-    fn write(&mut self, input: &[u8]) {
-        for (slot, byte) in input.iter().enumerate() {
-            unsafe { core::ptr::write_volatile(self.data.as_mut_ptr().add(slot), *byte) };
-        }
-    }
-
-    /// The value the DMA register takes: the low 16 bits, 4-byte aligned.
-    fn dma_address(&self) -> u16 {
-        let address = self.data.as_ptr() as usize;
-        debug_assert!(address % 4 == 0, "usb buffer is not 4-byte aligned");
-        (address & 0xFFFF) as u16
-    }
-}
-
-/// Endpoint 4 has no DMA register. Its single-direction buffer immediately
-/// follows endpoint 0's; allocation forbids using both directions at once.
-#[repr(C, align(4))]
-struct Ep0Buffers {
-    control: Buffer,
-    ep4: Buffer,
-}
-
-fn buffer<T: Instance>(index: usize, direction: Direction) -> &'static mut Buffer {
+fn buffer<T: Instance>(index: usize, _direction: Direction) -> &'static mut Buffer {
     let state = T::state();
-    unsafe {
-        match (index, direction) {
-            (0, _) => &mut (*state.ep0_buffers.get()).control,
-            (4, _) => &mut (*state.ep0_buffers.get()).ep4,
-            (i, _) => &mut *state.ep_buffer.get().cast::<Buffer>().add(i - 1),
-        }
-    }
+    unsafe { buffer::buffer(state.ep0_buffers.get(), state.ep_buffer.get(), index) }
 }
 
 /// USB full-speed device driver.
