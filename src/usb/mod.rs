@@ -29,12 +29,10 @@
 //!
 //! CH585 and CH592 use endpoints 0 to 7. CH582 and CH583 currently expose
 //! only endpoints 0 to 3, with software toggles for non-control transfers.
-//! USB2 is not exposed: the CH583 PAC lacks its clock-gate field. In addition,
-//! masking CPU interrupts does not prevent a new SETUP from DMA-writing EP0
-//! while software copies a previous packet. An old IN response can overwrite
-//! that SETUP; safe packet handoff is unresolved. A SETUP can also be reported
-//! alongside an earlier token: CH585 and CH592 currently do not process that
-//! earlier token as required by their manuals. The USB driver is experimental.
+//! Both controllers are supported on CH582 and CH583. The USB driver is
+//! experimental: masking CPU interrupts does not prevent a new SETUP from
+//! DMA-writing EP0 while software copies a previous packet. An old IN response
+//! can overwrite that SETUP; safe packet handoff is unresolved.
 //! CH585 control and CDC bulk transfers have been run on a board; CH582 and
 //! CH583 have not been hardware-tested. USBHS is a different peripheral.
 
@@ -263,6 +261,8 @@ impl State {
 }
 
 static USB_STATE: State = State::new();
+#[cfg(usb_ch583)]
+static USB2_STATE: State = State::new();
 
 /// Endpoint packet buffer. DMA reads and writes it, so access is volatile.
 #[repr(C, align(4))]
@@ -345,9 +345,7 @@ impl<'d, T: Instance> Driver<'d, T> {
         T::state().irq_resume.store(false, Ordering::Relaxed);
 
         // Leave the controller clock enabled after acquisition.
-        rcc::with_safe_access(|| {
-            pac::SYS.slp_clk_off1().modify(|w| w.set_slp_clk_usb(false));
-        });
+        T::enable_clock();
 
         let regs = T::regs();
         regs.ctrl().write(|w| {
@@ -1329,6 +1327,12 @@ mod sealed {
         fn regs() -> Regs;
         fn state() -> &'static super::State;
         fn set_pins(enabled: bool);
+
+        fn enable_clock() {
+            super::rcc::with_safe_access(|| {
+                pac::SYS.slp_clk_off1().modify(|w| w.set_slp_clk_usb(false));
+            });
+        }
     }
 }
 
@@ -1413,8 +1417,36 @@ impl sealed::Instance for peripherals::USB {
 #[cfg(usb_ch583)]
 impl Instance for peripherals::USB {}
 
-// USB2 needs its own clock-gate field in the generated CH583 PAC before it
-// can be exposed. See CH583 datasheet section 5.2, SLP_CLK_OFF1 bit 5.
+#[cfg(usb_ch583)]
+impl sealed::Instance for peripherals::USB2 {
+    type Interrupt = interrupt::typelevel::USB2;
+
+    fn regs() -> pac::usb::Usb {
+        pac::USB2
+    }
+
+    fn state() -> &'static State {
+        &USB2_STATE
+    }
+
+    fn enable_clock() {
+        rcc::with_safe_access(|| {
+            pac::SYS.slp_clk_off1().modify(|w| w.set_slp_clk_usb2(false));
+        });
+    }
+
+    fn set_pins(enabled: bool) {
+        critical_section::with(|_| {
+            pac::SYS.pin_analog_ie().modify(|w| {
+                w.set_pin_usb2_ie(enabled);
+                w.set_pin_usb2_dp_pu(enabled);
+            })
+        });
+    }
+}
+
+#[cfg(usb_ch583)]
+impl Instance for peripherals::USB2 {}
 
 #[cfg(all(test, usb_ch583))]
 mod tests {
@@ -1422,9 +1454,9 @@ mod tests {
 
     #[test]
     fn controllers_have_independent_state_and_dma() {
-        let first = State::new();
-        let second = State::new();
-        assert!(!core::ptr::eq(&first, &second));
+        let first = <peripherals::USB as sealed::Instance>::state();
+        let second = <peripherals::USB2 as sealed::Instance>::state();
+        assert!(!core::ptr::eq(first, second));
         assert_ne!(first.ep0_buffers.get(), second.ep0_buffers.get());
         assert_ne!(first.ep_buffer.get(), second.ep_buffer.get());
         assert!(!core::ptr::eq(&first.bus_waker, &second.bus_waker));
