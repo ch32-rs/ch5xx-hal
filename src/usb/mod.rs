@@ -37,18 +37,20 @@
 //! CH583 have not been hardware-tested. USBHS is a different peripheral.
 
 mod buffer;
+mod events;
 
-use buffer::{Buffer, Ep0Buffers};
 use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
+use buffer::{Buffer, Ep0Buffers};
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_usb_driver as driver;
 use embassy_usb_driver::{
     Direction, EndpointAddress, EndpointAllocError, EndpointError, EndpointInfo, EndpointType, Event,
 };
+use events::Event as UsbEvent;
 
 use crate::atomic::{compiler_fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
 use crate::interrupt::typelevel::Interrupt;
@@ -107,7 +109,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             regs.int_fg().write(|w| w.set_uif_fifo_ov(true));
         }
 
-        if flags.uif_transfer() && !flags.uif_bus_rst__uif_detect() {
+        if events::handle_transfer(flags.uif_transfer(), flags.uif_bus_rst__uif_detect()) {
             let status = regs.int_st().read();
             let endpoint = status.mask_uis_h_res__mask_uis_endp() as usize;
             let token = Token::from_bits(status.mask_uis_token());
@@ -121,55 +123,61 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             let accepted = flags.u_tog_ok();
             // Datasheet section 17.2.1 requires acknowledging a pending token
             // before a simultaneously reported SETUP, then acknowledging SETUP.
-            if endpoint < EP_COUNT {
-                match token {
-                    Token::In => {
-                        // The toggle check applies to received data; an IN
-                        // transaction that completes was ACKed by the host.
-                        set_response::<T>(endpoint, Direction::In, Response::Nak);
-                        if endpoint == 4 || (cfg!(usb_ch583) && endpoint != 0) {
-                            flip_toggle::<T>(endpoint, Direction::In);
-                        }
-                        T::state().in_done[endpoint].store(true, Ordering::Relaxed);
-                        T::state().ep_in_wakers[endpoint].wake();
-                    }
-                    Token::Out => {
-                        if accepted {
-                            T::state().out_len[endpoint].store(regs.rx_len().read().rx_len() as u16, Ordering::Relaxed);
-                            set_response::<T>(endpoint, Direction::Out, Response::Nak);
+            for event in events::transfer_events(setup, token == Token::Idle)
+                .into_iter()
+                .flatten()
+            {
+                match event {
+                    UsbEvent::Transfer if endpoint < EP_COUNT => match token {
+                        Token::In => {
+                            // The toggle check applies to received data; an IN
+                            // transaction that completes was ACKed by the host.
+                            set_response::<T>(endpoint, Direction::In, Response::Nak);
                             if endpoint == 4 || (cfg!(usb_ch583) && endpoint != 0) {
-                                flip_toggle::<T>(endpoint, Direction::Out);
+                                flip_toggle::<T>(endpoint, Direction::In);
                             }
-                            T::state().out_done[endpoint].store(true, Ordering::Relaxed);
-                            T::state().ep_out_wakers[endpoint].wake();
-                        } else {
-                            // A retransmitted packet: discard it and keep
-                            // receiving.
-                            set_response::<T>(endpoint, Direction::Out, Response::Ack);
+                            T::state().in_done[endpoint].store(true, Ordering::Relaxed);
+                            T::state().ep_in_wakers[endpoint].wake();
                         }
+                        Token::Out => {
+                            if accepted {
+                                T::state().out_len[endpoint]
+                                    .store(regs.rx_len().read().rx_len() as u16, Ordering::Relaxed);
+                                set_response::<T>(endpoint, Direction::Out, Response::Nak);
+                                if endpoint == 4 || (cfg!(usb_ch583) && endpoint != 0) {
+                                    flip_toggle::<T>(endpoint, Direction::Out);
+                                }
+                                T::state().out_done[endpoint].store(true, Ordering::Relaxed);
+                                T::state().ep_out_wakers[endpoint].wake();
+                            } else {
+                                // A retransmitted packet: discard it and keep
+                                // receiving.
+                                set_response::<T>(endpoint, Direction::Out, Response::Ack);
+                            }
+                        }
+                        Token::Idle | Token::Sof => {}
+                    },
+                    UsbEvent::Transfer => {}
+                    UsbEvent::Acknowledge => {
+                        // Clearing the flag lets the serial engine leave its busy NAK.
+                        regs.int_fg().write(|w| w.set_uif_transfer(true));
                     }
-                    Token::Idle | Token::Sof => {}
+                    UsbEvent::Setup => {
+                        // A SETUP can only target endpoint 0. The endpoint and token
+                        // fields of `INT_ST` are not updated by a SETUP, so they may
+                        // still hold the previous transaction (or the reset value
+                        // 0xF), and `UIS_SETUP_ACT` is the only reliable indicator.
+                        T::state().out_len[0].store(8, Ordering::Relaxed);
+                        T::state().in_done[0].store(false, Ordering::Relaxed);
+                        T::state().ep0_setup.store(true, Ordering::Relaxed);
+                        T::state().out_done[0].store(true, Ordering::Relaxed);
+                        set_response::<T>(0, Direction::In, Response::Nak);
+                        set_response::<T>(0, Direction::Out, Response::Nak);
+                        T::state().ep_out_wakers[0].wake();
+                        T::state().ep_in_wakers[0].wake();
+                    }
                 }
             }
-            if setup && token != Token::Idle {
-                regs.int_fg().write(|w| w.set_uif_transfer(true));
-            }
-            if setup {
-                // A SETUP can only target endpoint 0. The endpoint and token
-                // fields of `INT_ST` are not updated by a SETUP, so they may
-                // still hold the previous transaction (or the reset value
-                // 0xF), and `UIS_SETUP_ACT` is the only reliable indicator.
-                T::state().out_len[0].store(8, Ordering::Relaxed);
-                T::state().in_done[0].store(false, Ordering::Relaxed);
-                T::state().ep0_setup.store(true, Ordering::Relaxed);
-                T::state().out_done[0].store(true, Ordering::Relaxed);
-                set_response::<T>(0, Direction::In, Response::Nak);
-                set_response::<T>(0, Direction::Out, Response::Nak);
-                T::state().ep_out_wakers[0].wake();
-                T::state().ep_in_wakers[0].wake();
-            }
-            // Clearing the flag lets the serial engine leave its busy NAK.
-            regs.int_fg().write(|w| w.set_uif_transfer(true));
         }
     }
 }
