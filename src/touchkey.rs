@@ -53,21 +53,20 @@ impl Default for Config {
     fn default() -> Self {
         // The vendor touch library's working point: two charge clocks, three
         // discharge clocks and the 70 µA current.
-        // CH582/CH583's vendor touch setup uses -6 dB and the first clock
-        // setting, unlike the newer ADC blocks.
-        #[cfg(adc_ch583)]
-        let adc = adc::Config {
-            gain: adc::Gain::Div2,
-            sample_clock: adc::SampleClock::Divide1,
+        let adc = cfg_select! {
+            // CH582/CH583's vendor touch setup uses -6 dB and the first clock
+            // setting, unlike the newer ADC blocks.
+            adc_ch583 => adc::Config {
+                gain: adc::Gain::Div2,
+                sample_clock: adc::SampleClock::Divide1,
+            },
+            // CH573's vendor touch setup keeps unity gain and the slowest clock.
+            adc_ch573 => adc::Config {
+                gain: adc::Gain::Unity,
+                sample_clock: adc::SampleClock::Divide1,
+            },
+            _ => adc::Config::default(),
         };
-        // CH573's vendor touch setup keeps unity gain and the slowest clock.
-        #[cfg(adc_ch573)]
-        let adc = adc::Config {
-            gain: adc::Gain::Unity,
-            sample_clock: adc::SampleClock::Divide1,
-        };
-        #[cfg(not(any(adc_ch573, adc_ch583)))]
-        let adc = adc::Config::default();
         Self {
             charge: 2,
             discharge: 3,

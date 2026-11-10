@@ -292,12 +292,11 @@ impl<'d, T: Instance> Adc<'d, T> {
         let channel = regs.channel().read().ch_inx();
         // The CH583 SDK specifies channel 1 and the CH573 SDK channel 6 for
         // the shorted-input test; CH585 and CH595 measure on the current one.
-        #[cfg(adc_ch583)]
-        let calibration_channel = 1;
-        #[cfg(adc_ch573)]
-        let calibration_channel = 6;
-        #[cfg(not(any(adc_ch583, adc_ch573)))]
-        let calibration_channel = channel;
+        let calibration_channel = cfg_select! {
+            adc_ch583 => 1,
+            adc_ch573 => 6,
+            _ => channel,
+        };
         enable::<T>(calibration_channel, unity, false);
         regs.cfg().modify(|w| w.set_ofs_test(true));
         let result = calibrate_offset::<T>();

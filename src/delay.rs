@@ -103,10 +103,14 @@ pub(crate) unsafe fn init() {
     // Free-running, up-count, HCLK source (`STCLK` set — clearing it would
     // select HCLK/8). `STE` starts it. CH573 keeps the flag in `CNTFG`
     // and has no counter-direction bit.
-    #[cfg(systick_cntfg)]
-    SYSTICK.cntfg().modify(|w| w.set_cntif(false));
-    #[cfg(not(systick_cntfg))]
-    SYSTICK.sr().modify(|w| w.set_cntif(false));
+    cfg_select! {
+        systick_cntfg => {
+            SYSTICK.cntfg().modify(|w| w.set_cntif(false));
+        }
+        _ => {
+            SYSTICK.sr().modify(|w| w.set_cntif(false));
+        }
+    }
     SYSTICK.cntl().write(|w| w.set_cntl(0));
     // CH572 has a single 32-bit counter register and no high half.
     #[cfg(systick_cnth)]
