@@ -138,5 +138,14 @@ pub(crate) fn enable_interrupts() {
     new.set_sevonpend(true);
     pac::PFIC.sctlr().write_value(new);
 
-    unsafe { qingke::register::gintenr::write(0x08) };
+    // QingKe V3A has no GINTENR CSR; its global interrupt bit is
+    // `mstatus.MIE`. V3C and V4A use CSR 0x800.
+    #[cfg(any(ch572, ch573))]
+    unsafe {
+        core::arch::asm!("csrs mstatus, {}", const 0x8);
+    }
+    #[cfg(not(any(ch572, ch573)))]
+    unsafe {
+        qingke::register::gintenr::write(0x08)
+    };
 }
