@@ -51,9 +51,9 @@ fn main() -> ! {
         unsafe { hal::delay::recalibrate() };
 
         let measured = hal::delay::measured_sysclk().0;
-        let start = pac::SYSTICK.stk_cntl().read().cntl();
+        let start = pac::SYSTICK.cntl().read().cntl();
         delay.delay_ms(1000);
-        let end = pac::SYSTICK.stk_cntl().read().cntl();
+        let end = pac::SYSTICK.cntl().read().cntl();
         let delta = end.wrapping_sub(start);
 
         let ratio_ok = delta.abs_diff(wanted) <= wanted / 4;
