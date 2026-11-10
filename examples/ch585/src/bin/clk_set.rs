@@ -42,9 +42,9 @@ fn main() -> ! {
     // An independent check of the rate: one second of busy-waiting must cover
     // about 24 million SysTick counts.
     let mut delay = hal::delay::Delay;
-    let start = pac::SYSTICK.stk_cntl().read().cntl();
+    let start = pac::SYSTICK.cntl().read().cntl();
     delay.delay_ms(1000);
-    let end = pac::SYSTICK.stk_cntl().read().cntl();
+    let end = pac::SYSTICK.cntl().read().cntl();
 
     info!("systick delta over 1s = {}", end.wrapping_sub(start));
 
