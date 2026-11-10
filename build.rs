@@ -40,12 +40,25 @@ fn main() {
     };
     println!("cargo:rustc-cfg={chip_name}");
 
+    // CH570 is the CH572 die without the radio. The radio is a register-less
+    // placeholder, so every modelled block is shared; emit the CH572 cfg as
+    // well so the drivers keyed on that family apply.
+    let family = match chip_name.as_str() {
+        "ch570" => "ch572",
+        other => other,
+    };
+    if family != chip_name {
+        println!("cargo:rustc-cfg={family}");
+    }
+    let chip_name = family.to_string();
+
     // Per-chip GPIO port widths. Metadata only lists pins that carry a
     // peripheral signal, so pads with no alternate function would not be
     // discovered; the widths differ per die and stay here.
     let ports: &[(char, u8)] = match chip_name.as_str() {
         "ch581" | "ch582" | "ch583" | "ch584" | "ch585" | "ch592" | "ch595" | "ch573" => &[('A', 16), ('B', 24)],
-        "ch572" => &[('A', 24)],
+        // CH572/CH570 bond PA0-PA11 only.
+        "ch572" => &[('A', 12)],
         other => panic!("no GPIO port map for chip `{other}`"),
     };
     // The PAC's `METADATA` is empty here: a build-dependency is compiled
@@ -69,16 +82,20 @@ fn main() {
     // The low-power driver writes the sleep and power-plan bytes of the SYS
     // block. CH592 has no HFCK_PWR_CTRL, so the set is not shared by every
     // selectable die; the driver only compiles where all of it exists.
-    if sys_has_registers(
-        &chip_name,
-        &[
-            "SLP_WAKE_CTRL",
-            "SLP_POWER_CTRL",
-            "POWER_PLAN",
-            "HFCK_PWR_CTRL",
-            "BAT_DET_CTRL",
-        ],
-    ) {
+    // CH572's POWER_PLAN is a different layout (no DC/DC or MUST_0010 bits),
+    // so the shared sleep path does not model it yet.
+    if chip_name != "ch572"
+        && sys_has_registers(
+            &chip_name,
+            &[
+                "SLP_WAKE_CTRL",
+                "SLP_POWER_CTRL",
+                "POWER_PLAN",
+                "HFCK_PWR_CTRL",
+                "BAT_DET_CTRL",
+            ],
+        )
+    {
         println!("cargo:rustc-cfg=power_sleep");
     }
     // CH582/CH583 split the main SRAM retention differently: `PWR_RAM2K` is
@@ -118,22 +135,53 @@ fn main() {
     // (`SPI_NODMA`); the driver casts the addresses to the field width and
     // gates the second instance.
     match register_version(&chip_name, "spi").as_str() {
-        "ch585" | "ch583" | "ch592" => println!("cargo:rustc-cfg=spi_fifo"),
+        // CH573 and CH572/CH570 use the same FIFO controller; CH572 selects
+        // its alternate SCK through `PIN_ALTERNATE_H` instead of `PIN_SPI0`.
+        "ch585" | "ch583" | "ch592" | "ch573" | "ch572" => println!("cargo:rustc-cfg=spi_fifo"),
         _ => {}
     }
-    // CH583 has single conversion and DMA but no scan sequencer. CH592 has
-    // a shorter scan sequencer than CH585; other layouts are not supported.
+    // CH583 has single conversion and DMA but no scan sequencer. CH573 and
+    // CH595 are the same shape without the scan block; CH592 has a shorter
+    // scan sequencer than CH585.
     match register_version_opt(&chip_name, "adc").as_deref() {
         Some("ch585") => {
             println!("cargo:rustc-cfg=adc_ch585");
             println!("cargo:rustc-cfg=adc_scan");
         }
         Some("ch583") => println!("cargo:rustc-cfg=adc_ch583"),
+        Some("ch573") => println!("cargo:rustc-cfg=adc_ch573"),
+        Some("ch595") => println!("cargo:rustc-cfg=adc_ch595"),
         Some("ch592") => {
             println!("cargo:rustc-cfg=adc_ch592");
             println!("cargo:rustc-cfg=adc_scan");
         }
         _ => {}
+    }
+    // The gain encoding moved to `CFG.PGA_GAIN10` plus `CONVERT.PGA_GAIN2` on
+    // the newer blocks; CH573 and CH583 keep the single `PGA_GAIN` field, and
+    // CH573/CH595 have no direction bit at all.
+    if register_has_field(&chip_name, "adc", "PGA_GAIN10") {
+        println!("cargo:rustc-cfg=adc_pga_gain10");
+    }
+    if register_has_field(&chip_name, "adc", "PGA_GAIN") {
+        println!("cargo:rustc-cfg=adc_pga_gain");
+    }
+    if register_has_field(&chip_name, "adc", "PGA_GAIN2") {
+        println!("cargo:rustc-cfg=adc_pga_gain2");
+    }
+    if register_has_field(&chip_name, "adc", "DMA_LOOP") {
+        println!("cargo:rustc-cfg=adc_dma_loop");
+    }
+    if register_has_field(&chip_name, "adc", "CONT_EN") {
+        println!("cargo:rustc-cfg=adc_cont_en");
+    }
+    // CH583 and CH573 program DMA_BEG/DMA_END as byte addresses; the newer
+    // blocks store halfword offsets.
+    if matches!(
+        register_version_opt(&chip_name, "adc").as_deref(),
+        Some("ch583" | "ch573")
+    ) {
+        println!("cargo:rustc-cfg=adc_dma_bytes");
     }
     // The touch-key block is the ADC's charge-transfer front end. CH573, CH583,
     // CH585 and CH592 keep the COUNT/CONVERT pair and the CFG power bit that
@@ -147,6 +195,12 @@ fn main() {
         if names.iter().any(|name| name == "COUNT") && names.iter().any(|name| name == "CONVERT") {
             println!("cargo:rustc-cfg=touchkey_charge");
         }
+    }
+    if register_has_field(&chip_name, "touchkey", "PWR_ON") {
+        println!("cargo:rustc-cfg=touchkey_pwr_on");
+    }
+    if register_has_field(&chip_name, "touchkey", "DRV_EN") {
+        println!("cargo:rustc-cfg=touchkey_drv_en");
     }
     // PWMx is one block for PWM4-PWM11; the CH573 layout has byte duty
     // registers and fixed 31/32-clock periods instead of the wide mode.
@@ -179,10 +233,23 @@ fn main() {
     // timer-local DMA registers on TMR0/TMR3, while the other dies have them on
     // every instance. Emit one cfg per no-DMA instance so the driver can gate
     // the DMA entry points.
+    // The timer and UART groups are not complete on every die: CH572/CH570
+    // have TMR0 and UART0 only. Emit one cfg per optional instance so the
+    // driver does not name a singleton the PAC lacks.
     for (name, block) in peripheral_blocks(&chip_name, "TMR") {
-        if block == "TMR_NODMA" {
-            println!("cargo:rustc-cfg={}_nodma", name.to_ascii_lowercase());
+        let cfg = name.to_ascii_lowercase();
+        if cfg != "tmr0" {
+            println!("cargo:rustc-cfg={cfg}");
         }
+        if block == "TMR_NODMA" {
+            println!("cargo:rustc-cfg={cfg}_nodma");
+        }
+    }
+    // TMR0/TMR3 can run the NFC 13.56 MHz clock only on dies with an NFC
+    // front end; the CH572 family has none. NFC is a register-less
+    // placeholder, so this reads the name rather than a register block.
+    if family_has_peripheral(&chip_name, "NFC") {
+        println!("cargo:rustc-cfg=nfc_clock");
     }
     // Not every die routes every timer to a pin. The `PIN_TMRn` remap fields
     // in PIN_ALTERNATE are the metadata's record of it; the pin tables and the
@@ -197,9 +264,17 @@ fn main() {
     // CH595). The instance type and the register fields differ, so the driver
     // needs to know which block each instance is.
     for (name, block) in peripheral_blocks(&chip_name, "UART") {
-        if block == "UART_NOMODEM" {
-            println!("cargo:rustc-cfg={}_nomodem", name.to_ascii_lowercase());
+        let cfg = name.to_ascii_lowercase();
+        if cfg != "uart0" {
+            println!("cargo:rustc-cfg={cfg}");
         }
+        if block == "UART_NOMODEM" {
+            println!("cargo:rustc-cfg={cfg}_nomodem");
+        }
+    }
+    // Not every die has an I2C block (CH573 does not).
+    if register_version_opt(&chip_name, "i2c").is_some() {
+        println!("cargo:rustc-cfg=i2c_present");
     }
     // USBFS is the WCH full-speed device controller. USBHS is a separate block
     // and is not this driver.
@@ -218,6 +293,110 @@ fn main() {
     // USBHS has a separate controller, PHY and device interrupt.
     if register_version_opt(&chip_name, "usbhs").as_deref() == Some("ch585") {
         println!("cargo:rustc-cfg=usbhs_ch585");
+    }
+    // Register fields are not identical across the family. Emit a cfg for each
+    // capability a shared driver would otherwise name unconditionally. The
+    // field scan is textual, so only exact `- name:` entries count.
+    for (field, cfg) in [
+        ("SLP_USB2_WAKE", "slp_usb2_wake"),
+        ("WAKE_DLY_MOD", "wake_dly_mod"),
+        ("PWR_RAM2K", "pwr_ram2k"),
+        ("PWR_RAM8K", "pwr_ram8k"),
+        ("PWR_RAM12K", "pwr_ram12k"),
+        ("PWR_RAM16K", "pwr_ram16k"),
+        ("PWR_RAM24K", "pwr_ram24k"),
+        ("PWR_RAM30K", "pwr_ram30k"),
+        ("PWR_RAM32K", "pwr_ram32k"),
+        ("PWR_RAM96K", "pwr_ram96k"),
+        ("CLK_RC16M_PON", "hfck_rc16m_pon"),
+        ("XROM_SCLK_SEL", "clk_cfg_xrom"),
+        ("OSC32M_SEL", "clk_cfg_osc32m"),
+        ("PLL_GATE_DISS", "clk_cfg_pll_gate"),
+        ("PLL_GATE_TIME", "clk_cfg_pll_gate_time"),
+        ("PIN_UART0", "pin_uart0"),
+        ("PIN_UART1", "pin_uart1"),
+        ("PIN_UART2", "pin_uart2"),
+        ("PIN_UART3", "pin_uart3"),
+        ("PIN_I2C", "pin_i2c"),
+        ("PIN_SPI0", "pin_spi0"),
+        ("PIN_PWMX", "pin_pwmx"),
+        ("PIN_TMR0", "pin_tmr0"),
+        ("PIN_TMR1", "pin_tmr1"),
+        ("PIN_TMR2", "pin_tmr2"),
+        ("PIN_TMR3", "pin_tmr3"),
+    ] {
+        if sys_has_field(&chip_name, field) {
+            println!("cargo:rustc-cfg={cfg}");
+        }
+    }
+    if sys_has_registers(&chip_name, &["PIN_ALTERNATE_H"]) {
+        println!("cargo:rustc-cfg=pin_alternate_h");
+    }
+    // USBFS PHY enable lives in a different SYS register on each cut. The
+    // field names are the same on CH585/CH581/CH584 and CH595; CH572 uses the
+    // low PIN_ALTERNATE byte.
+    if sys_has_registers(&chip_name, &["PIN_CONFIG"]) {
+        println!("cargo:rustc-cfg=usb_phy_pin_config");
+    } else if sys_has_registers(&chip_name, &["PIN_ANALOG_IE"]) {
+        println!("cargo:rustc-cfg=usb_phy_pin_analog_ie");
+    } else {
+        println!("cargo:rustc-cfg=usb_phy_pin_alternate");
+    }
+    if register_has_field(&chip_name, "systick", "MODE") {
+        println!("cargo:rustc-cfg=systick_mode");
+    }
+    // CH573 names the reload-enable bit `STRELOAD` and moves it to bit 8.
+    if register_has_field(&chip_name, "systick", "STRE") {
+        println!("cargo:rustc-cfg=systick_stre");
+    }
+    if register_has_field(&chip_name, "systick", "STRELOAD") {
+        println!("cargo:rustc-cfg=systick_streload");
+    }
+    // CH585-CH59x keep the flag in `STK_SR`; CH572 and CH573 call it
+    // `STK_CNTFG`. CH572 has no high counter half at all, and its compare word
+    // carries the field name `CNTH` instead of `CMPL`.
+    if register_has_register(&chip_name, "systick", "STK_SR") {
+        println!("cargo:rustc-cfg=systick_sr");
+    }
+    if register_has_field(&chip_name, "systick", "STK_CNTFG") {
+        println!("cargo:rustc-cfg=systick_cntfg");
+    }
+    if register_has_register(&chip_name, "systick", "STK_CNTH") {
+        println!("cargo:rustc-cfg=systick_cnth");
+    }
+    if register_has_field(&chip_name, "systick", "CMPL") {
+        println!("cargo:rustc-cfg=systick_cmpl");
+    } else if register_has_field(&chip_name, "systick", "CNTH") {
+        println!("cargo:rustc-cfg=systick_cmp_cnth");
+    }
+    if register_has_field(&chip_name, "uart", "MCR_INT_OE") {
+        println!("cargo:rustc-cfg=mcr_int_oe");
+    }
+    if register_has_field(&chip_name, "uart", "MCR_OUT2_RB_MCR_INT_OE") {
+        println!("cargo:rustc-cfg=mcr_int_oe_combined");
+    }
+    // CH572/CH570's UART has no software-reset bit, no FIFO-clear bits and no
+    // modem block, so the fields the shared setup writes do not all exist.
+    if register_has_field(&chip_name, "uart", "IER_RESET") {
+        println!("cargo:rustc-cfg=uart_ier_reset");
+    }
+    if register_has_field(&chip_name, "uart", "FCR_RX_FIFO_CLR") {
+        println!("cargo:rustc-cfg=uart_fcr_clear");
+    }
+    if register_has_field(&chip_name, "uart", "MCR_LOOP") {
+        println!("cargo:rustc-cfg=uart_mcr_loop");
+    }
+    if sys_has_field(&chip_name, "CLK_RC16M_PON") {
+        println!("cargo:rustc-cfg=has_hsi");
+    }
+    // The PLL multiplier is fixed per family: 312 MHz on CH581/CH584/CH585,
+    // 480 MHz on CH573/CH595 and the CH59x/CH58x crystal tree, 600 MHz on
+    // CH572. The centre frequency feeds presets and validation.
+    match chip_name.as_str() {
+        "ch572" => println!("cargo:rustc-cfg=pll_600"),
+        "ch573" | "ch595" => println!("cargo:rustc-cfg=pll_480"),
+        "ch581" | "ch584" | "ch585" => println!("cargo:rustc-cfg=pll_312"),
+        _ => {}
     }
 
     // A `time-driver-tmr*` feature takes that TMR for the timebase. Drop it from
@@ -377,6 +556,32 @@ fn sys_has_registers(chip: &str, names: &[&str]) -> bool {
         .all(|name| text.lines().any(|line| line.trim() == format!("- name: {name}")))
 }
 
+/// Whether the chip's `SYS` block defines the named field.
+fn sys_has_field(chip: &str, field: &str) -> bool {
+    register_has_field(chip, "sys", field)
+}
+
+/// Whether the chip's selected register block of `kind` has a register named
+/// `name` in its first block.
+fn register_has_register(chip: &str, kind: &str, name: &str) -> bool {
+    let Some(version) = register_version_opt(chip, kind) else {
+        return false;
+    };
+    let path = data_root().join(format!("registers/{kind}_{version}.yaml"));
+    let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+    register_names(&text).iter().any(|candidate| candidate == name)
+}
+
+/// Whether the chip's selected register block of `kind` defines `field`.
+fn register_has_field(chip: &str, kind: &str, field: &str) -> bool {
+    let Some(version) = register_version_opt(chip, kind) else {
+        return false;
+    };
+    let path = data_root().join(format!("registers/{kind}_{version}.yaml"));
+    let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+    text.lines().any(|line| line.trim() == format!("- name: {field}"))
+}
+
 fn data_root() -> PathBuf {
     PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../ch5xx-data/data")
 }
@@ -433,6 +638,21 @@ fn register_version_opt(chip: &str, kind: &str) -> Option<String> {
     let text =
         fs::read_to_string(&family_path).unwrap_or_else(|err| panic!("reading {}: {err}", family_path.display()));
     version_of(&text, kind)
+}
+
+/// Whether the chip's family file lists a peripheral by name.
+///
+/// Works for register-less placeholders such as NFC, where
+/// [`peripheral_blocks`] cannot be used.
+fn family_has_peripheral(chip: &str, name: &str) -> bool {
+    let chip_path = data_root().join(format!("chips/{}.yaml", chip.to_ascii_uppercase()));
+    let family = family_file(
+        &fs::read_to_string(&chip_path).unwrap_or_else(|err| panic!("reading {}: {err}", chip_path.display())),
+    );
+    let family_path = data_root().join(format!("family/{family}"));
+    let text =
+        fs::read_to_string(&family_path).unwrap_or_else(|err| panic!("reading {}: {err}", family_path.display()));
+    text.lines().any(|line| line.trim() == format!("- name: {name}"))
 }
 
 /// The family file named by `include_peripherals`.

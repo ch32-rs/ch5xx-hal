@@ -483,7 +483,10 @@ impl sealed::Instance for peripherals::PWMX {
     }
 
     unsafe fn set_remap(remapped: bool) {
+        #[cfg(pin_pwmx)]
         pac::SYS.pin_alternate().modify(|w| w.set_pin_pwmx(remapped));
+        #[cfg(not(pin_pwmx))]
+        let _ = remapped;
     }
 }
 
@@ -510,29 +513,29 @@ macro_rules! impl_pin {
     };
 }
 
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PA12, 0, Some(false));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PA6, 0, Some(true));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PA13, 1, Some(false));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PA7, 1, Some(true));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB0, 2, None);
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB4, 3, Some(false));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB1, 3, Some(true));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB6, 4, Some(false));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB2, 4, Some(true));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB7, 5, Some(false));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB3, 5, Some(true));
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB14, 6, None);
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PB23, 7, None);

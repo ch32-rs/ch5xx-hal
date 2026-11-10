@@ -64,19 +64,20 @@ pub enum Gain {
     Unity,
     /// 6 dB, two.
     X2,
-    /// 12 dB, four. Not available on CH582/CH583.
-    #[cfg(not(adc_ch583))]
+    /// 12 dB, four. Requires `CONVERT.PGA_GAIN2`.
+    #[cfg(adc_pga_gain2)]
     X4,
-    /// 18 dB, eight. Not available on CH582/CH583.
-    #[cfg(not(adc_ch583))]
+    /// 18 dB, eight. Requires `CONVERT.PGA_GAIN2`.
+    #[cfg(adc_pga_gain2)]
     X8,
-    /// 24 dB, sixteen. Not available on CH582/CH583.
-    #[cfg(not(adc_ch583))]
+    /// 24 dB, sixteen. Requires `CONVERT.PGA_GAIN2`.
+    #[cfg(adc_pga_gain2)]
     X16,
 }
 
 impl Gain {
-    /// The two `CFG.PGA_GAIN10` bits and the `CONVERT.PGA_GAIN2` direction bit.
+    /// The two gain bits and, where the block has it, the `CONVERT.PGA_GAIN2`
+    /// direction bit.
     fn fields(self) -> (u8, bool) {
         // The low two bits select -12, -6, 0 and 6 dB. The direction bit shifts
         // that selection up, so 6 dB is the low bits alone and the higher gains
@@ -86,28 +87,41 @@ impl Gain {
             Gain::Div2 => (1, false),
             Gain::Unity => (2, false),
             Gain::X2 => (3, false),
-            #[cfg(not(adc_ch583))]
+            #[cfg(adc_pga_gain2)]
             Gain::X4 => (1, true),
-            #[cfg(not(adc_ch583))]
+            #[cfg(adc_pga_gain2)]
             Gain::X8 => (2, true),
-            #[cfg(not(adc_ch583))]
+            #[cfg(adc_pga_gain2)]
             Gain::X16 => (3, true),
         }
     }
 }
 
 /// Converter clock divider, from the vendor's sampling-frequency enum.
+///
+/// CH595 replaced the divider with a direct 16/32 MHz selection, so its enum
+/// has two variants instead of four.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum SampleClock {
     /// Divide by one on newer blocks; 3.2 MHz from CK32M on CH582/CH583.
+    #[cfg(not(adc_ch595))]
     Divide1 = 0,
     /// 8 MHz from a 32 MHz source, 4 MHz otherwise. The vendor's default.
+    #[cfg(not(adc_ch595))]
     Divide2 = 1,
     /// 5.33 MHz from a 32 MHz source, 2.67 MHz otherwise.
+    #[cfg(not(adc_ch595))]
     Divide3 = 2,
     /// 4 MHz from a 32 MHz source, 2 MHz otherwise.
+    #[cfg(not(adc_ch595))]
     Divide4 = 3,
+    /// 16 MHz sampling clock (CH595).
+    #[cfg(adc_ch595)]
+    Mhz16 = 0,
+    /// 8 MHz sampling clock (CH595).
+    #[cfg(adc_ch595)]
+    Mhz8 = 1,
 }
 
 /// Converter configuration.
@@ -124,7 +138,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             gain: Gain::Unity,
+            #[cfg(not(adc_ch595))]
             sample_clock: SampleClock::Divide2,
+            #[cfg(adc_ch595)]
+            sample_clock: SampleClock::Mhz16,
         }
     }
 }
@@ -273,10 +290,13 @@ impl<'d, T: Instance> Adc<'d, T> {
         // The single-ended unity-gain setup also turns the input buffer on,
         // which the shorted input needs.
         let channel = regs.channel().read().ch_inx();
-        // The CH583 SDK specifies channel 1 for the shorted-input test.
+        // The CH583 SDK specifies channel 1 and the CH573 SDK channel 6 for
+        // the shorted-input test; CH585 and CH595 measure on the current one.
         #[cfg(adc_ch583)]
         let calibration_channel = 1;
-        #[cfg(not(adc_ch583))]
+        #[cfg(adc_ch573)]
+        let calibration_channel = 6;
+        #[cfg(not(any(adc_ch583, adc_ch573)))]
         let calibration_channel = channel;
         enable::<T>(calibration_channel, unity, false);
         regs.cfg().modify(|w| w.set_ofs_test(true));
@@ -297,9 +317,9 @@ impl<'d, T: Instance> Adc<'d, T> {
         let reference = i32::from((calib >> 16) as u16);
         let reference = if reference == 0 { 25 } else { reference };
         let counts = i32::from(calib as u16);
-        #[cfg(adc_ch583)]
+        #[cfg(any(adc_ch573, adc_ch583))]
         let delta = (i32::from(sample) - counts) * 10 / 27;
-        #[cfg(not(adc_ch583))]
+        #[cfg(not(any(adc_ch573, adc_ch583)))]
         let delta = (i32::from(sample) - counts) * 100 / 283;
         reference + delta
     }
@@ -329,10 +349,11 @@ fn convert_once<T: Instance>() -> Result<u16, Error> {
     let deadline = deadline();
     loop {
         let state = regs.convert().read();
-        // The CH583 SDK polls START alone; its EOC_X polarity is not used.
-        #[cfg(adc_ch583)]
+        // The CH573/CH583/CH595 SDKs poll START alone; EOC_X is not used
+        // there.
+        #[cfg(any(adc_ch573, adc_ch583, adc_ch595))]
         let complete = !state.start();
-        #[cfg(not(adc_ch583))]
+        #[cfg(not(any(adc_ch573, adc_ch583, adc_ch595)))]
         let complete = !state.start() && !state.eoc_x();
         if complete {
             return Ok(u16::from(regs.data().read().data()));
@@ -810,11 +831,10 @@ impl<'d, T: Instance> Adc<'d, T> {
             w.set_auto_en(false);
             w.set_dma_enable(false);
             w.set_ie_dma_end(false);
-            #[cfg(adc_ch583)]
-            {
-                w.set_dma_loop(false);
-                w.set_cont_en(false);
-            }
+            #[cfg(adc_dma_loop)]
+            w.set_dma_loop(false);
+            #[cfg(adc_cont_en)]
+            w.set_cont_en(false);
         });
         self.begin(channel);
         // Discard the stale conversion before arming DMA, as for blocking reads.
@@ -826,10 +846,10 @@ impl<'d, T: Instance> Adc<'d, T> {
             w.set_if_dma_end(true);
             w.set_if_end(true);
         });
-        // CH583 uses byte offsets; the newer blocks use halfword offsets.
-        #[cfg(adc_ch583)]
+        // CH583/CH573 use byte offsets; the newer blocks use halfword offsets.
+        #[cfg(adc_dma_bytes)]
         let (start, end) = (descriptor.start, descriptor.end);
-        #[cfg(not(adc_ch583))]
+        #[cfg(not(adc_dma_bytes))]
         let (start, end) = (descriptor.start >> 1, descriptor.end >> 1);
         regs.dma_beg().write(|w| w.set_dma_beg(start as u16));
         regs.dma_end().write(|w| w.set_dma_end(end as u16));
@@ -876,7 +896,7 @@ impl<'a, 'd, T: Instance> AutoTransfer<'a, 'd, T> {
     /// Samples stored so far, counted from `DMA_NOW`.
     pub fn position(&self) -> usize {
         let now = u32::from(T::regs().dma_now().read().dma_now());
-        #[cfg(not(adc_ch583))]
+        #[cfg(not(adc_dma_bytes))]
         let now = now << 1;
         now.saturating_sub(self.descriptor.start) as usize / 2
     }
@@ -947,7 +967,11 @@ const BATTERY_CHANNEL: u8 = 14;
 const TEMPERATURE_CHANNEL: u8 = 15;
 
 /// Factory temperature calibration in the info flash, `ROM_CFG_TMP_25C`.
+#[cfg(not(adc_ch595))]
 const TEMPERATURE_CALIB: u32 = 0x0007_f014;
+/// CH595 keeps the temperature calibration word at a different address.
+#[cfg(adc_ch595)]
+const TEMPERATURE_CALIB: u32 = 0x0004_0230;
 
 /// Power the converter up on `channel`.
 ///
@@ -957,22 +981,28 @@ const TEMPERATURE_CALIB: u32 = 0x0007_f014;
 pub(crate) fn enable<T: Instance>(channel: u8, config: Config, differential: bool) {
     let regs = T::regs();
     // The touch-key block is the other user of this converter, and the vendor
-    // setup powers it down before an ADC conversion.
+    // setup powers it down before an ADC conversion. CH595's touch-key block
+    // has no power bit, so there is nothing to turn off there.
+    #[cfg(touchkey_pwr_on)]
     pac::TOUCHKEY.cfg().modify(|w| w.set_pwr_on(false));
     regs.channel().write(|w| w.set_ch_inx(channel));
     let (gain, gain2) = config.gain.fields();
     regs.cfg().write(|w| {
         w.set_buf_en(!differential);
         w.set_diff_en(differential);
-        #[cfg(adc_ch583)]
+        #[cfg(adc_pga_gain)]
         w.set_pga_gain(gain);
-        #[cfg(not(adc_ch583))]
+        #[cfg(adc_pga_gain10)]
         w.set_pga_gain10(gain);
+        // CH595's `CLK_DIV` is the single 16/32 MHz select bit.
+        #[cfg(adc_ch595)]
+        w.set_clk_div(config.sample_clock as u8 != 0);
+        #[cfg(not(adc_ch595))]
         w.set_clk_div(config.sample_clock as u8);
     });
-    #[cfg(not(adc_ch583))]
+    #[cfg(adc_pga_gain2)]
     regs.convert().modify(|w| w.set_pga_gain2(gain2));
-    #[cfg(adc_ch583)]
+    #[cfg(not(adc_pga_gain2))]
     let _ = gain2;
     regs.cfg().modify(|w| w.set_power_on(true));
 }
@@ -981,7 +1011,10 @@ pub(crate) fn enable<T: Instance>(channel: u8, config: Config, differential: boo
 fn temperature_config() -> Config {
     Config {
         gain: Gain::X2,
+        #[cfg(not(adc_ch595))]
         sample_clock: SampleClock::Divide1,
+        #[cfg(adc_ch595)]
+        sample_clock: SampleClock::Mhz16,
     }
 }
 
@@ -1166,9 +1199,14 @@ impl_channel!(PA2, 7, 2, 0);
 impl_channel!(PA1, 8, 1, 0);
 #[cfg(any(adc_ch585, adc_ch583))]
 impl_channel!(PA0, 9, 0, 0);
-#[cfg(adc_ch592)]
+// CH573 has no AIN6/AIN7 pins, while CH595 moves them to PA10/PA11.
+#[cfg(adc_ch595)]
+impl_channel!(PA10, 6, 10, 0);
+#[cfg(adc_ch595)]
+impl_channel!(PA11, 7, 11, 0);
+#[cfg(any(adc_ch573, adc_ch592, adc_ch595))]
 impl_channel!(PB0, 8, 0, 1);
-#[cfg(adc_ch592)]
+#[cfg(any(adc_ch573, adc_ch592, adc_ch595))]
 impl_channel!(PB6, 9, 6, 1);
 impl_channel!(PA6, 10, 6, 0);
 impl_channel!(PA7, 11, 7, 0);

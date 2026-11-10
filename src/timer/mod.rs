@@ -85,15 +85,17 @@ macro_rules! instance {
 }
 #[cfg(not(feature = "time-driver-tmr0"))]
 instance!(TMR0, set_pin_tmr0, tmr0_nodma, remap_tmr0);
-#[cfg(not(feature = "time-driver-tmr1"))]
+// CH572/CH570 have one timer only.
+#[cfg(all(tmr1, not(feature = "time-driver-tmr1")))]
 instance!(TMR1, set_pin_tmr1, tmr1_nodma, remap_tmr1);
-#[cfg(not(feature = "time-driver-tmr2"))]
+#[cfg(all(tmr2, not(feature = "time-driver-tmr2")))]
 instance!(TMR2, set_pin_tmr2, tmr2_nodma, remap_tmr2);
-#[cfg(not(feature = "time-driver-tmr3"))]
+#[cfg(all(tmr3, not(feature = "time-driver-tmr3")))]
 instance!(TMR3, set_pin_tmr3, tmr3_nodma, remap_tmr3);
-#[cfg(not(feature = "time-driver-tmr0"))]
+// The NFC clock mode exists only on dies with an NFC front end.
+#[cfg(all(nfc_clock, not(feature = "time-driver-tmr0")))]
 impl NfcClockInstance for peripherals::TMR0 {}
-#[cfg(not(feature = "time-driver-tmr3"))]
+#[cfg(all(nfc_clock, tmr3, not(feature = "time-driver-tmr3")))]
 impl NfcClockInstance for peripherals::TMR3 {}
 
 mod sealed {
@@ -102,6 +104,8 @@ mod sealed {
 /// External TMR input/output pin with a checked remap selection.
 #[allow(private_bounds)]
 pub trait TimerPin<T: Instance, const REMAP: u8>: crate::gpio::Pin + sealed::Pin {}
+// Unused on a die whose timer pins the family file does not route.
+#[allow(unused_macros)]
 macro_rules! pin {
     ($tmr:ident, $remap:literal, $pin:ident) => {
         impl sealed::Pin for peripherals::$pin {}
@@ -112,17 +116,17 @@ macro_rules! pin {
 pin!(TMR0, 0, PA9);
 #[cfg(all(not(feature = "time-driver-tmr0"), remap_tmr0))]
 pin!(TMR0, 1, PB23);
-#[cfg(all(not(feature = "time-driver-tmr1"), remap_tmr1))]
+#[cfg(all(tmr1, not(feature = "time-driver-tmr1"), remap_tmr1))]
 pin!(TMR1, 0, PA10);
-#[cfg(all(not(feature = "time-driver-tmr1"), remap_tmr1))]
+#[cfg(all(tmr1, not(feature = "time-driver-tmr1"), remap_tmr1))]
 pin!(TMR1, 1, PB10);
-#[cfg(all(not(feature = "time-driver-tmr2"), remap_tmr2))]
+#[cfg(all(tmr2, not(feature = "time-driver-tmr2"), remap_tmr2))]
 pin!(TMR2, 0, PA11);
-#[cfg(all(not(feature = "time-driver-tmr2"), remap_tmr2))]
+#[cfg(all(tmr2, not(feature = "time-driver-tmr2"), remap_tmr2))]
 pin!(TMR2, 1, PB11);
-#[cfg(all(not(feature = "time-driver-tmr3"), remap_tmr3))]
+#[cfg(all(tmr3, not(feature = "time-driver-tmr3"), remap_tmr3))]
 pin!(TMR3, 0, PB22);
-#[cfg(all(not(feature = "time-driver-tmr3"), remap_tmr3))]
+#[cfg(all(tmr3, not(feature = "time-driver-tmr3"), remap_tmr3))]
 pin!(TMR3, 1, PA2);
 
 /// One handler for the instance's currently enabled timer events.

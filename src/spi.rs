@@ -1209,7 +1209,12 @@ impl sealed::Instance for peripherals::SPI0 {
     }
 
     unsafe fn set_remap(remapped: bool) {
+        // CH572/CH570 select the alternate SCK with `PIN_ALTERNATE_H.SPI_CLK`,
+        // which this single-bit API does not model yet.
+        #[cfg(pin_spi0)]
         pac::SYS.pin_alternate().modify(|w| w.set_pin_spi0(remapped));
+        #[cfg(not(pin_spi0))]
+        let _ = remapped;
     }
 
     #[cfg(feature = "embassy")]
@@ -1220,6 +1225,11 @@ impl sealed::Instance for peripherals::SPI0 {
 }
 
 impl Instance for peripherals::SPI0 {
+    // CH581's startup file names the shared SPI0/PWMX line `SPI`; the other
+    // dies with this block call it `SPI0`.
+    #[cfg(ch581)]
+    type Interrupt = interrupt::typelevel::SPI;
+    #[cfg(not(ch581))]
     type Interrupt = interrupt::typelevel::SPI0;
 }
 
@@ -1279,10 +1289,14 @@ macro_rules! impl_pins {
 // `PIN_SPI0` clear is PA13/PA14/PA15, set is PB13/PB14/PB15.
 // CH582/CH583 routing is documented in the CH583/CH582 datasheet pin table
 // and the CH583 EVT register header, despite missing family pin metadata.
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pins!(SPI0, 0, sck: PA13, mosi: PA14, miso: PA15);
-#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
+#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pins!(SPI0, 1, sck: PB13, mosi: PB14, miso: PB15);
+// CH572/CH570: SCK PA5, MOSI PA7, MISO PA6 (SDK `SPI_8bit` example, default
+// routing). Chip select is PA4, driven from GPIO like the other dies.
+#[cfg(ch572)]
+impl_pins!(SPI0, 0, sck: PA5, mosi: PA7, miso: PA6);
 // SPI1 has no remap field. PA0 is SCK, PA1 is MOSI, PA2 is MISO. CH583 has the
 // controller too, but no pins are recorded for it.
 #[cfg(ch585)]

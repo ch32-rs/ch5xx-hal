@@ -157,8 +157,14 @@ impl Retention {
     /// No optional domain.
     pub const NONE: Self = Self(0);
     /// The retention SRAM block (bit 1, 32 KB on CH585/CH584).
-    #[cfg(not(any(power_sleep_ch59x, power_plan_ch58x)))]
+    #[cfg(all(pwr_ram32k, not(any(power_sleep_ch59x, power_plan_ch58x))))]
     pub const RAM32K: Self = Self(1 << 1);
+    /// The retention SRAM block (bit 1, 2 KB on CH573).
+    #[cfg(all(pwr_ram2k, not(any(power_sleep_ch59x, power_plan_ch58x))))]
+    pub const RAM2K: Self = Self(1 << 1);
+    /// The retention SRAM block (bit 1, 12 KB on CH572).
+    #[cfg(all(pwr_ram12k, not(any(power_sleep_ch59x, power_plan_ch58x))))]
+    pub const RAM12K: Self = Self(1 << 1);
     /// The retention SRAM block (bit 1, 2 KB on CH592).
     #[cfg(all(power_sleep_ch59x, ch592))]
     pub const RAM2K: Self = Self(1 << 1);
@@ -169,8 +175,11 @@ impl Retention {
     #[cfg(power_plan_ch58x)]
     pub const RAM2K: Self = Self(1 << 1);
     /// The main SRAM block (bit 4, 96 KB on CH585/CH584).
-    #[cfg(not(any(power_sleep_ch59x, power_plan_ch58x)))]
+    #[cfg(all(pwr_ram96k, not(any(power_sleep_ch59x, power_plan_ch58x))))]
     pub const RAM96K: Self = Self(1 << 4);
+    /// The main SRAM block (bit 4, 16 KB on CH573).
+    #[cfg(all(pwr_ram16k, not(any(power_sleep_ch59x, power_plan_ch58x))))]
+    pub const RAM16K: Self = Self(1 << 4);
     /// The main SRAM block (bit 4, 24 KB on CH592).
     #[cfg(all(power_sleep_ch59x, ch592))]
     pub const RAM24K: Self = Self(1 << 4);
@@ -225,7 +234,10 @@ pub fn sleep(retention: Retention, wake: WakeSources, delay: WakeDelay) {
 fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
     #[cfg(power_plan_ch58x)]
     {
-        assert!(retention.is_none(), "power: CH58x sleep wake sequence is not implemented");
+        assert!(
+            retention.is_none(),
+            "power: CH58x sleep wake sequence is not implemented"
+        );
         assert!(delay != WakeDelay::None, "power: CH58x prohibits this wake delay");
         assert!(
             !wake.contains(WakeSources::BATTERY),
@@ -279,9 +291,9 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
         });
 
         if !wake.is_empty() {
-            // CH592/CH595 have no USB2 wake bit, so reject the source instead
-            // of silently ignoring it.
-            #[cfg(power_sleep_ch59x)]
+            // Parts without a second USB controller have no USB2 wake bit, so
+            // reject the source instead of silently ignoring it.
+            #[cfg(not(slp_usb2_wake))]
             assert!(
                 !wake.contains(WakeSources::USB_HS),
                 "this chip has no high-speed USB wake source"
@@ -292,13 +304,16 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
                 // wake latency.
                 value.set_wake_ev_mode(true);
                 value.set_slp_usb_wake(wake.contains(WakeSources::USB_FS));
-                #[cfg(not(power_sleep_ch59x))]
+                #[cfg(slp_usb2_wake)]
                 value.set_slp_usb2_wake(wake.contains(WakeSources::USB_HS));
                 value.set_slp_rtc_wake(wake.contains(WakeSources::RTC));
                 value.set_slp_gpio_wake(wake.contains(WakeSources::GPIO));
                 value.set_slp_bat_wake(wake.contains(WakeSources::BATTERY));
+                #[cfg(not(wake_dly_mod))]
+                value.set_wake_delay(!matches!(delay, WakeDelay::Long));
                 sys.slp_wake_ctrl().write_value(value);
             });
+            #[cfg(wake_dly_mod)]
             rcc::with_safe_access(|| {
                 sys.slp_power_ctrl().modify(|w| w.set_wake_dly_mod(delay as u8));
             });
@@ -359,13 +374,22 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
                         w.set_pwr_must_0010(0b0010);
                         w.set_pwr_core(true);
                         w.set_pwr_xrom(true);
+                        #[cfg(pwr_ram32k)]
                         w.set_pwr_ram32k(retention.contains(Retention::RAM32K));
+                        #[cfg(pwr_ram2k)]
+                        w.set_pwr_ram2k(retention.contains(Retention::RAM2K));
+                        #[cfg(pwr_ram96k)]
                         w.set_pwr_ram96k(retention.contains(Retention::RAM96K));
+                        #[cfg(pwr_ram16k)]
+                        w.set_pwr_ram16k(retention.contains(Retention::RAM16K));
+                        #[cfg(pwr_ram12k)]
+                        w.set_pwr_ram12k(retention.contains(Retention::RAM12K));
                         w.set_pwr_extend(retention.contains(Retention::USB_RF));
                         w.set_pwr_plan_en(true);
                     });
                     // The PMU runs its wake logic from the internal RC oscillator,
                     // so it has to stay powered while the PLL and HSE stop.
+                    #[cfg(hfck_rc16m_pon)]
                     sys.hfck_pwr_ctrl().modify(|w| w.set_clk_rc16m_pon(true));
                 }
             });
