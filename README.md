@@ -3,11 +3,11 @@
 Rust HAL for WCH CH5xx BLE microcontrollers, with blocking APIs and optional
 Embassy support.
 
-[Documentation](https://docs.rs/ch5xx-hal) · [CH585 examples](examples/ch585) · [CH592 examples](examples/ch592)
+[Documentation](https://docs.rs/ch5xx-hal) · [CH585 examples](examples/ch585) · [CH592 examples](examples/ch592) · [CH582 examples](examples/ch582)
 
 > **Note**
-> This crate is under development and its API may change. CH585 and CH592 are
-> the chips exercised on hardware so far.
+> This crate is under development and its API may change. CH585, CH592 and
+> CH582 are the chips exercised on hardware so far.
 
 ## Supported devices
 
@@ -15,6 +15,18 @@ Embassy support.
 | --- | --- | --- |
 | CH585 | QingKe V3C | Exercised on hardware |
 | CH592 | QingKe V3C | Clocks, delay, GPIO, UART0, SPI0, ADC, RTC, watchdog, PWM, timers, power and TouchKey exercised on hardware; USBFS builds, host enumeration and I2C0 pending |
+| CH582 | QingKe V4A | GPIO, UART0, SPI0, I2C0, ADC, watchdog, timers and PWM exercised on hardware; USBFS, RTC, TouchKey and sleep pending |
+| CH584 | QingKe V3C | Builds; no board validation |
+| CH583 | QingKe V4A | Builds; no board validation |
+| CH581 | QingKe V3C | Builds; no board validation |
+| CH595 | QingKe V3C | Builds; no board validation |
+| CH573 | QingKe V3A | Builds; no board validation |
+| CH572 | QingKe V3A | Builds; no board validation |
+| CH570 | QingKe V3A | Builds; no board validation |
+
+CH571, CH584X and CH591 reuse these family files but remove or add blocks the
+shared metadata does not model, so they do not have a feature yet. CH564, CH565
+and CH569 use different cores or GPIO layouts and are outside this HAL.
 
 Register access comes from
 [`ch5xx-metapac`](https://github.com/ch32-rs/ch5xx-data). Select exactly one
@@ -55,21 +67,24 @@ differ per die select a variant (CH592 uses `pwmx_ch592`, `usb_ch592`,
 let p = ch5xx_hal::init(ch5xx_hal::rcc::Config::default().into());
 ```
 
-The reset clock is HSI 16 MHz divided by 3 on CH585, and the 32 MHz crystal
-divided by 5 (6.4 MHz) on CH592, which has no internal high-speed oscillator.
+The reset clock is HSI 16 MHz divided by 3 on CH581/CH584/CH585/CH595, and the
+32 MHz crystal divided by 5 (6.4 MHz) on CH572/CH573/CH592/CH58x, which have no
+internal high-speed oscillator.
 Select the final clock during initialization (`Config::HSI_PLL_*`,
 `Config::PLL_*`, `Config::hse_nearest`): runtime changes do not rebuild
 clock-dependent drivers.
 
 ## Required configuration
 
-Build for `riscv32imc-unknown-none-elf`, not `riscv32imac`: the QingKe V3C has
-no usable A extension. Shared atomics use `portable-atomic` with the
-`critical-section` feature.
+Select the target by core: `riscv32imc-unknown-none-elf` for the QingKe V3C
+(CH581, CH584, CH585, CH592, CH595) and `riscv32imac-unknown-none-elf` for the
+V3A/V4A parts (CH570, CH572, CH573, CH582, CH583). The V3C has no usable A
+extension.
+Shared atomics use `portable-atomic` with the `critical-section` feature.
 
 Do not enable RISC-V extensions blindly: CH585 reports the B extension and
 executes `+b` code, while CH592 reports A and no B, and a `+b` build traps as an
-illegal instruction.
+illegal instruction. The other V3C parts have not been checked for B support.
 
 With `embassy` enabled, select exactly one of `time-driver-systick` or
 `time-driver-tmr0` … `time-driver-tmr3`; none or several is a compile error.
