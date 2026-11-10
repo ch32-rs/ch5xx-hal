@@ -467,21 +467,11 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
         }
 
         if retention.is_some() {
-            pac::SYSTICK
-                .cnth()
-                .write_value(pac::systick::regs::Cnth(saved_stk.2));
-            pac::SYSTICK
-                .cntl()
-                .write_value(pac::systick::regs::Cntl(saved_stk.1));
-            pac::SYSTICK
-                .cmphr()
-                .write_value(pac::systick::regs::Cmphr(saved_stk.4));
-            pac::SYSTICK
-                .cmplr()
-                .write_value(pac::systick::regs::Cmplr(saved_stk.3));
-            pac::SYSTICK
-                .ctlr()
-                .write_value(pac::systick::regs::Ctlr(saved_stk.0));
+            pac::SYSTICK.cnth().write_value(pac::systick::regs::Cnth(saved_stk.2));
+            pac::SYSTICK.cntl().write_value(pac::systick::regs::Cntl(saved_stk.1));
+            pac::SYSTICK.cmphr().write_value(pac::systick::regs::Cmphr(saved_stk.4));
+            pac::SYSTICK.cmplr().write_value(pac::systick::regs::Cmplr(saved_stk.3));
+            pac::SYSTICK.ctlr().write_value(pac::systick::regs::Ctlr(saved_stk.0));
         }
     });
 }
