@@ -1,8 +1,10 @@
 //! Embassy time driver on a TMRx peripheral.
 //!
 //! Selected by one of the `time-driver-tmr0` … `time-driver-tmr3` features.
-//! All four CH585 timers have local DMA. NFC PICC reserves TMR0/TMR3 and WCH's
-//! BLE examples also use TMR3; choose the timebase for the application's needs.
+//! All four CH585 timers have local DMA. CH592 builds a smaller block for
+//! TMR0/TMR3 without the DMA registers, which the timebase does not need. NFC
+//! PICC reserves TMR0/TMR3 and WCH's BLE examples also use TMR3; choose the
+//! timebase for the application's needs.
 //!
 //! # Why use this instead of SysTick
 //!
@@ -44,9 +46,51 @@ use crate::pac;
 // too so that build reports that one message rather than a duplicate-definition
 // wall from `tmr()`/`IRQ`.
 
+// Some dies omit the timer-local DMA registers on TMR0/TMR3 (CH592, CH595).
+// The timebase only touches the counter, end value, flags and interrupt
+// enable, which the no-DMA block also has, so select the instance's type.
+#[cfg(all(feature = "time-driver-tmr0", tmr0_nodma))]
+type Timebase = crate::pac::tmr::TmrNodma;
+#[cfg(all(feature = "time-driver-tmr0", not(tmr0_nodma)))]
+type Timebase = crate::pac::tmr::TmrFull;
+#[cfg(all(not(feature = "time-driver-tmr0"), feature = "time-driver-tmr1", tmr1_nodma))]
+type Timebase = crate::pac::tmr::TmrNodma;
+#[cfg(all(not(feature = "time-driver-tmr0"), feature = "time-driver-tmr1", not(tmr1_nodma)))]
+type Timebase = crate::pac::tmr::TmrFull;
+#[cfg(all(
+    not(feature = "time-driver-tmr0"),
+    not(feature = "time-driver-tmr1"),
+    feature = "time-driver-tmr2",
+    tmr2_nodma
+))]
+type Timebase = crate::pac::tmr::TmrNodma;
+#[cfg(all(
+    not(feature = "time-driver-tmr0"),
+    not(feature = "time-driver-tmr1"),
+    feature = "time-driver-tmr2",
+    not(tmr2_nodma)
+))]
+type Timebase = crate::pac::tmr::TmrFull;
+#[cfg(all(
+    not(feature = "time-driver-tmr0"),
+    not(feature = "time-driver-tmr1"),
+    not(feature = "time-driver-tmr2"),
+    feature = "time-driver-tmr3",
+    tmr3_nodma
+))]
+type Timebase = crate::pac::tmr::TmrNodma;
+#[cfg(all(
+    not(feature = "time-driver-tmr0"),
+    not(feature = "time-driver-tmr1"),
+    not(feature = "time-driver-tmr2"),
+    feature = "time-driver-tmr3",
+    not(tmr3_nodma)
+))]
+type Timebase = crate::pac::tmr::TmrFull;
+
 /// The TMR instance this build drives.
 #[inline(always)]
-fn tmr() -> &'static crate::pac::tmr::TmrFull {
+fn tmr() -> &'static Timebase {
     #[cfg(feature = "time-driver-tmr0")]
     {
         &crate::pac::TMR0

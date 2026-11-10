@@ -20,12 +20,13 @@ use qingke_rt::entry;
 fn main() -> ! {
     let p = hal::init(Default::default());
 
-    let mut adc = Adc::new_pin(p.ADC, p.PA4, Config::default());
+    let mut adc = Adc::new(p.ADC, Config::default());
+    let mut pin = p.PA4;
     let offset = adc.calibrate().unwrap();
     defmt::info!("PA4 offset {}", offset);
 
     for _ in 0..4 {
-        match adc.read() {
+        match adc.blocking_read(&mut pin) {
             Ok(sample) => defmt::info!("PA4: {} counts", sample as i16 + offset),
             Err(hal::adc::Error::Timeout) => defmt::error!("timed out"),
             Err(_) => defmt::error!("failed"),

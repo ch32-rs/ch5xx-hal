@@ -34,7 +34,9 @@
 //! `PIN_CONFIG.PB16_8_SEL` is a separate select and is left untouched.
 
 use core::convert::Infallible;
+#[cfg(feature = "embassy")]
 use core::future::Future;
+#[cfg(feature = "embassy")]
 use core::marker::PhantomData;
 #[cfg(feature = "embassy")]
 use core::task::Poll;

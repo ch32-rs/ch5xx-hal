@@ -5,10 +5,11 @@
 //! outside that range is rejected rather than truncated. Fast mode stops at
 //! 400 kHz.
 //!
-//! The default pins are PB13 (SCL) and PB12 (SDA). `PIN_ALTERNATE.PIN_I2C`
-//! moves the pair to PB21 and PB20. The pins are open-drain in the peripheral,
-//! so the pad is left as an input with its pull-up and the controller drives the
-//! line. An external pull-up is still required.
+//! The default pins are PB13 (SCL) and PB12 (SDA) on CH585, and PB15 (SCL)
+//! and PB14 (SDA) on CH592. On CH585 `PIN_ALTERNATE.PIN_I2C` moves the pair to
+//! PB21 and PB20; CH592 has no remap. The pins are open-drain in the
+//! peripheral, so the pad is left as an input with its pull-up and the
+//! controller drives the line. An external pull-up is still required.
 //!
 //! [`I2c::new_blocking`] polls `STAR1` and gives up after one millisecond,
 //! counted from the system clock, so it does not depend on the Embassy time
@@ -196,8 +197,9 @@ pub struct I2c<'d, T: Instance, M: Mode> {
 impl<'d, T: Instance> I2c<'d, T, Blocking> {
     /// Create a blocking master.
     ///
-    /// `REMAP` is `0` for PB13/PB12 and `1` for PB21/PB20. The pins must match:
-    /// a default pin cannot be passed with the remapped value.
+    /// `REMAP` is `0` for the default pair (PB13/PB12 on CH585, PB15/PB14 on
+    /// CH592) and `1` for PB21/PB20 on CH585. The pins must match: a default
+    /// pin cannot be passed with the remapped value.
     pub fn new_blocking<const REMAP: u8>(
         _peri: Peri<'d, T>,
         scl: Peri<'d, impl SclPin<T, REMAP>>,
@@ -1310,9 +1312,15 @@ macro_rules! impl_pins {
     };
 }
 
-// Datasheet table 7-8. `PIN_I2C` clear is PB13/PB12, set is PB21/PB20.
+// Datasheet table 7-8. On CH585 `PIN_I2C` clear is PB13/PB12 and set is
+// PB21/PB20. CH592 routes I2C0 to PB15 (SCL) and PB14 (SDA) with no remap
+// (CH592 datasheet table 7-7), so only that pair exists there.
+#[cfg(not(ch592))]
 impl_pins!(I2C0, 0, scl: [PB13], sda: [PB12]);
+#[cfg(not(ch592))]
 impl_pins!(I2C0, 1, scl: [PB21], sda: [PB20]);
+#[cfg(ch592)]
+impl_pins!(I2C0, 0, scl: [PB15], sda: [PB14]);
 
 // --- embedded-hal ----------------------------------------------------------
 

@@ -1,7 +1,7 @@
 //! Interval capture with mode-dependent timeout/level metadata.
 
 use super::low_level::Timer;
-use super::{CaptureEdge, CaptureWord, Error, Events, Instance, PeriodTicks, TimerPin};
+use super::{CaptureEdge, CaptureWord, DmaInstance, Error, Events, Instance, PeriodTicks, TimerPin};
 use crate::gpio::{Flex, Pull};
 use crate::{dma, Peri};
 
@@ -38,6 +38,16 @@ impl<'d, T: Instance> InputCapture<'d, T> {
         }
         Ok(unsafe { self.inner.pop_capture() })
     }
+    #[cfg(feature = "embassy")]
+    pub fn bind_interrupt(
+        &mut self,
+        irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, super::InterruptHandler<T>>,
+    ) {
+        self.inner.bind_interrupt(irq);
+    }
+}
+
+impl<'d, T: DmaInstance> InputCapture<'d, T> {
     pub fn read<'a>(
         &'a mut self,
         buffer: &'static mut [u32],
@@ -80,12 +90,5 @@ impl<'d, T: Instance> InputCapture<'d, T> {
                 dma::RunMode::Circular,
             )
         }
-    }
-    #[cfg(feature = "embassy")]
-    pub fn bind_interrupt(
-        &mut self,
-        irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, super::InterruptHandler<T>>,
-    ) {
-        self.inner.bind_interrupt(irq);
     }
 }

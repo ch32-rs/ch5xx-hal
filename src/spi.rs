@@ -23,8 +23,9 @@
 //! examples drive it from GPIO, and so does [`chip_select`].
 //!
 //! The register block is not shared by every CH5xx. The driver compiles on the
-//! dies that use the CH585 layout (CH581, CH582, CH583, CH584, CH585) and is
-//! absent on the rest. Only CH585 has been run on a board. `SPI1` raises
+//! dies that use the FIFO layout (CH581, CH582, CH583, CH584, CH585, CH592) and
+//! is absent on the rest. CH592 has one controller and 16-bit DMA address
+//! registers. Only CH585 has been run on a board. `SPI1` raises
 //! `PWMX_SPI1`, the same line as the PWM block, so a later async driver has to
 //! share that handler rather than own it.
 
@@ -777,7 +778,7 @@ impl<'a, 'd, T: DmaInstance, M: Mode> DmaTransfer<'a, 'd, T, M> {
         let Some(descriptor) = self.descriptor else {
             return 0;
         };
-        let now = T::regs().dma_now().read().dma_now() & 0x0001_ffff;
+        let now = T::regs().dma_now().read().dma_now() as u32 & 0x0001_ffff;
         // `DMA_NOW` is the absolute SRAM offset, so this already counts every
         // completed chunk.
         let done = now.saturating_sub(descriptor.start) as usize;
@@ -857,8 +858,10 @@ impl<'a, 'd, T: DmaInstance, M: Mode> DmaTransfer<'a, 'd, T, M> {
             w.set_if_dma_end(true);
             w.set_if_fifo_ov(true);
         });
-        r.dma_beg().write(|w| w.set_dma_beg(start));
-        r.dma_end().write(|w| w.set_dma_end(end));
+        // Some dies encode the SRAM offset in a 16-bit register; their SRAM is
+        // smaller than 64 KiB, so the truncation is lossless there.
+        r.dma_beg().write(|w| w.set_dma_beg(start as _));
+        r.dma_end().write(|w| w.set_dma_end(end as _));
         // The length goes in before the sources are enabled: `IF_CNT_END` reads
         // as set while `TOTAL_CNT` is zero, and a source enabled in that window
         // would keep re-entering the handler.
@@ -1273,12 +1276,12 @@ macro_rules! impl_pins {
     };
 }
 
-// Datasheet table 7-8. `PIN_SPI0` clear is PA13/PA14/PA15, set is PB13/PB14/PB15.
-// CH582 and CH583 share this register block but their family files carry no pin
-// list, so the pins are named only where the metadata records them.
-#[cfg(any(ch581, ch584, ch585))]
+// `PIN_SPI0` clear is PA13/PA14/PA15, set is PB13/PB14/PB15.
+// CH582/CH583 routing is documented in the CH583/CH582 datasheet pin table
+// and the CH583 EVT register header, despite missing family pin metadata.
+#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
 impl_pins!(SPI0, 0, sck: PA13, mosi: PA14, miso: PA15);
-#[cfg(any(ch581, ch584, ch585))]
+#[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592))]
 impl_pins!(SPI0, 1, sck: PB13, mosi: PB14, miso: PB15);
 // SPI1 has no remap field. PA0 is SCK, PA1 is MOSI, PA2 is MISO. CH583 has the
 // controller too, but no pins are recorded for it.

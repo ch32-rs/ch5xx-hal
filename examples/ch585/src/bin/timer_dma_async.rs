@@ -7,7 +7,7 @@ use hal::interrupt::typelevel::Binding;
 use hal::timer::counter::Counter;
 use hal::timer::input_capture::InputCapture;
 use hal::timer::simple_pwm::SimplePwm;
-use hal::timer::{CaptureEdge, Instance, InterruptHandler, OutputPolarity, PeriodTicks, Repeat, TimerPin};
+use hal::timer::{CaptureEdge, DmaInstance, InterruptHandler, OutputPolarity, PeriodTicks, Repeat, TimerPin};
 use hal::Peri;
 use panic_halt as _;
 
@@ -34,7 +34,7 @@ static TX: [hal::dma::StaticBuffer<16>; 4] = [const { hal::dma::StaticBuffer::ne
 static RX: [hal::dma::StaticBuffer<16>; 4] = [const { hal::dma::StaticBuffer::new([0; 16]) }; 4];
 static CANCEL: [hal::dma::StaticBuffer<18>; 4] = [const { hal::dma::StaticBuffer::new([0; 18]) }; 4];
 static TX_CANCEL: [hal::dma::StaticBuffer<16>; 4] = [const { hal::dma::StaticBuffer::new([19_500; 16]) }; 4];
-async fn run<T: Instance, P: TimerPin<T, R>, I: Binding<T::Interrupt, InterruptHandler<T>> + Copy, const R: u8>(
+async fn run<T: DmaInstance, P: TimerPin<T, R>, I: Binding<T::Interrupt, InterruptHandler<T>> + Copy, const R: u8>(
     mut peri: Peri<'static, T>,
     mut pin: Peri<'static, P>,
     irq: I,

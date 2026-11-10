@@ -1,7 +1,7 @@
 //! Single-output FIFO-backed PWM, unlike CH32's independent duty registers.
 
 use super::low_level::Timer;
-use super::{Error, Instance, OutputPolarity, PeriodTicks, Repeat, TimerPin};
+use super::{DmaInstance, Error, Instance, OutputPolarity, PeriodTicks, Repeat, TimerPin};
 use crate::gpio::{Flex, Level, Speed};
 use crate::{dma, Peri};
 
@@ -46,6 +46,16 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
     pub fn period(&self) -> PeriodTicks {
         self.inner.period()
     }
+    #[cfg(feature = "embassy")]
+    pub fn bind_interrupt(
+        &mut self,
+        irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, super::InterruptHandler<T>>,
+    ) {
+        self.inner.bind_interrupt(irq);
+    }
+}
+
+impl<'d, T: DmaInstance> SimplePwm<'d, T> {
     /// Queue a complete waveform, retaining exclusive ownership of its storage.
     pub fn write<'a>(
         &'a mut self,
@@ -72,13 +82,6 @@ impl<'d, T: Instance> SimplePwm<'d, T> {
                 dma::RunMode::Once,
             )
         }
-    }
-    #[cfg(feature = "embassy")]
-    pub fn bind_interrupt(
-        &mut self,
-        irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, super::InterruptHandler<T>>,
-    ) {
-        self.inner.bind_interrupt(irq);
     }
 }
 impl<T: Instance> Drop for SimplePwm<'_, T> {

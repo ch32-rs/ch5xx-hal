@@ -1,7 +1,7 @@
 //! Low-power modes: halt and sleep.
 //!
-//! CH585/CH584 provide four power modes (datasheet 5.3). This module
-//! implements the two that keep the program running:
+//! CH585/CH584 (datasheet 5.3) and CH592/CH595 (datasheet 5.1) provide four
+//! power modes. This module implements the two that keep the program running:
 //!
 //! | Mode | Core | Clock | Main LDO | Typical wake time |
 //! | --- | --- | --- | --- | --- |
@@ -33,13 +33,15 @@
 //!
 //! # Why this does not copy WCH's sequence
 //!
-//! WCH's `LowPower_Halt`/`LowPower_Sleep` first switch `CLK_CFG` to a 4 MHz
-//! oscillator and patch `FLASH_CFG`/`FLASH_SCK` for that clock, because their
-//! wake path is copied to RAM (`__HIGH_CODE`) and FlashROM is powered down.
-//! This driver leaves `CLK_CFG` and the FlashROM controller alone: the PMU
-//! restarts the configured oscillators and applies the programmed wake delay
-//! before the core resumes (datasheet 5.2 and 22.5, `TSUCLK` includes the HSE
-//! and PLL startup time), so execution continues in FlashROM and
+//! WCH's `LowPower_Halt`/`LowPower_Sleep` switch `CLK_CFG` to a 4 MHz
+//! oscillator and patch `FLASH_CFG`/`FLASH_SCK` for that clock on
+//! CH585/CH584, because their wake path is copied to RAM (`__HIGH_CODE`) and
+//! FlashROM is powered down; the CH59x versions keep the clock but reset the
+//! FlashROM controller and power the FlashROM down the same way. This driver
+//! leaves `CLK_CFG`, the FlashROM controller and the FlashROM power alone: the
+//! PMU restarts the configured oscillators and applies the programmed wake
+//! delay before the core resumes (datasheet 5.2 and 22.5, `TSUCLK` includes
+//! the HSE and PLL startup time), so execution continues in FlashROM and
 //! [`crate::rcc::clocks`] stays valid. The price is current: the clock tree
 //! keeps its full speed in halt, and `sleep` retains `PWR_XROM` instead of
 //! powering the FlashROM down.
@@ -78,8 +80,7 @@
 
 use core::ops::BitOr;
 
-use crate::pac;
-use crate::rcc;
+use crate::{pac, rcc};
 
 /// Wake event sources, written to `SLP_WAKE_CTRL` for the sleep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,7 +91,8 @@ impl WakeSources {
     pub const NONE: Self = Self(0);
     /// Full-speed USB resume.
     pub const USB_FS: Self = Self(0x01);
-    /// High-speed USB resume.
+    /// High-speed USB resume on CH585 and USB2 resume on CH582/CH583.
+    /// CH592/CH595 have no second USB controller and reject this source.
     pub const USB_HS: Self = Self(0x02);
     /// RTC trigger compare.
     pub const RTC: Self = Self(0x08);
@@ -121,9 +123,9 @@ impl BitOr for WakeSources {
 /// Number of clock cycles the PMU waits after a wake event before the core
 /// resumes (`SLP_POWER_CTRL.WAKE_DLY_MOD`).
 ///
-/// The datasheet (5.2) adds `TSUCLK` to every value; `TSUCLK` already contains
-/// the HSE and PLL startup time. [`WakeDelay::Long`] is the safe choice while
-/// `CLK_CFG` keeps a high-speed source.
+/// The datasheet (5.2) adds `TSUCLK` to each delay; depending on the mode and
+/// configuration it may include HSE and PLL startup time. Consult the chip's
+/// wake sequence before selecting a delay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WakeDelay {
@@ -133,7 +135,8 @@ pub enum WakeDelay {
     Short = 0b01,
     /// 70 cycles plus oscillator startup.
     VeryShort = 0b10,
-    /// 8 cycles plus oscillator startup; the oscillator ramp is not covered.
+    /// 8 cycles plus oscillator startup on supported chips. Prohibited on
+    /// CH582/CH583; selecting it there panics before touching hardware.
     None = 0b11,
 }
 
@@ -143,20 +146,40 @@ pub enum WakeDelay {
 /// path can execute from FlashROM. Everything else is optional.
 ///
 /// The stack and statics live in the main SRAM, so a `sleep` that returns
-/// normally needs [`Retention::RAM96K`]; the linker does not separate the two
-/// SRAM blocks, so [`Retention::RAM32K`] is needed as well whenever data may
-/// have been placed in it. Keeping both, as WCH's example does, is the safe
-/// choice.
+/// normally needs the main block (bit 4); the linker does not separate the main
+/// and retention SRAM blocks, so the retention block (bit 1) is needed as well
+/// whenever data may have been placed in it. Keeping both, as WCH's example
+/// does, is the safe choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Retention(u16);
 
 impl Retention {
     /// No optional domain.
     pub const NONE: Self = Self(0);
-    /// The 32 KB retention SRAM.
+    /// The retention SRAM block (bit 1, 32 KB on CH585/CH584).
+    #[cfg(not(any(power_sleep_ch59x, power_plan_ch58x)))]
     pub const RAM32K: Self = Self(1 << 1);
-    /// The main 96 KB SRAM.
+    /// The retention SRAM block (bit 1, 2 KB on CH592).
+    #[cfg(all(power_sleep_ch59x, ch592))]
+    pub const RAM2K: Self = Self(1 << 1);
+    /// The retention SRAM block (bit 1, 24 KB on CH595).
+    #[cfg(all(power_sleep_ch59x, ch595))]
+    pub const RAM24K: Self = Self(1 << 1);
+    /// The retention SRAM block (bit 1, 2 KB on CH582/CH583).
+    #[cfg(power_plan_ch58x)]
+    pub const RAM2K: Self = Self(1 << 1);
+    /// The main SRAM block (bit 4, 96 KB on CH585/CH584).
+    #[cfg(not(any(power_sleep_ch59x, power_plan_ch58x)))]
     pub const RAM96K: Self = Self(1 << 4);
+    /// The main SRAM block (bit 4, 24 KB on CH592).
+    #[cfg(all(power_sleep_ch59x, ch592))]
+    pub const RAM24K: Self = Self(1 << 4);
+    /// The main SRAM block (bit 4, 8 KB on CH595).
+    #[cfg(all(power_sleep_ch59x, ch595))]
+    pub const RAM8K: Self = Self(1 << 4);
+    /// The main SRAM block (bit 4, 30 KB on CH582/CH583).
+    #[cfg(power_plan_ch58x)]
+    pub const RAM30K: Self = Self(1 << 4);
     /// USB and RF configuration.
     pub const USB_RF: Self = Self(1 << 3);
 
@@ -192,23 +215,33 @@ pub fn halt(wake: WakeSources, delay: WakeDelay) {
 /// what the wake path needs. The core and FlashROM are always retained.
 ///
 /// See [`halt`] for the wake sources and what is restored.
+///
+/// On CH582/CH583 this currently panics before touching hardware: the wake
+/// sequence must execute from SRAM and is not yet implemented.
 pub fn sleep(retention: Retention, wake: WakeSources, delay: WakeDelay) {
     enter(wake, delay, Some(retention));
 }
 
 fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
+    #[cfg(power_plan_ch58x)]
+    {
+        assert!(retention.is_none(), "power: CH58x sleep wake sequence is not implemented");
+        assert!(delay != WakeDelay::None, "power: CH58x prohibits this wake delay");
+        assert!(
+            !wake.contains(WakeSources::BATTERY),
+            "power: CH58x battery wake is not implemented"
+        );
+    }
     let sys = pac::SYS;
     let saved_sctlr = pac::PFIC.sctlr().read();
     let saved_wake = sys.slp_wake_ctrl().read();
     let saved_power = sys.slp_power_ctrl().read();
+    #[cfg(any(not(power_sleep_ch59x), ch595))]
     let saved_hfck = sys.hfck_pwr_ctrl().read();
     let saved_bat = sys.bat_det_ctrl().read();
     let saved_tune = pac::SYSTEM_CONTROL.xt32m_tune().read();
     let saved_plan = sys.power_plan().read();
-    let saved_enabled = (
-        pac::PFIC.isr1().read().0,
-        pac::PFIC.isr2().read().0,
-    );
+    let saved_enabled = (pac::PFIC.isr1().read().0, pac::PFIC.isr2().read().0);
     // The wake reset (LRW, datasheet 4.1.6) clears the counter registers of
     // the blocks that lost power, and SysTick is one of them: after `sleep`
     // its control register reads back 0 and every `Delay` busy-waits forever.
@@ -241,20 +274,25 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
         // its analog block. The crystal gets its 150% bias current so the HSE
         // restarts reliably after the clock has stopped, as WCH's driver does.
         rcc::with_safe_access(|| {
-            sys.bat_det_ctrl()
-                .write_value(pac::sys::regs::BatDetCtrl(0));
-            pac::SYSTEM_CONTROL
-                .xt32m_tune()
-                .modify(|w| w.set_xt32m_i_bias(0b11));
+            sys.bat_det_ctrl().write_value(pac::sys::regs::BatDetCtrl(0));
+            pac::SYSTEM_CONTROL.xt32m_tune().modify(|w| w.set_xt32m_i_bias(0b11));
         });
 
         if !wake.is_empty() {
+            // CH592/CH595 have no USB2 wake bit, so reject the source instead
+            // of silently ignoring it.
+            #[cfg(power_sleep_ch59x)]
+            assert!(
+                !wake.contains(WakeSources::USB_HS),
+                "this chip has no high-speed USB wake source"
+            );
             rcc::with_safe_access(|| {
                 let mut value = pac::sys::regs::SlpWakeCtrl(0);
                 // Remember short pulses; a button press can be shorter than the
                 // wake latency.
                 value.set_wake_ev_mode(true);
                 value.set_slp_usb_wake(wake.contains(WakeSources::USB_FS));
+                #[cfg(not(power_sleep_ch59x))]
                 value.set_slp_usb2_wake(wake.contains(WakeSources::USB_HS));
                 value.set_slp_rtc_wake(wake.contains(WakeSources::RTC));
                 value.set_slp_gpio_wake(wake.contains(WakeSources::GPIO));
@@ -262,29 +300,74 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
                 sys.slp_wake_ctrl().write_value(value);
             });
             rcc::with_safe_access(|| {
-                sys.slp_power_ctrl()
-                    .modify(|w| w.set_wake_dly_mod(delay as u8));
+                sys.slp_power_ctrl().modify(|w| w.set_wake_dly_mod(delay as u8));
             });
         }
 
         if let Some(retention) = retention {
             rcc::with_safe_access(|| {
-                sys.power_plan().write(|w| {
-                    // The DC-DC mode is immediate, not a plan bit: keep it.
-                    w.set_pwr_dcdc_pre(saved_plan.pwr_dcdc_pre());
-                    w.set_pwr_dcdc_en(saved_plan.pwr_dcdc_en());
-                    // Reserved, the datasheet requires 0010b (5.2).
-                    w.set_pwr_must_0010(0b0010);
-                    w.set_pwr_core(true);
-                    w.set_pwr_xrom(true);
-                    w.set_pwr_ram32k(retention.contains(Retention::RAM32K));
-                    w.set_pwr_ram96k(retention.contains(Retention::RAM96K));
-                    w.set_pwr_extend(retention.contains(Retention::USB_RF));
-                    w.set_pwr_plan_en(true);
-                });
-                // The PMU runs its wake logic from the internal RC oscillator,
-                // so it has to stay powered while the PLL and HSE stop.
-                sys.hfck_pwr_ctrl().modify(|w| w.set_clk_rc16m_pon(true));
+                #[cfg(power_sleep_ch59x)]
+                {
+                    // WCH's `LowPower_Sleep`: keep the DC-DC mode bits as they
+                    // are, retain the core, FlashROM and the requested SRAM /
+                    // USB-RF domains, and select the 1.406 ms HSE pre-wake
+                    // setting. `PWR_SYS_EN` and `PWR_LDO_EN` stay 0, which
+                    // turns the main LDO off and lets the ULP LDO supply the
+                    // retained domains.
+                    let mut plan = saved_plan.0 & (0x0200 | 0x0400);
+                    plan |= 0x8000 // PWR_PLAN_EN
+                        | 0x0004 // PWR_CORE
+                        | 0x0001 // PWR_XROM
+                        | (0b10 << 11); // XT_PRE_CFG
+                    plan |= retention.0 & (0x0002 | 0x0010 | 0x0008);
+                    sys.power_plan().write_value(pac::sys::regs::PowerPlan(plan));
+                    // CH592 has a single low-retention-voltage bit. CH595
+                    // encodes a 2-bit voltage level there whose values the
+                    // metadata does not define, so leave it at the reset value
+                    // (normal voltage) instead of guessing.
+                    #[cfg(ch592)]
+                    sys.slp_power_ctrl().modify(|w| w.set_ram_ret_lv(true));
+                    // CH595 has the CH585-style high-frequency clock power
+                    // block: the PMU runs its wake logic from the internal RC
+                    // oscillator, so it has to stay powered while the PLL and
+                    // the crystal stop.
+                    #[cfg(ch595)]
+                    sys.hfck_pwr_ctrl().modify(|w| w.set_clk_rc16m_pon(true));
+                }
+                #[cfg(power_plan_ch58x)]
+                {
+                    // WCH's `LowPower_Sleep`: keep the DC-DC mode bits, retain
+                    // the core, FlashROM and the requested SRAM / USB-RF
+                    // domains, and gate the PLL for the duration.
+                    let mut plan = saved_plan.0 & (0x0200 | 0x0400);
+                    plan |= 0x8000 // PWR_PLAN_EN
+                        | (0b0010 << 11) // PWR_MUST_0010
+                        | 0x0004 // PWR_CORE
+                        | 0x0001; // PWR_XROM
+                    plan |= retention.0 & (0x0002 | 0x0010 | 0x0008);
+                    sys.power_plan().write_value(pac::sys::regs::PowerPlan(plan));
+                    sys.slp_power_ctrl().modify(|w| w.set_ram_ret_lv(true));
+                    pac::SYSTEM_CONTROL.pll_config().modify(|w| w.0 |= 1 << 5);
+                }
+                #[cfg(not(any(power_sleep_ch59x, power_plan_ch58x)))]
+                {
+                    sys.power_plan().write(|w| {
+                        // The DC-DC mode is immediate, not a plan bit: keep it.
+                        w.set_pwr_dcdc_pre(saved_plan.pwr_dcdc_pre());
+                        w.set_pwr_dcdc_en(saved_plan.pwr_dcdc_en());
+                        // Reserved, the datasheet requires 0010b (5.2).
+                        w.set_pwr_must_0010(0b0010);
+                        w.set_pwr_core(true);
+                        w.set_pwr_xrom(true);
+                        w.set_pwr_ram32k(retention.contains(Retention::RAM32K));
+                        w.set_pwr_ram96k(retention.contains(Retention::RAM96K));
+                        w.set_pwr_extend(retention.contains(Retention::USB_RF));
+                        w.set_pwr_plan_en(true);
+                    });
+                    // The PMU runs its wake logic from the internal RC oscillator,
+                    // so it has to stay powered while the PLL and HSE stop.
+                    sys.hfck_pwr_ctrl().modify(|w| w.set_clk_rc16m_pon(true));
+                }
             });
         }
 
@@ -333,26 +416,48 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
         }
 
         rcc::with_safe_access(|| {
-            pac::SYSTEM_CONTROL
-                .xt32m_tune()
-                .write_value(saved_tune);
+            pac::SYSTEM_CONTROL.xt32m_tune().write_value(saved_tune);
             sys.bat_det_ctrl().write_value(saved_bat);
             sys.slp_wake_ctrl().write_value(saved_wake);
             sys.slp_power_ctrl().write_value(saved_power);
+            #[cfg(any(not(power_sleep_ch59x), ch595))]
             sys.hfck_pwr_ctrl().write_value(saved_hfck);
             if retention.is_some() {
                 // The plan has executed; WCH's driver only clears the enable
                 // bit, leaving the plan itself for the next entry to recompose.
                 sys.power_plan().modify(|w| w.set_pwr_plan_en(false));
+                // CH582/CH583 gate the PLL across the sleep; release it again.
+                #[cfg(power_plan_ch58x)]
+                pac::SYSTEM_CONTROL.pll_config().modify(|w| w.0 &= !(1 << 5));
             }
         });
 
+        // WCH waits 20 us after releasing the PLL. SysTick has not yet been
+        // restored, so use at least 1600 instructions: 20 us at the maximum
+        // supported 80 MHz, plus loop overhead.
+        #[cfg(power_plan_ch58x)]
         if retention.is_some() {
-            pac::SYSTICK.stk_cnth().write_value(pac::systick::regs::StkCnth(saved_stk.2));
-            pac::SYSTICK.stk_cntl().write_value(pac::systick::regs::StkCntl(saved_stk.1));
-            pac::SYSTICK.stk_cmphr().write_value(pac::systick::regs::StkCmphr(saved_stk.4));
-            pac::SYSTICK.stk_cmplr().write_value(pac::systick::regs::StkCmplr(saved_stk.3));
-            pac::SYSTICK.stk_ctlr().write_value(pac::systick::regs::StkCtlr(saved_stk.0));
+            for _ in 0..1600 {
+                unsafe { core::arch::asm!("nop", options(nomem, nostack)) };
+            }
+        }
+
+        if retention.is_some() {
+            pac::SYSTICK
+                .stk_cnth()
+                .write_value(pac::systick::regs::StkCnth(saved_stk.2));
+            pac::SYSTICK
+                .stk_cntl()
+                .write_value(pac::systick::regs::StkCntl(saved_stk.1));
+            pac::SYSTICK
+                .stk_cmphr()
+                .write_value(pac::systick::regs::StkCmphr(saved_stk.4));
+            pac::SYSTICK
+                .stk_cmplr()
+                .write_value(pac::systick::regs::StkCmplr(saved_stk.3));
+            pac::SYSTICK
+                .stk_ctlr()
+                .write_value(pac::systick::regs::StkCtlr(saved_stk.0));
         }
     });
 }

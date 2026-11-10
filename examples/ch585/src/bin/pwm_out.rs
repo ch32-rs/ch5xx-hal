@@ -25,7 +25,7 @@ fn main() -> ! {
         rcc: ClockConfig::HSI_PLL_24MHZ,
     });
 
-    let mut pwm = Pwm::new(p.PWMX, Config::new(235, Cycle::Clocks256)).unwrap();
+    let pwm = Pwm::new(p.PWMX, Config::new(235, Cycle::Clocks256)).unwrap();
     let mut channel = pwm.channel(p.PA12, Polarity::ActiveHigh);
     let mut delay = Delay;
 

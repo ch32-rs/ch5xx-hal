@@ -218,6 +218,10 @@ impl State {
 pub(crate) trait SealedInstance {
     fn regs() -> pac::uart::UartFull;
 
+    /// Whether `MCR.LOOP` exists. `UART_NOMODEM` (UART1-3 on CH592, CH583,
+    /// CH595, CH573) drops the modem block, including the loopback bit.
+    const INTERNAL_LOOPBACK: bool;
+
     /// Set the `PIN_ALTERNATE` bit that selects the remapped pins.
     ///
     /// # Safety
@@ -230,13 +234,21 @@ pub(crate) trait SealedInstance {
     fn state() -> &'static State;
 }
 
+/// Registers shared by the full and the no-modem block sit at the same
+/// offsets, so the driver always views the instance as `UartFull`. The
+/// no-modem block only differs in two places: its THR write field is named
+/// `RBR` (same bits) and it has no `MCR.LOOP`.
 macro_rules! impl_instance {
-    ($inst:ident, $setter:ident) => {
+    ($inst:ident, $setter:ident, $loopback:expr) => {
         impl SealedInstance for peripherals::$inst {
             #[inline]
             fn regs() -> pac::uart::UartFull {
-                pac::$inst
+                // Safety: the two blocks use the same register addresses for
+                // the registers this driver touches.
+                unsafe { pac::uart::UartFull::from_ptr(pac::$inst.as_ptr()) }
             }
+
+            const INTERNAL_LOOPBACK: bool = $loopback;
 
             #[inline]
             unsafe fn set_remap(remapped: bool) {
@@ -256,10 +268,21 @@ macro_rules! impl_instance {
     };
 }
 
-impl_instance!(UART0, set_pin_uart0);
-impl_instance!(UART1, set_pin_uart1);
-impl_instance!(UART2, set_pin_uart2);
-impl_instance!(UART3, set_pin_uart3);
+/// Every UART is the full block unless the family selects `UART_NOMODEM` for
+/// that instance, which CH592, CH583, CH595 and CH573 do for UART1-3.
+macro_rules! impl_uart {
+    ($inst:ident, $setter:ident, $cfg:ident) => {
+        #[cfg(not($cfg))]
+        impl_instance!($inst, $setter, true);
+        #[cfg($cfg)]
+        impl_instance!($inst, $setter, false);
+    };
+}
+
+impl_uart!(UART0, set_pin_uart0, uart0_nomodem);
+impl_uart!(UART1, set_pin_uart1, uart1_nomodem);
+impl_uart!(UART2, set_pin_uart2, uart2_nomodem);
+impl_uart!(UART3, set_pin_uart3, uart3_nomodem);
 
 /// Interrupt handler shared by all async UART instances.
 ///
@@ -617,7 +640,13 @@ impl<'d, T: Instance, M: Mode> Uart<'d, T, M> {
     /// the blocking constructors, not the async ones.
     pub fn set_internal_loopback(&mut self, enable: bool) {
         let r = T::regs();
-        r.mcr().modify(|w| w.set_mcr_loop(enable));
+        assert!(
+            !enable || T::INTERNAL_LOOPBACK,
+            "this UART instance has no internal loopback"
+        );
+        if T::INTERNAL_LOOPBACK {
+            r.mcr().modify(|w| w.set_mcr_loop(enable));
+        }
         if enable {
             // Preserve FIFO mode: writing FCR with only the clear bit would
             // also clear `FCR_FIFO_EN`, leaving a one-byte receiver.

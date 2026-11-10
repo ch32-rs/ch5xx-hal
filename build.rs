@@ -81,22 +81,80 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=power_sleep");
     }
-    // The SPI register block is not one layout. The `ch585` and `ch583`
-    // versions are the FIFO controller this driver programs; the others are not,
-    // and naming their registers would not compile.
+    // CH582/CH583 split the main SRAM retention differently: `PWR_RAM2K` is
+    // the 2 KB block, `PWR_RAM30K` the 30 KB main block, and there is no
+    // `PWR_LDO_EN`. The driver needs its own retention names and plan
+    // composition.
+    if register_version_opt(&chip_name, "sys").as_deref() == Some("ch583") {
+        println!("cargo:rustc-cfg=power_plan_ch58x");
+    }
+    // CH592 and CH582/CH583 have the same shape of clock tree: a 32 MHz
+    // crystal as the only high-speed source and a 480 MHz PLL. The register
+    // fields and the safe-access window still differ, so only the tree model,
+    // presets and validation are shared.
+    if chip_name == "ch592" || register_version_opt(&chip_name, "sys").as_deref() == Some("ch583") {
+        println!("cargo:rustc-cfg=xtal480");
+    }
+    // CH592/CH595 use a newer POWER_PLAN layout (`PWR_RAM24K` and
+    // `PWR_RAM8K` instead of `PWR_RAM32K`/`PWR_RAM96K`, no `PWR_MUST_0010`).
+    // The driver composes that plan from raw bits; CH592 also lacks
+    // `HFCK_PWR_CTRL`, while CH595 keeps it.
+    if sys_has_registers(
+        &chip_name,
+        &[
+            "SLP_WAKE_CTRL",
+            "SLP_POWER_CTRL",
+            "POWER_PLAN",
+            "BAT_DET_CTRL",
+            "PWR_RAM24K",
+        ],
+    ) {
+        println!("cargo:rustc-cfg=power_sleep_ch59x");
+    }
+    // The SPI register block is not one layout. The `ch585`, `ch583` and
+    // `ch592` versions are the FIFO controller this driver programs; the
+    // others are not, and naming their registers would not compile. CH592
+    // narrows the DMA address registers to 16 bits and drops SPI1
+    // (`SPI_NODMA`); the driver casts the addresses to the field width and
+    // gates the second instance.
     match register_version(&chip_name, "spi").as_str() {
-        "ch585" | "ch583" => println!("cargo:rustc-cfg=spi_ch585"),
+        "ch585" | "ch583" | "ch592" => println!("cargo:rustc-cfg=spi_fifo"),
         _ => {}
     }
-    // The ADC block is not one layout either, and CH572 has none. The driver
-    // programs the CH585 field names, so any other version does not compile it.
-    if register_version_opt(&chip_name, "adc").as_deref() == Some("ch585") {
-        println!("cargo:rustc-cfg=adc_ch585");
+    // CH583 has single conversion and DMA but no scan sequencer. CH592 has
+    // a shorter scan sequencer than CH585; other layouts are not supported.
+    match register_version_opt(&chip_name, "adc").as_deref() {
+        Some("ch585") => {
+            println!("cargo:rustc-cfg=adc_ch585");
+            println!("cargo:rustc-cfg=adc_scan");
+        }
+        Some("ch583") => println!("cargo:rustc-cfg=adc_ch583"),
+        Some("ch592") => {
+            println!("cargo:rustc-cfg=adc_ch592");
+            println!("cargo:rustc-cfg=adc_scan");
+        }
+        _ => {}
     }
-    // PWMx is one block for PWM4-PWM11. The CH573 and CH572 layouts differ, so
-    // the driver only compiles where the family selects the CH585 version.
-    if register_version_opt(&chip_name, "pwmx").as_deref() == Some("ch585") {
-        println!("cargo:rustc-cfg=pwmx_ch585");
+    // The touch-key block is the ADC's charge-transfer front end. CH573, CH583,
+    // CH585 and CH592 keep the COUNT/CONVERT pair and the CFG power bit that
+    // the sampling driver programs; CH595 replaced them with the CFG2 transfer
+    // registers and CH572 has no block. Gate on the register set rather than on
+    // the version, because the unused CFG bits differ between the shared dies.
+    if let Some(version) = register_version_opt(&chip_name, "touchkey") {
+        let path = data_root().join(format!("registers/touchkey_{version}.yaml"));
+        let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+        let names = register_names(&text);
+        if names.iter().any(|name| name == "COUNT") && names.iter().any(|name| name == "CONVERT") {
+            println!("cargo:rustc-cfg=touchkey_charge");
+        }
+    }
+    // PWMx is one block for PWM4-PWM11; the CH573 layout has byte duty
+    // registers and fixed 31/32-clock periods instead of the wide mode.
+    match register_version_opt(&chip_name, "pwmx").as_deref() {
+        Some("ch573") => println!("cargo:rustc-cfg=pwmx_ch573"),
+        Some("ch585") => println!("cargo:rustc-cfg=pwmx_ch585"),
+        Some("ch592") => println!("cargo:rustc-cfg=pwmx_ch592"),
+        _ => {}
     }
     // The calendar counter is the CH585 layout, which the CH573 version shares.
     // CH572 counts on a different set of registers.
@@ -104,11 +162,11 @@ fn main() {
         Some("ch585" | "ch573") => println!("cargo:rustc-cfg=rtc_calendar"),
         _ => {}
     }
-    // The battery detector fields are the CH585 ones, which CH581 shares. The
-    // window watchdog itself is in `system_control` and is common to every
-    // selectable chip.
+    // The battery detector fields are the CH585 ones, which CH581 shares; CH592
+    // has the same `BAT_DET_*` and `BAT_STATUS` layout. The window watchdog
+    // itself is in `system_control` and is common to every selectable chip.
     match register_version_opt(&chip_name, "sys").as_deref() {
-        Some("ch585" | "ch581") => println!("cargo:rustc-cfg=battery_ch585"),
+        Some("ch585" | "ch581" | "ch592") => println!("cargo:rustc-cfg=battery_ch585"),
         _ => {}
     }
     // CH573's system-control block has no reset-status register. The flag lives
@@ -117,10 +175,45 @@ fn main() {
         Some("ch585" | "ch583" | "ch592" | "ch595" | "ch572") => println!("cargo:rustc-cfg=reset_status"),
         _ => {}
     }
+    // TMR instances are not all the same block. CH592 and CH595 omit the
+    // timer-local DMA registers on TMR0/TMR3, while the other dies have them on
+    // every instance. Emit one cfg per no-DMA instance so the driver can gate
+    // the DMA entry points.
+    for (name, block) in peripheral_blocks(&chip_name, "TMR") {
+        if block == "TMR_NODMA" {
+            println!("cargo:rustc-cfg={}_nodma", name.to_ascii_lowercase());
+        }
+    }
+    // Not every die routes every timer to a pin. The `PIN_TMRn` remap fields
+    // in PIN_ALTERNATE are the metadata's record of it; the pin tables and the
+    // remap writer are gated on them.
+    for name in ["TMR0", "TMR1", "TMR2", "TMR3"] {
+        let field = format!("PIN_{name}");
+        if sys_has_registers(&chip_name, &[field.as_str()]) {
+            println!("cargo:rustc-cfg=remap_{}", name.to_ascii_lowercase());
+        }
+    }
+    // UART1-3 drop the modem-control block on several dies (CH592, CH583,
+    // CH595). The instance type and the register fields differ, so the driver
+    // needs to know which block each instance is.
+    for (name, block) in peripheral_blocks(&chip_name, "UART") {
+        if block == "UART_NOMODEM" {
+            println!("cargo:rustc-cfg={}_nomodem", name.to_ascii_lowercase());
+        }
+    }
     // USBFS is the WCH full-speed device controller. USBHS is a separate block
     // and is not this driver.
     if register_version_opt(&chip_name, "usbfs").as_deref() == Some("ch585") {
         println!("cargo:rustc-cfg=usbfs_ch585");
+    }
+    // CH592 records the same device controller as kind `usb`, version `ch592`.
+    // The device-mode register offsets and field names match the CH585 block;
+    // this layout has no host-mode aliases, which the driver does not use.
+    if register_version_opt(&chip_name, "usb").as_deref() == Some("ch592") {
+        println!("cargo:rustc-cfg=usb_ch592");
+    }
+    if register_version_opt(&chip_name, "usb").as_deref() == Some("ch583") {
+        println!("cargo:rustc-cfg=usb_ch583");
     }
     // USBHS has a separate controller, PHY and device interrupt.
     if register_version_opt(&chip_name, "usbhs").as_deref() == Some("ch585") {
@@ -286,6 +379,43 @@ fn sys_has_registers(chip: &str, names: &[&str]) -> bool {
 
 fn data_root() -> PathBuf {
     PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../ch5xx-data/data")
+}
+
+/// `(instance name, block)` for every peripheral whose name starts with
+/// `prefix`, e.g. `TMR` or `UART`.
+///
+/// The family file names the register block next to each instance so a die can
+/// mix block variants (DMA-capable and DMA-less timers, full and no-modem
+/// UARTs); the HAL keys its instance types on this instead of assuming one
+/// block for the whole group.
+fn peripheral_blocks(chip: &str, prefix: &str) -> Vec<(String, String)> {
+    let chip_path = data_root().join(format!("chips/{}.yaml", chip.to_ascii_uppercase()));
+    let family = family_file(
+        &fs::read_to_string(&chip_path).unwrap_or_else(|err| panic!("reading {}: {err}", chip_path.display())),
+    );
+    let family_path = data_root().join(format!("family/{family}"));
+    let text =
+        fs::read_to_string(&family_path).unwrap_or_else(|err| panic!("reading {}: {err}", family_path.display()));
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut blocks = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(name) = line.trim().strip_prefix("- name: ") else {
+            continue;
+        };
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        // The block sits in the same `registers:` entry, before the next one.
+        let block = lines[index + 1..]
+            .iter()
+            .map(|candidate| candidate.trim())
+            .take_while(|candidate| !candidate.starts_with("- name:"))
+            .find_map(|candidate| candidate.strip_prefix("block: "))
+            .unwrap_or_else(|| panic!("{name} has no register block"));
+        blocks.push((name.to_string(), block.to_string()));
+    }
+    blocks
 }
 
 /// The `version:` of the `kind` register block the chip's family selects.
