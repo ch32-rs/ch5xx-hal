@@ -215,24 +215,21 @@ fn main() {
     }
     // The calendar counter is the CH585 layout, which the CH573 version shares.
     // CH572 counts on a different set of registers.
-    match register_version_opt(&chip_name, "rtc").as_deref() {
-        Some("ch585" | "ch573") => println!("cargo:rustc-cfg=rtc_calendar"),
-        _ => {}
+    if let Some("ch585" | "ch573") = register_version_opt(&chip_name, "rtc").as_deref() {
+        println!("cargo:rustc-cfg=rtc_calendar");
     }
     // The battery detector fields are the CH585 ones, which CH581 shares; CH592
     // has the same `BAT_DET_*` and `BAT_STATUS` layout. The window watchdog
     // itself is in `system_control` and is common to every selectable chip.
-    match register_version_opt(&chip_name, "sys").as_deref() {
-        Some("ch585" | "ch581" | "ch592") => println!("cargo:rustc-cfg=battery_ch585"),
-        _ => {}
+    if let Some("ch585" | "ch581" | "ch592") = register_version_opt(&chip_name, "sys").as_deref() {
+        println!("cargo:rustc-cfg=battery_ch585");
     }
     // The reset-status register shares its byte with the ROM configuration;
     // these are the system-control versions that model it.
-    match register_version_opt(&chip_name, "system_control").as_deref() {
-        Some("ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572") => {
-            println!("cargo:rustc-cfg=reset_status")
-        }
-        _ => {}
+    if let Some("ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572") =
+        register_version_opt(&chip_name, "system_control").as_deref()
+    {
+        println!("cargo:rustc-cfg=reset_status");
     }
     // TMR instances are not all the same block. CH592 and CH595 omit the
     // timer-local DMA registers on TMR0/TMR3, while the other dies have them on
@@ -423,7 +420,7 @@ fn main() {
             // Pins are the user-facing singletons; the port block itself is not.
             continue;
         }
-        let name = normalize(&p.name);
+        let name = normalize(p.name);
         if time_driver_peripheral.as_deref() == Some(name.as_str()) {
             continue;
         }
@@ -472,7 +469,7 @@ fn main() {
         .filter_map(|p| {
             p.registers
                 .as_ref()
-                .map(|r| vec![r.kind.to_string(), normalize(&p.name)])
+                .map(|r| vec![r.kind.to_string(), normalize(p.name)])
         })
         .collect();
     make_table(&mut m, "foreach_peripheral", &peripherals_table);
@@ -505,7 +502,7 @@ fn main() {
                     .iter()
                     .map(|irq| {
                         vec![
-                            normalize(&p.name),
+                            normalize(p.name),
                             r.kind.to_string(),
                             r.block.to_string(),
                             irq.signal.to_string(),
