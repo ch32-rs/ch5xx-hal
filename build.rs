@@ -358,8 +358,7 @@ fn main() {
         println!("cargo:rustc-cfg=systick_streload");
     }
     // CH585-CH59x keep the flag in `STK_SR`; CH572 and CH573 call it
-    // `STK_CNTFG`. CH572 has no high counter half at all, and its compare word
-    // carries the field name `CNTH` instead of `CMPL`.
+    // `STK_CNTFG`. CH572 has no high counter half at all.
     if register_has_register(&chip_name, "systick", "STK_SR") {
         println!("cargo:rustc-cfg=systick_sr");
     }
@@ -368,11 +367,6 @@ fn main() {
     }
     if register_has_register(&chip_name, "systick", "STK_CNTH") {
         println!("cargo:rustc-cfg=systick_cnth");
-    }
-    if register_has_field(&chip_name, "systick", "CMPL") {
-        println!("cargo:rustc-cfg=systick_cmpl");
-    } else if register_has_field(&chip_name, "systick", "CNTH") {
-        println!("cargo:rustc-cfg=systick_cmp_cnth");
     }
     if register_has_field(&chip_name, "uart", "MCR_INT_OE") {
         println!("cargo:rustc-cfg=mcr_int_oe");

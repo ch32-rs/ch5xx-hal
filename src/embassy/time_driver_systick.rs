@@ -76,11 +76,7 @@ impl ReloadTimer for SystickTimer {
 /// Program the compare/reload value.
 #[inline]
 fn set_compare(end: u32) {
-    #[cfg(systick_cmpl)]
     SYSTICK.stk_cmplr().write(|w| w.set_cmpl(end));
-    // CH572's compare word calls the field `CNTH`.
-    #[cfg(systick_cmp_cnth)]
-    SYSTICK.stk_cmplr().write(|w| w.set_cnth(end));
 }
 
 /// Drop a latched compare flag.
