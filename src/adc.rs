@@ -1007,12 +1007,10 @@ fn prepare_pad(port: u8, pin: u8) {
 #[cfg(adc_ch585)]
 fn disconnect_pad(port: u8, pin: u8) {
     pac::SYS.pin_in_dis().modify(|w| {
-        let mut mask = if port == 0 { w.pax_in_dis() } else { w.pblx_in_dis() };
-        mask |= 1 << pin;
         if port == 0 {
-            w.set_pax_in_dis(mask);
+            w.set_pa_in_dis(usize::from(pin), true);
         } else {
-            w.set_pblx_in_dis(mask);
+            w.set_pbl_in_dis(usize::from(pin), true);
         }
     });
 }
@@ -1027,12 +1025,10 @@ fn disconnect_pad(_port: u8, _pin: u8) {}
 #[cfg(adc_ch585)]
 fn reconnect_pad(port: u8, pin: u8) {
     pac::SYS.pin_in_dis().modify(|w| {
-        let mut mask = if port == 0 { w.pax_in_dis() } else { w.pblx_in_dis() };
-        mask &= !(1 << pin);
         if port == 0 {
-            w.set_pax_in_dis(mask);
+            w.set_pa_in_dis(usize::from(pin), false);
         } else {
-            w.set_pblx_in_dis(mask);
+            w.set_pbl_in_dis(usize::from(pin), false);
         }
     });
 }
