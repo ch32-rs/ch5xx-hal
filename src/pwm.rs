@@ -200,9 +200,11 @@ impl<'d, T: Instance> Pwm<'d, T> {
         }
         let (width, short) = config.cycle.fields();
         // Leave the stagger-enable bits alone. They are not part of the cycle.
-        regs.config().modify(|w| {
-            w.set_cyc_mod(width);
-            w.set_cycle_sel(short);
+        critical_section::with(|_| {
+            regs.config().modify(|w| {
+                w.set_cyc_mod(width);
+                w.set_cycle_sel(short);
+            });
         });
         Ok(Self {
             cycle: config.cycle,
@@ -220,11 +222,13 @@ impl<'d, T: Instance> Pwm<'d, T> {
     /// The setting is block-wide and takes `&self`, so it can be changed while
     /// channels are live.
     pub fn set_stagger(&self, pair: StaggerPair, enabled: bool) {
-        T::regs().config().modify(|w| match pair {
-            StaggerPair::Pwm4_5 => w.set_pwm4_5_stag_en(enabled),
-            StaggerPair::Pwm6_7 => w.set_pwm6_7_stag_en(enabled),
-            StaggerPair::Pwm8_9 => w.set_pwm8_9_stag_en(enabled),
-            StaggerPair::Pwm10_11 => w.set_pwm10_11_stag_en(enabled),
+        critical_section::with(|_| {
+            T::regs().config().modify(|w| match pair {
+                StaggerPair::Pwm4_5 => w.set_pwm4_5_stag_en(enabled),
+                StaggerPair::Pwm6_7 => w.set_pwm6_7_stag_en(enabled),
+                StaggerPair::Pwm8_9 => w.set_pwm8_9_stag_en(enabled),
+                StaggerPair::Pwm10_11 => w.set_pwm10_11_stag_en(enabled),
+            });
         });
     }
 
@@ -326,14 +330,18 @@ impl<'a, T: Instance> SetDutyCycle for Channel<'a, T> {
 }
 
 fn set_duty<T: Instance>(index: u8, duty: u16, wide: bool) {
-    #[cfg(any(pwmx_ch585, pwmx_ch592))]
-    if wide {
-        set_duty_wide::<T>(index, duty);
-        return;
-    }
-    #[cfg(pwmx_ch573)]
-    let _ = wide;
-    set_duty_narrow::<T>(index, duty as u8);
+    // Some layouts pack multiple channels into one register, so their updates
+    // must not interrupt each other's read-modify-write sequences.
+    critical_section::with(|_| {
+        #[cfg(any(pwmx_ch585, pwmx_ch592))]
+        if wide {
+            set_duty_wide::<T>(index, duty);
+            return;
+        }
+        #[cfg(pwmx_ch573)]
+        let _ = wide;
+        set_duty_narrow::<T>(index, duty as u8);
+    });
 }
 
 fn set_duty_narrow<T: Instance>(index: u8, duty: u8) {
@@ -430,29 +438,33 @@ fn set_duty_pair<T: Instance>(index: u8, low: u8, high: u8) {
 fn set_polarity<T: Instance>(index: u8, polarity: Polarity) {
     let active_low = polarity == Polarity::ActiveLow;
     let regs = T::regs();
-    regs.polar().modify(|w| match index {
-        0 => w.set_pwm4_polar(active_low),
-        1 => w.set_pwm5_polar(active_low),
-        2 => w.set_pwm6_polar(active_low),
-        3 => w.set_pwm7_polar(active_low),
-        4 => w.set_pwm8_polar(active_low),
-        5 => w.set_pwm9_polar(active_low),
-        6 => w.set_pwm10_polar(active_low),
-        _ => w.set_pwm11_polar(active_low),
+    critical_section::with(|_| {
+        regs.polar().modify(|w| match index {
+            0 => w.set_pwm4_polar(active_low),
+            1 => w.set_pwm5_polar(active_low),
+            2 => w.set_pwm6_polar(active_low),
+            3 => w.set_pwm7_polar(active_low),
+            4 => w.set_pwm8_polar(active_low),
+            5 => w.set_pwm9_polar(active_low),
+            6 => w.set_pwm10_polar(active_low),
+            _ => w.set_pwm11_polar(active_low),
+        });
     });
 }
 
 fn set_output<T: Instance>(index: u8, enabled: bool) {
     let regs = T::regs();
-    regs.out_en().modify(|w| match index {
-        0 => w.set_pwm4_out_en(enabled),
-        1 => w.set_pwm5_out_en(enabled),
-        2 => w.set_pwm6_out_en(enabled),
-        3 => w.set_pwm7_out_en(enabled),
-        4 => w.set_pwm8_out_en(enabled),
-        5 => w.set_pwm9_out_en(enabled),
-        6 => w.set_pwm10_out_en(enabled),
-        _ => w.set_pwm11_out_en(enabled),
+    critical_section::with(|_| {
+        regs.out_en().modify(|w| match index {
+            0 => w.set_pwm4_out_en(enabled),
+            1 => w.set_pwm5_out_en(enabled),
+            2 => w.set_pwm6_out_en(enabled),
+            3 => w.set_pwm7_out_en(enabled),
+            4 => w.set_pwm8_out_en(enabled),
+            5 => w.set_pwm9_out_en(enabled),
+            6 => w.set_pwm10_out_en(enabled),
+            _ => w.set_pwm11_out_en(enabled),
+        });
     });
 }
 
