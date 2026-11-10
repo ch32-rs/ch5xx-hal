@@ -90,12 +90,11 @@ fn clear_count_flag() {
 /// Whether the compare flag is set.
 #[inline]
 fn count_flag() -> bool {
-    #[cfg(systick_sr)]
-    return SYSTICK.sr().read().cntif();
-    #[cfg(systick_cntfg)]
-    return SYSTICK.cntfg().read().cntif();
-    #[cfg(not(any(systick_sr, systick_cntfg)))]
-    return false;
+    cfg_select! {
+        systick_sr => SYSTICK.sr().read().cntif(),
+        systick_cntfg => SYSTICK.cntfg().read().cntif(),
+        _ => false,
+    }
 }
 
 struct Driver {

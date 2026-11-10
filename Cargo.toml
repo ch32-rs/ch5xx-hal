@@ -2,6 +2,8 @@
 name = "ch5xx-hal"
 version = "0.1.0"
 edition = "2021"
+# `cfg_select!` became stable in 1.95.
+rust-version = "1.95"
 authors = ["Andelf <andelf@gmail.com>"]
 repository = "https://github.com/ch32-rs/ch5xx-hal"
 documentation = "https://docs.rs/ch5xx-hal"
