@@ -202,9 +202,12 @@ fn main() {
     if register_has_field(&chip_name, "touchkey", "DRV_EN") {
         println!("cargo:rustc-cfg=touchkey_drv_en");
     }
-    // PWMx is one block for PWM4-PWM11; the CH573 layout has byte duty
-    // registers and fixed 31/32-clock periods instead of the wide mode.
+    // PWMx has three layouts: the CH572 block drives PWM1-PWM5 with 16-bit
+    // cycle registers, the CH573 block drives PWM4-PWM11 with byte duty
+    // registers, and the CH585/CH592 blocks add the wide mode and four stagger
+    // pairs.
     match register_version_opt(&chip_name, "pwmx").as_deref() {
+        Some("ch572") => println!("cargo:rustc-cfg=pwmx_ch572"),
         Some("ch573") => println!("cargo:rustc-cfg=pwmx_ch573"),
         Some("ch585") => println!("cargo:rustc-cfg=pwmx_ch585"),
         Some("ch592") => println!("cargo:rustc-cfg=pwmx_ch592"),
@@ -223,10 +226,12 @@ fn main() {
         Some("ch585" | "ch581" | "ch592") => println!("cargo:rustc-cfg=battery_ch585"),
         _ => {}
     }
-    // CH573's system-control block has no reset-status register. The flag lives
-    // in the same byte as the ROM configuration on the versions that have it.
+    // The reset-status register shares its byte with the ROM configuration;
+    // these are the system-control versions that model it.
     match register_version_opt(&chip_name, "system_control").as_deref() {
-        Some("ch585" | "ch583" | "ch592" | "ch595" | "ch572") => println!("cargo:rustc-cfg=reset_status"),
+        Some("ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572") => {
+            println!("cargo:rustc-cfg=reset_status")
+        }
         _ => {}
     }
     // TMR instances are not all the same block. CH592 and CH595 omit the
