@@ -64,13 +64,43 @@ impl ReloadTimer for SystickTimer {
 
     #[inline]
     fn set_end(&self, end: u32) {
-        SYSTICK.stk_cmplr().write(|w| w.set_cmpl(end));
+        set_compare(end);
     }
 
     #[inline]
     fn clear_flag(&self) {
-        SYSTICK.stk_sr().modify(|w| w.set_cntif(false));
+        clear_count_flag();
     }
+}
+
+/// Program the compare/reload value.
+#[inline]
+fn set_compare(end: u32) {
+    #[cfg(systick_cmpl)]
+    SYSTICK.stk_cmplr().write(|w| w.set_cmpl(end));
+    // CH572's compare word calls the field `CNTH`.
+    #[cfg(systick_cmp_cnth)]
+    SYSTICK.stk_cmplr().write(|w| w.set_cnth(end));
+}
+
+/// Drop a latched compare flag.
+#[inline]
+fn clear_count_flag() {
+    #[cfg(systick_sr)]
+    SYSTICK.stk_sr().modify(|w| w.set_cntif(false));
+    #[cfg(systick_cntfg)]
+    SYSTICK.stk_cntfg().modify(|w| w.set_cntif(false));
+}
+
+/// Whether the compare flag is set.
+#[inline]
+fn count_flag() -> bool {
+    #[cfg(systick_sr)]
+    return SYSTICK.stk_sr().read().cntif();
+    #[cfg(systick_cntfg)]
+    return SYSTICK.stk_cntfg().read().cntif();
+    #[cfg(not(any(systick_sr, systick_cntfg)))]
+    return false;
 }
 
 struct Driver {
@@ -96,12 +126,11 @@ impl embassy_time_driver::Driver for Driver {
 /// SysTick's core-interrupt vector (core interrupt 12).
 #[qingke_rt::interrupt(core)]
 fn SysTick() {
-    let stk = &SYSTICK;
-    if !stk.stk_sr().read().cntif() {
+    if !count_flag() {
         // Not ours. Leaving `CNTIF` alone; there is nothing else to service.
         return;
     }
-    stk.stk_sr().modify(|w| w.set_cntif(false));
+    clear_count_flag();
 
     critical_section::with(|cs| {
         DRIVER.state.on_period(cs, &DRIVER.timer);
@@ -124,17 +153,21 @@ pub unsafe fn init() {
     // Stop and rebase before changing the wrap point, so no stale compare
     // value can fire during the transition.
     stk.stk_ctlr().modify(|w| w.set_ste(false));
-    stk.stk_sr().modify(|w| w.set_cntif(false));
+    clear_count_flag();
     stk.stk_cntl().write(|w| w.set_cntl(0));
-    stk.stk_cmplr()
-        .write(|w| w.set_cmpl(<SystickTimer as ReloadTimer>::MAX_PERIOD - 1));
+    set_compare(<SystickTimer as ReloadTimer>::MAX_PERIOD - 1);
 
     critical_section::with(|cs| DRIVER.state.reset::<SystickTimer>(cs, hz));
 
     stk.stk_ctlr().modify(|w| {
+        #[cfg(systick_mode)]
         w.set_mode(false); // up-count
         w.set_stclk(true); // HCLK, not HCLK/8
-        w.set_stre(true); // reload at the compare value
+                           // Reload at the compare value. CH573 calls the bit `STRELOAD`.
+        #[cfg(systick_stre)]
+        w.set_stre(true);
+        #[cfg(systick_streload)]
+        w.set_streload(true);
         w.set_stie(true); // interrupt on compare
         w.set_ste(true);
     });
