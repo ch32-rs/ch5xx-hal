@@ -8,11 +8,17 @@ edition = "2021"
 default = []
 # TMR3 leaves SysTick available to the existing clock and delay examples.
 usb-cdc = ["dep:embassy-executor", "dep:embassy-time", "dep:embassy-usb", "time-driver-tmr3"]
+spi-async = ["dep:embassy-executor", "dep:embassy-time", "time-driver-tmr3"]
 time-driver-systick = ["ch5xx-hal/time-driver-systick"]
 time-driver-tmr0 = ["ch5xx-hal/time-driver-tmr0"]
 time-driver-tmr1 = ["ch5xx-hal/time-driver-tmr1"]
 time-driver-tmr2 = ["ch5xx-hal/time-driver-tmr2"]
 time-driver-tmr3 = ["ch5xx-hal/time-driver-tmr3"]
+
+[[bin]]
+name = "spi_async_loopback"
+path = "src/bin/spi_async_loopback.rs"
+required-features = ["spi-async"]
 
 [[bin]]
 name = "usb_cdc_echo"
