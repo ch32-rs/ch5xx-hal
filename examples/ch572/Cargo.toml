@@ -1,0 +1,23 @@
+[package]
+name = "ch572-examples"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ch5xx-hal = { path = "../../", features = ["ch572", "rt", "memory-x"] }
+
+panic-halt = "1.0"
+qingke = "0.8.4"
+qingke-rt = "0.8.4"
+defmt = "1.0"
+defmt-rtt = "1.3"
+embedded-hal = "1.0.0"
+
+[profile.release]
+strip = false   # symbols are not flashed to the microcontroller, so don't strip them.
+debug = 2       # defmt resolves log frames to file:line via DWARF; without it every line prints `<invalid location>`.
+lto = true
+opt-level = "s"
+
+[profile.dev]
+overflow-checks = false
