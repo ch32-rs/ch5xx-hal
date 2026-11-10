@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+      - run: cargo fmt --check
+
+  hal:
+    name: HAL (${{ matrix.chip }}, ${{ matrix.driver }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chip:
+          - ch570
+          - ch572
+          - ch573
+          - ch581
+          - ch582
+          - ch583
+          - ch584
+          - ch585
+          - ch592
+          - ch595
+        driver:
+          - base
+          - systick
+          - tmr0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch ch5xx-data
+        # build.rs reads the register YAML from the sibling data tree.
+        run: git clone --depth 1 https://github.com/ch32-rs/ch5xx-data.git ../ch5xx-data
+      - name: Setup Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
+      - name: Check
+        run: |
+          case "${{ matrix.chip }}" in
+            ch581|ch584|ch585|ch592|ch595) target=riscv32imc-unknown-none-elf ;;
+            *) target=riscv32imac-unknown-none-elf ;;
+          esac
+          features="${{ matrix.chip }},rt"
+          case "${{ matrix.driver }}" in
+            systick) features="$features,embassy,time-driver-systick" ;;
+            tmr0)    features="$features,embassy,time-driver-tmr0" ;;
+          esac
+          cargo check --lib --target "$target" --no-default-features --features "$features"
+
+  examples:
+    name: Examples (${{ matrix.example }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - example: ch572
+            target: riscv32imac-unknown-none-elf
+            features: ""
+          # The async SPI and USB examples are behind `required-features`.
+          - example: ch582
+            target: riscv32imac-unknown-none-elf
+            features: "--features spi-async,usb-cdc"
+          # `embassy_time_tmr` needs a TMR driver, so build every bin against
+          # TMR0 instead of the default SysTick driver.
+          - example: ch585
+            target: riscv32imc-unknown-none-elf
+            features: "--no-default-features --features time-driver-tmr0"
+          - example: ch592
+            target: riscv32imc-unknown-none-elf
+            features: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch ch5xx-data
+        run: git clone --depth 1 https://github.com/ch32-rs/ch5xx-data.git ../ch5xx-data
+      - name: Setup Rust
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup default nightly
+          rustup component add rust-src
+          rustup target add ${{ matrix.target }}
+      - name: Build every example
+        working-directory: examples/${{ matrix.example }}
+        run: cargo build --release --bins ${{ matrix.features }}
+
+  msrv:
+    name: MSRV 1.95
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch ch5xx-data
+        run: git clone --depth 1 https://github.com/ch32-rs/ch5xx-data.git ../ch5xx-data
+      - name: Setup Rust
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
+      - name: Check
+        run: |
+          cargo check --lib --target riscv32imc-unknown-none-elf --no-default-features --features ch585,rt
+          cargo check --lib --target riscv32imac-unknown-none-elf --no-default-features --features ch582,rt
