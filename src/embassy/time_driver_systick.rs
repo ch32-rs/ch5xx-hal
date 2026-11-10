@@ -2,13 +2,12 @@
 //!
 //! # Why this is not the CH32 driver
 //!
-//! CH5xx's SysTick is a WCH variant with a **32-bit** counter:
-//! `CTLR` (`STE`, `STIE`, `STCLK`, `STRE`, `MODE`), `SR.CNTIF`,
-//! `CNTL` and `CMPLR`. The `CNTH`/`CMPHR` registers the PAC
-//! exposes are the padding words at +0x0C and +0x14 — reading them returns the
-//! neighbour, not a real high half. In particular the driver must not use
-//! `cmphr().write_value(next >> 32)`: on the real part that writes into
-//! `CMPLR`'s neighbourhood.
+//! CH5xx's SysTick is the WCH variant. The 32-bit dies (CH572/CH570,
+//! CH581/CH584/CH585 and CH595) use `CTLR` (`STE`, `STIE`, `STCLK`, `STRE`,
+//! `MODE`), `SR.CNTIF`, `CNTL` and `CMPLR`; their `CNTH`/`CMPHR` words are
+//! reserved and must not be used. The 64-bit dies (CH582/CH583, CH591/CH592)
+//! have real high words, but this driver still uses the low 32-bit pair with
+//! the same up-counter/auto-reload model, and never writes `CMPHR`.
 //!
 //! Measured behaviour:
 //!
