@@ -261,11 +261,11 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
     // running (it loses the sleep interval, which no counter in the core can
     // see anyway).
     let saved_stk = (
-        pac::SYSTICK.stk_ctlr().read().0,
-        pac::SYSTICK.stk_cntl().read().0,
-        pac::SYSTICK.stk_cnth().read().0,
-        pac::SYSTICK.stk_cmplr().read().0,
-        pac::SYSTICK.stk_cmphr().read().0,
+        pac::SYSTICK.ctlr().read().0,
+        pac::SYSTICK.cntl().read().0,
+        pac::SYSTICK.cnth().read().0,
+        pac::SYSTICK.cmplr().read().0,
+        pac::SYSTICK.cmphr().read().0,
     );
 
     critical_section::with(|_| {
@@ -468,20 +468,20 @@ fn enter(wake: WakeSources, delay: WakeDelay, retention: Option<Retention>) {
 
         if retention.is_some() {
             pac::SYSTICK
-                .stk_cnth()
-                .write_value(pac::systick::regs::StkCnth(saved_stk.2));
+                .cnth()
+                .write_value(pac::systick::regs::Cnth(saved_stk.2));
             pac::SYSTICK
-                .stk_cntl()
-                .write_value(pac::systick::regs::StkCntl(saved_stk.1));
+                .cntl()
+                .write_value(pac::systick::regs::Cntl(saved_stk.1));
             pac::SYSTICK
-                .stk_cmphr()
-                .write_value(pac::systick::regs::StkCmphr(saved_stk.4));
+                .cmphr()
+                .write_value(pac::systick::regs::Cmphr(saved_stk.4));
             pac::SYSTICK
-                .stk_cmplr()
-                .write_value(pac::systick::regs::StkCmplr(saved_stk.3));
+                .cmplr()
+                .write_value(pac::systick::regs::Cmplr(saved_stk.3));
             pac::SYSTICK
-                .stk_ctlr()
-                .write_value(pac::systick::regs::StkCtlr(saved_stk.0));
+                .ctlr()
+                .write_value(pac::systick::regs::Ctlr(saved_stk.0));
         }
     });
 }

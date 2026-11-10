@@ -1,11 +1,11 @@
 //! Busy-wait delays on the core SysTick counter.
 //!
-//! CH5xx's SysTick is the WCH variant: `STK_CTLR` (`STE` bit 0, `STCLK` bit 2,
-//! `MODE` bit 4), `STK_SR.CNTIF`, and the 32-bit `STK_CNTL` / `STK_CMPLR` pair.
+//! CH5xx's SysTick is the WCH variant: `CTLR` (`STE` bit 0, `STCLK` bit 2,
+//! `MODE` bit 4), `SR.CNTIF`, and the 32-bit `CNTL` / `CMPLR` pair.
 //! There is no free-running 64-bit counter.
 //!
 //! The counter is started **once** by `init` and left running; each delay
-//! only reads `STK_CNT` and compares it against a target.
+//! only reads `CNT` and compares it against a target.
 //!
 //! # Why the rate is measured, not assumed
 //!
@@ -41,7 +41,7 @@
 //! delay is no longer exactly calibrated — it is one embassy tick, rounded up —
 //! but it is correct, and that is the trade the feature makes.
 //!
-//! Note that an executor that never sleeps hides the problem: `STK_CMPLR` stays
+//! Note that an executor that never sleeps hides the problem: `CMPLR` stays
 //! at its initial `MAX_PERIOD - 1`, the counter never reaches it, and raw
 //! polling looks fine until the first task actually sleeps.
 //!
@@ -68,7 +68,7 @@ const RTC_BASE: u32 = 0x4000_1000;
 /// RTC count used for the calibration window.
 ///
 /// 4096 counts at 32.768 kHz is 125 ms. A shorter window is too sensitive to
-/// the skew between the `CNT_32K` and `STK_CNTL` reads: at 1024 counts the
+/// the skew between the `CNT_32K` and `CNTL` reads: at 1024 counts the
 /// same board measured anywhere from 5.33 to 7.43 MHz run to run, which then
 /// scaled every delay (and the whole embassy timebase) by up to 40%.
 const CAL_COUNTS: u16 = 4096;
@@ -101,17 +101,17 @@ fn rtc_count() -> u16 {
 /// Call once, from [`crate::init`].
 pub(crate) unsafe fn init() {
     // Free-running, up-count, HCLK source (`STCLK` set — clearing it would
-    // select HCLK/8). `STE` starts it. CH573 keeps the flag in `STK_CNTFG`
+    // select HCLK/8). `STE` starts it. CH573 keeps the flag in `CNTFG`
     // and has no counter-direction bit.
     #[cfg(systick_cntfg)]
-    SYSTICK.stk_cntfg().modify(|w| w.set_cntif(false));
+    SYSTICK.cntfg().modify(|w| w.set_cntif(false));
     #[cfg(not(systick_cntfg))]
-    SYSTICK.stk_sr().modify(|w| w.set_cntif(false));
-    SYSTICK.stk_cntl().write(|w| w.set_cntl(0));
+    SYSTICK.sr().modify(|w| w.set_cntif(false));
+    SYSTICK.cntl().write(|w| w.set_cntl(0));
     // CH572 has a single 32-bit counter register and no high half.
     #[cfg(systick_cnth)]
-    SYSTICK.stk_cnth().write(|w| w.set_cnth(0));
-    SYSTICK.stk_ctlr().modify(|w| {
+    SYSTICK.cnth().write(|w| w.set_cnth(0));
+    SYSTICK.ctlr().modify(|w| {
         #[cfg(systick_mode)]
         w.set_mode(false); // up-count
         w.set_stclk(true); // source: HCLK (not HCLK/8)
@@ -171,8 +171,8 @@ impl Delay {
             let chunk = remaining.min(u32::MAX / 2);
             remaining -= chunk;
 
-            let start = SYSTICK.stk_cntl().read().cntl();
-            while SYSTICK.stk_cntl().read().cntl().wrapping_sub(start) < chunk {
+            let start = SYSTICK.cntl().read().cntl();
+            while SYSTICK.cntl().read().cntl().wrapping_sub(start) < chunk {
                 core::hint::spin_loop();
             }
         }
@@ -243,7 +243,7 @@ unsafe fn calibrate() -> u32 {
 
     for sample in samples.iter_mut() {
         let rtc_start = rtc_count();
-        let stk_start = SYSTICK.stk_cntl().read().cntl();
+        let start = SYSTICK.cntl().read().cntl();
 
         // The RTC window is 125 ms whatever Fsys is. A stalled RTC must not
         // brick boot, so fall back rather than hang: the guard is far larger
@@ -261,8 +261,8 @@ unsafe fn calibrate() -> u32 {
             core::hint::spin_loop();
         };
 
-        let stk_end = SYSTICK.stk_cntl().read().cntl();
-        let ticks = stk_end.wrapping_sub(stk_start) as u64;
+        let end = SYSTICK.cntl().read().cntl();
+        let ticks = end.wrapping_sub(start) as u64;
         let rtc_delta = rtc_delta as u64;
 
         // ticks per second = ticks * RTC_HZ / rtc_delta
