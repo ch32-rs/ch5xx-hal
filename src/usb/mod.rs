@@ -453,15 +453,9 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
         // Connect D+/D- and the device pull-up. `INT_BUSY` holds the bus in NAK
         // while a completion flag is set, and DMA moves the packets.
         T::set_pins(true);
-        #[cfg(not(usb_ch583))]
         regs.udev_ctrl().write(|w| {
             w.set_ud_port_en(true);
             w.set_ud_pd_dis(true);
-        });
-        #[cfg(usb_ch583)]
-        regs.udev_ctrl__uhost_ctrl().write(|w| {
-            w.set_ud_port_en__uh_port_en(true);
-            w.set_ud_pd_dis__uh_pd_dis(true);
         });
         regs.ctrl().write(|w| {
             w.set_uc_dma_en(true);
@@ -841,145 +835,69 @@ impl<'d, T: Instance> driver::EndpointIn for Endpoint<'d, T, In> {
 
 // --- endpoint registers --------------------------------------------------------
 
-// CH583 retains host/device aliases in the generated device registers.
-#[cfg(not(usb_ch583))]
 macro_rules! ep1_ctrl {
     ($regs:expr) => {
         $regs.uep1_ctrl()
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! ep1_ctrl {
-    ($regs:expr) => {
-        $regs.uep1_ctrl__uh_setup()
-    };
-}
-#[cfg(not(usb_ch583))]
+
 macro_rules! ep2_ctrl {
     ($regs:expr) => {
         $regs.uep2_ctrl()
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! ep2_ctrl {
-    ($regs:expr) => {
-        $regs.uep2_ctrl_uh_rx_ctrl()
-    };
-}
-#[cfg(not(usb_ch583))]
+
 macro_rules! ep3_ctrl {
     ($regs:expr) => {
         $regs.uep3_ctrl()
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! ep3_ctrl {
-    ($regs:expr) => {
-        $regs.uep3_ctrl__uh_tx_ctrl()
-    };
-}
 
-#[cfg(not(usb_ch583))]
 macro_rules! uep2_dma {
     ($regs:expr) => {
         $regs.uep2_dma()
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! uep2_dma {
-    ($regs:expr) => {
-        $regs.uep2_dma__uh_rx_dma()
-    };
-}
 
-#[cfg(not(usb_ch583))]
 macro_rules! uep3_dma {
     ($regs:expr) => {
         $regs.uep3_dma()
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! uep3_dma {
-    ($regs:expr) => {
-        $regs.uep3_dma__uh_tx_dma()
-    };
-}
 
-#[cfg(not(usb_ch583))]
 macro_rules! uep2_3_mod {
     ($regs:expr) => {
         $regs.uep2_3_mod()
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! uep2_3_mod {
-    ($regs:expr) => {
-        $regs.uep2_3_mod__uh_ep_mod()
-    };
-}
 
-#[cfg(not(usb_ch583))]
 macro_rules! uep2_t_len {
     ($regs:expr) => {
         $regs.uep2_t_len()
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! uep2_t_len {
-    ($regs:expr) => {
-        $regs.uep2_t_len_uh_ep_pid()
-    };
-}
 
-#[cfg(not(usb_ch583))]
 macro_rules! uep3_t_len {
     ($regs:expr) => {
         $regs.uep3_t_len()
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! uep3_t_len {
-    ($regs:expr) => {
-        $regs.uep3_t_len__uh_tx_len()
-    };
-}
 
-#[cfg(not(usb_ch583))]
 macro_rules! set_uep2_rx_en_field {
     ($w:expr, $v:expr) => {
         $w.set_uep2_rx_en($v)
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! set_uep2_rx_en_field {
-    ($w:expr, $v:expr) => {
-        $w.set_uep2_rx_en__uh_ep_rx_en($v)
-    };
-}
 
-#[cfg(not(usb_ch583))]
 macro_rules! set_uep3_tx_en_field {
     ($w:expr, $v:expr) => {
         $w.set_uep3_tx_en($v)
     };
 }
-#[cfg(usb_ch583)]
-macro_rules! set_uep3_tx_en_field {
-    ($w:expr, $v:expr) => {
-        $w.set_uep3_tx_en__uh_ep_tx_en($v)
-    };
-}
 
-#[cfg(not(usb_ch583))]
 macro_rules! set_uep3_t_len_field {
     ($w:expr, $v:expr) => {
         $w.set_uep3_t_len($v)
-    };
-}
-#[cfg(usb_ch583)]
-macro_rules! set_uep3_t_len_field {
-    ($w:expr, $v:expr) => {
-        $w.set_uep3_t_len__uh_tx_len($v)
     };
 }
 
@@ -1065,7 +983,6 @@ fn endpoint_response<T: Instance>(index: usize, direction: Direction) -> Respons
     }
 }
 
-#[cfg(not(usb_ch583))]
 fn set_toggle<T: Instance>(index: usize, direction: Direction, data1: bool) {
     let regs = T::regs();
     modify_ctrl!(regs, index, |w| {
@@ -1076,7 +993,6 @@ fn set_toggle<T: Instance>(index: usize, direction: Direction, data1: bool) {
     });
 }
 
-#[cfg(not(usb_ch583))]
 fn flip_toggle<T: Instance>(index: usize, direction: Direction) {
     let regs = T::regs();
     modify_ctrl!(regs, index, |w| {
@@ -1085,67 +1001,6 @@ fn flip_toggle<T: Instance>(index: usize, direction: Direction) {
             Direction::Out => w.set_uep_r_tog(!w.uep_r_tog()),
         }
     });
-}
-
-#[cfg(usb_ch583)]
-fn set_toggle<T: Instance>(index: usize, direction: Direction, data1: bool) {
-    let regs = T::regs();
-    match index {
-        0 => regs.uep0_ctrl().modify(|w| match direction {
-            Direction::In => w.set_uep_t_tog(data1),
-            Direction::Out => w.set_uep_r_tog(data1),
-        }),
-        1 => regs.uep1_ctrl__uh_setup().modify(|w| match direction {
-            Direction::In => w.set_uep_t_tog__uh_sof_en(data1),
-            Direction::Out => w.set_uep_r_tog__uh_pre_pid_en(data1),
-        }),
-        2 => regs.uep2_ctrl_uh_rx_ctrl().modify(|w| match direction {
-            Direction::In => w.set_uep_t_tog(data1),
-            Direction::Out => w.set_uep_r_tog__uh_r_tog(data1),
-        }),
-        3 => regs.uep3_ctrl__uh_tx_ctrl().modify(|w| match direction {
-            Direction::In => w.set_uep_t_tog_rb_uh_t_tog(data1),
-            Direction::Out => w.set_uep_r_tog(data1),
-        }),
-        _ => unreachable!(),
-    }
-}
-
-#[cfg(usb_ch583)]
-fn flip_toggle<T: Instance>(index: usize, direction: Direction) {
-    let regs = T::regs();
-    let data1 = match index {
-        0 => {
-            let w = regs.uep0_ctrl().read();
-            match direction {
-                Direction::In => w.uep_t_tog(),
-                Direction::Out => w.uep_r_tog(),
-            }
-        }
-        1 => {
-            let w = regs.uep1_ctrl__uh_setup().read();
-            match direction {
-                Direction::In => w.uep_t_tog__uh_sof_en(),
-                Direction::Out => w.uep_r_tog__uh_pre_pid_en(),
-            }
-        }
-        2 => {
-            let w = regs.uep2_ctrl_uh_rx_ctrl().read();
-            match direction {
-                Direction::In => w.uep_t_tog(),
-                Direction::Out => w.uep_r_tog__uh_r_tog(),
-            }
-        }
-        3 => {
-            let w = regs.uep3_ctrl__uh_tx_ctrl().read();
-            match direction {
-                Direction::In => w.uep_t_tog_rb_uh_t_tog(),
-                Direction::Out => w.uep_r_tog(),
-            }
-        }
-        _ => unreachable!(),
-    };
-    set_toggle::<T>(index, direction, !data1);
 }
 
 fn set_tx_len<T: Instance>(index: usize, len: u8) {
@@ -1268,13 +1123,9 @@ fn auto_toggle<T: Instance>(index: usize) {
 fn auto_toggle<T: Instance>(index: usize) {
     let regs = T::regs();
     match index {
-        1 => regs.uep1_ctrl__uh_setup().modify(|w| w.set_uep_auto_tog(false)),
-        2 => regs
-            .uep2_ctrl_uh_rx_ctrl()
-            .modify(|w| w.set_uep_auto_tog__uh_r_auto_tog(false)),
-        3 => regs
-            .uep3_ctrl__uh_tx_ctrl()
-            .modify(|w| w.set_uep_auto_tog_rb_uh_t_auto_tog(false)),
+        1 => regs.uep1_ctrl().modify(|w| w.set_uep_auto_tog(false)),
+        2 => regs.uep2_ctrl().modify(|w| w.set_uep_auto_tog(false)),
+        3 => regs.uep3_ctrl().modify(|w| w.set_uep_auto_tog(false)),
         _ => unreachable!(),
     }
 }
