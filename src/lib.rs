@@ -99,7 +99,7 @@ pub mod gpio;
 pub mod i2c;
 #[cfg(any(power_sleep, power_sleep_ch59x))]
 pub mod power;
-#[cfg(any(pwmx_ch573, pwmx_ch585, pwmx_ch592))]
+#[cfg(any(pwmx_ch572, pwmx_ch573, pwmx_ch585, pwmx_ch592))]
 pub mod pwm;
 #[cfg(rtc_calendar)]
 pub mod rtc;

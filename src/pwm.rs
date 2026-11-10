@@ -1,8 +1,11 @@
-//! PWM4 to PWM11.
+//! PWM4 to PWM11, or PWM1 to PWM5 on CH572/CH570.
 //!
 //! One block clocks every channel from `Fsys`. `CLOCK_DIV` divides that clock,
 //! and the cycle length is shared too. The output frequency is
 //! `Fsys / divisor / cycle`. A divisor of 0 is rejected.
+//!
+//! On the CH572 layout the 16-bit period is shared by PWM1-PWM3 and by
+//! PWM4/PWM5 separately, and every channel has its own 16-bit duty register.
 //!
 //! Fixed cycles use 8-bit duty registers. On CH582/CH583, the available
 //! periods are 256, 255, 128, 127, 64, 63, 32 and 31 clocks. On CH581,
@@ -53,18 +56,19 @@ pub enum Cycle {
     Clocks64,
     /// 63 clocks.
     Clocks63,
-    /// 32 clocks (CH582/CH583).
-    #[cfg(pwmx_ch573)]
+    /// 32 clocks (CH572/CH573).
+    #[cfg(any(pwmx_ch572, pwmx_ch573))]
     Clocks32,
-    /// 31 clocks (CH582/CH583).
-    #[cfg(pwmx_ch573)]
+    /// 31 clocks (CH572/CH573).
+    #[cfg(any(pwmx_ch572, pwmx_ch573))]
     Clocks31,
     /// A custom period of `n` clocks, 1 to 65535, using the 16-bit counter
-    /// mode. `CONFIG.CYC_MOD` selects it and `REG_CYCLE` holds `n - 1`.
+    /// mode. `CONFIG.CYC_MOD` selects it and the cycle register holds `n - 1`.
     ///
-    /// The duty registers widen to 16 bits, which only PWM4 to PWM9 have;
-    /// [`Pwm::channel`] rejects PWM10 and PWM11 in this mode.
-    #[cfg(any(pwmx_ch585, pwmx_ch592))]
+    /// On the CH585/CH592 layouts the duty registers widen to 16 bits, which
+    /// only PWM4 to PWM9 have; [`Pwm::channel`] rejects PWM10 and PWM11 in
+    /// this mode. On CH572 every channel has a 16-bit duty register.
+    #[cfg(any(pwmx_ch572, pwmx_ch585, pwmx_ch592))]
     Clocks16(u16),
 }
 
@@ -78,11 +82,11 @@ impl Cycle {
             Cycle::Clocks127 => 127,
             Cycle::Clocks64 => 64,
             Cycle::Clocks63 => 63,
-            #[cfg(pwmx_ch573)]
+            #[cfg(any(pwmx_ch572, pwmx_ch573))]
             Cycle::Clocks32 => 32,
-            #[cfg(pwmx_ch573)]
+            #[cfg(any(pwmx_ch572, pwmx_ch573))]
             Cycle::Clocks31 => 31,
-            #[cfg(any(pwmx_ch585, pwmx_ch592))]
+            #[cfg(any(pwmx_ch572, pwmx_ch585, pwmx_ch592))]
             Cycle::Clocks16(clocks) => clocks,
         }
     }
@@ -91,7 +95,7 @@ impl Cycle {
     const fn max_duty(self) -> u16 {
         match self {
             Cycle::Clocks256 => 255,
-            #[cfg(any(pwmx_ch585, pwmx_ch592))]
+            #[cfg(any(pwmx_ch572, pwmx_ch585, pwmx_ch592))]
             Cycle::Clocks16(clocks) => clocks,
             other => other.clocks(),
         }
@@ -99,7 +103,7 @@ impl Cycle {
 
     /// Whether the duty registers are 16 bits wide.
     const fn wide(self) -> bool {
-        #[cfg(any(pwmx_ch585, pwmx_ch592))]
+        #[cfg(any(pwmx_ch572, pwmx_ch585, pwmx_ch592))]
         {
             matches!(self, Cycle::Clocks16(_))
         }
@@ -118,11 +122,11 @@ impl Cycle {
             Cycle::Clocks127 => (1, true),
             Cycle::Clocks64 => (2, false),
             Cycle::Clocks63 => (2, true),
-            #[cfg(pwmx_ch573)]
+            #[cfg(any(pwmx_ch572, pwmx_ch573))]
             Cycle::Clocks32 => (3, false),
-            #[cfg(pwmx_ch573)]
+            #[cfg(any(pwmx_ch572, pwmx_ch573))]
             Cycle::Clocks31 => (3, true),
-            #[cfg(any(pwmx_ch585, pwmx_ch592))]
+            #[cfg(any(pwmx_ch572, pwmx_ch585, pwmx_ch592))]
             Cycle::Clocks16(_) => (3, false),
         }
     }
@@ -134,10 +138,13 @@ pub enum StaggerPair {
     /// PWM4 and PWM5.
     Pwm4_5,
     /// PWM6 and PWM7.
+    #[cfg(not(pwmx_ch572))]
     Pwm6_7,
     /// PWM8 and PWM9.
+    #[cfg(not(pwmx_ch572))]
     Pwm8_9,
     /// PWM10 and PWM11.
+    #[cfg(not(pwmx_ch572))]
     Pwm10_11,
 }
 
@@ -176,7 +183,7 @@ impl Config {
     }
 }
 
-/// The PWM4-PWM11 block.
+/// A PWMx block: PWM4-PWM11, or PWM1-PWM5 on CH572/CH570.
 pub struct Pwm<'d, T: Instance> {
     cycle: Cycle,
     _phantom: PhantomData<&'d mut T>,
@@ -192,6 +199,10 @@ impl<'d, T: Instance> Pwm<'d, T> {
             return Err(ConfigError::Cycle);
         }
         let regs = T::regs();
+        // CH572 has a 16-bit divider; the other layouts only store a byte.
+        #[cfg(pwmx_ch572)]
+        regs.clock_div().write(|w| w.set_clock_div(config.divisor as u16));
+        #[cfg(not(pwmx_ch572))]
         regs.clock_div().write(|w| w.set_clock_div(config.divisor));
         #[cfg(any(pwmx_ch585, pwmx_ch592))]
         if let Cycle::Clocks16(clocks) = config.cycle {
@@ -204,6 +215,13 @@ impl<'d, T: Instance> Pwm<'d, T> {
             w.set_cyc_mod(width);
             w.set_cycle_sel(short);
         });
+        // The EVT enables the width before programming the period. PWM1-3 and
+        // PWM4/5 each have a cycle register.
+        #[cfg(pwmx_ch572)]
+        if let Cycle::Clocks16(clocks) = config.cycle {
+            regs.cyc_value().write(|w| w.set_cyc_value(clocks - 1));
+            regs.cyc1_value().write(|w| w.set_cyc1_value(clocks - 1));
+        }
         Ok(Self {
             cycle: config.cycle,
             _phantom: PhantomData,
@@ -222,16 +240,24 @@ impl<'d, T: Instance> Pwm<'d, T> {
     pub fn set_stagger(&self, pair: StaggerPair, enabled: bool) {
         T::regs().config().modify(|w| match pair {
             StaggerPair::Pwm4_5 => w.set_pwm4_5_stag_en(enabled),
+            #[cfg(not(pwmx_ch572))]
             StaggerPair::Pwm6_7 => w.set_pwm6_7_stag_en(enabled),
+            #[cfg(not(pwmx_ch572))]
             StaggerPair::Pwm8_9 => w.set_pwm8_9_stag_en(enabled),
+            #[cfg(not(pwmx_ch572))]
             StaggerPair::Pwm10_11 => w.set_pwm10_11_stag_en(enabled),
         });
     }
 
     /// Which half of the stagger pairs owns the output window
     /// (`CONFIG.STAG_ST`): `true` while PWM5/7/9/11 may drive, `false` while
-    /// PWM4/6/8/10 may.
+    /// PWM4/6/8/10 may. CH572 has only the PWM4/5 pair.
     pub fn stagger_phase(&self) -> bool {
+        // CH572 reads 1 for PWM4 and 0 for PWM5 in `PWM4_5_CH`; invert it so
+        // the meaning matches the other layouts.
+        #[cfg(pwmx_ch572)]
+        return !T::regs().config().read().pwm4_5_ch();
+        #[cfg(not(pwmx_ch572))]
         T::regs().config().read().stag_st()
     }
 
@@ -243,9 +269,11 @@ impl<'d, T: Instance> Pwm<'d, T> {
     ///
     /// # Panics
     ///
-    /// On blocks with 16-bit mode, panics when the block is in that mode and the pin is
-    /// PWM10 or PWM11, which have no 16-bit duty register.
+    /// On the PWM4-PWM11 layouts, panics when the block is in 16-bit mode and
+    /// the pin is PWM10 or PWM11, which have no 16-bit duty register. CH572
+    /// has a 16-bit register for every channel, so it never panics.
     pub fn channel<'a, P: PwmPin<T>>(&'a self, pin: Peri<'a, P>, polarity: Polarity) -> Channel<'a, T> {
+        #[cfg(not(pwmx_ch572))]
         assert!(
             !(self.cycle.wide() && P::INDEX > 5),
             "16-bit cycle mode has no duty register for PWM10/PWM11"
@@ -274,6 +302,15 @@ impl<'d, T: Instance> Pwm<'d, T> {
 
 impl<'d, T: Instance> Drop for Pwm<'d, T> {
     fn drop(&mut self) {
+        #[cfg(pwmx_ch572)]
+        T::regs().out_en().write(|w| {
+            w.set_pwm1_out_en(false);
+            w.set_pwm2_out_en(false);
+            w.set_pwm3_out_en(false);
+            w.set_pwm4_out_en(false);
+            w.set_pwm5_out_en(false);
+        });
+        #[cfg(not(pwmx_ch572))]
         T::regs().out_en().write(|w| {
             w.set_pwm4_out_en(false);
             w.set_pwm5_out_en(false);
@@ -326,7 +363,7 @@ impl<'a, T: Instance> SetDutyCycle for Channel<'a, T> {
 }
 
 fn set_duty<T: Instance>(index: u8, duty: u16, wide: bool) {
-    #[cfg(any(pwmx_ch585, pwmx_ch592))]
+    #[cfg(any(pwmx_ch572, pwmx_ch585, pwmx_ch592))]
     if wide {
         set_duty_wide::<T>(index, duty);
         return;
@@ -338,6 +375,16 @@ fn set_duty<T: Instance>(index: u8, duty: u16, wide: bool) {
 
 fn set_duty_narrow<T: Instance>(index: u8, duty: u8) {
     let regs = T::regs();
+    // CH572 has no byte-wide duty registers; its 8-bit channels are fields in
+    // the two 32-bit groups.
+    #[cfg(pwmx_ch572)]
+    match index {
+        0 => regs.pwm1_3_data().modify(|w| w.set_pwm1_data__pwm1_data(duty)),
+        1 => regs.pwm1_3_data().modify(|w| w.set_pwm2_data__pwm1_data(duty)),
+        2 => regs.pwm1_3_data().modify(|w| w.set_pwm3_data__pwm2_data(duty)),
+        3 => regs.pwm4_5_data().modify(|w| w.set_pwm4_data__pwm4_data(duty)),
+        _ => regs.pwm4_5_data().modify(|w| w.set_pwm5_data__pwm4_data(duty)),
+    }
     #[cfg(pwmx_ch585)]
     match index {
         0 => regs.pwm4_7_data().modify(|w| w.set_pwm4_data__pwm4_data(duty)),
@@ -360,6 +407,19 @@ fn set_duty_narrow<T: Instance>(index: u8, duty: u8) {
         5 => regs.pwm9_data().write(|w| w.set_pwm9_data(duty)),
         6 => regs.pwm10_data().write(|w| w.set_pwm10_data(duty)),
         _ => regs.pwm11_data().write(|w| w.set_pwm11_data(duty)),
+    }
+}
+
+/// Write a 16-bit duty to its own halfword register (CH572).
+#[cfg(pwmx_ch572)]
+fn set_duty_wide<T: Instance>(index: u8, duty: u16) {
+    let regs = T::regs();
+    match index {
+        0 => regs.pwm1_data().write(|w| w.set_pwm1_data(duty)),
+        1 => regs.pwm2_data().write(|w| w.set_pwm2_data(duty)),
+        2 => regs.pwm3_data().write(|w| w.set_pwm3_data(duty)),
+        3 => regs.pwm4_data().write(|w| w.set_pwm4_data(duty)),
+        _ => regs.pwm5_data().write(|w| w.set_pwm5_data(duty)),
     }
 }
 
@@ -430,6 +490,15 @@ fn set_duty_pair<T: Instance>(index: u8, low: u8, high: u8) {
 fn set_polarity<T: Instance>(index: u8, polarity: Polarity) {
     let active_low = polarity == Polarity::ActiveLow;
     let regs = T::regs();
+    #[cfg(pwmx_ch572)]
+    regs.polar().modify(|w| match index {
+        0 => w.set_pwm1_polar(active_low),
+        1 => w.set_pwm2_polar(active_low),
+        2 => w.set_pwm3_polar(active_low),
+        3 => w.set_pwm4_polar(active_low),
+        _ => w.set_pwm5_polar(active_low),
+    });
+    #[cfg(not(pwmx_ch572))]
     regs.polar().modify(|w| match index {
         0 => w.set_pwm4_polar(active_low),
         1 => w.set_pwm5_polar(active_low),
@@ -444,6 +513,15 @@ fn set_polarity<T: Instance>(index: u8, polarity: Polarity) {
 
 fn set_output<T: Instance>(index: u8, enabled: bool) {
     let regs = T::regs();
+    #[cfg(pwmx_ch572)]
+    regs.out_en().modify(|w| match index {
+        0 => w.set_pwm1_out_en(enabled),
+        1 => w.set_pwm2_out_en(enabled),
+        2 => w.set_pwm3_out_en(enabled),
+        3 => w.set_pwm4_out_en(enabled),
+        _ => w.set_pwm5_out_en(enabled),
+    });
+    #[cfg(not(pwmx_ch572))]
     regs.out_en().modify(|w| match index {
         0 => w.set_pwm4_out_en(enabled),
         1 => w.set_pwm5_out_en(enabled),
@@ -498,7 +576,8 @@ impl Instance for peripherals::PWMX {}
 /// pin, and `None` when the channel has no alternate and the shared bit must be
 /// left alone.
 pub trait PwmPin<T: Instance>: Pin {
-    /// Channel index, PWM4 is 0.
+    /// Channel index, zero-based: PWM4 is 0 on the PWM4-PWM11 layouts, PWM1
+    /// is 0 on CH572/CH570.
     const INDEX: u8;
     /// What to write to `PIN_PWMX`, or `None` to leave it.
     const REMAP: Option<bool>;
@@ -512,6 +591,18 @@ macro_rules! impl_pin {
         }
     };
 }
+
+// CH572/CH570 have no `PIN_PWMX` remap field; each channel has one pin.
+#[cfg(ch572)]
+impl_pin!(PA7, 0, None);
+#[cfg(ch572)]
+impl_pin!(PA2, 1, None);
+#[cfg(ch572)]
+impl_pin!(PA3, 2, None);
+#[cfg(ch572)]
+impl_pin!(PA4, 3, None);
+#[cfg(ch572)]
+impl_pin!(PA8, 4, None);
 
 #[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pin!(PA12, 0, Some(false));
