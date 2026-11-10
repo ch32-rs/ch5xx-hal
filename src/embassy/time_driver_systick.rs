@@ -3,17 +3,17 @@
 //! # Why this is not the CH32 driver
 //!
 //! CH5xx's SysTick is a WCH variant with a **32-bit** counter:
-//! `STK_CTLR` (`STE`, `STIE`, `STCLK`, `STRE`, `MODE`), `STK_SR.CNTIF`,
-//! `STK_CNTL` and `STK_CMPLR`. The `STK_CNTH`/`STK_CMPHR` registers the PAC
+//! `CTLR` (`STE`, `STIE`, `STCLK`, `STRE`, `MODE`), `SR.CNTIF`,
+//! `CNTL` and `CMPLR`. The `CNTH`/`CMPHR` registers the PAC
 //! exposes are the padding words at +0x0C and +0x14 — reading them returns the
 //! neighbour, not a real high half. In particular the driver must not use
-//! `stk_cmph().write_value(next >> 32)`: on the real part that writes into
-//! `STK_CMPLR`'s neighbourhood.
+//! `cmphr().write_value(next >> 32)`: on the real part that writes into
+//! `CMPLR`'s neighbourhood.
 //!
 //! Measured behaviour:
 //!
-//! - With `STRE = 1` the counter counts up to `STK_CMPLR` and restarts at 0.
-//! - Reaching the compare value sets `STK_SR.CNTIF`, which stays set until
+//! - With `STRE = 1` the counter counts up to `CMPLR` and restarts at 0.
+//! - Reaching the compare value sets `SR.CNTIF`, which stays set until
 //!   written to 0 (writing 1 is a no-op, so this is `RW0`, not `RW1`).
 //! - `CNTL` can be written while the counter is stopped and resumes from there.
 //!
@@ -59,7 +59,7 @@ impl ReloadTimer for SystickTimer {
 
     #[inline]
     fn count(&self) -> u32 {
-        SYSTICK.stk_cntl().read().cntl()
+        SYSTICK.cntl().read().cntl()
     }
 
     #[inline]
@@ -76,25 +76,25 @@ impl ReloadTimer for SystickTimer {
 /// Program the compare/reload value.
 #[inline]
 fn set_compare(end: u32) {
-    SYSTICK.stk_cmplr().write(|w| w.set_cmpl(end));
+    SYSTICK.cmplr().write(|w| w.set_cmpl(end));
 }
 
 /// Drop a latched compare flag.
 #[inline]
 fn clear_count_flag() {
     #[cfg(systick_sr)]
-    SYSTICK.stk_sr().modify(|w| w.set_cntif(false));
+    SYSTICK.sr().modify(|w| w.set_cntif(false));
     #[cfg(systick_cntfg)]
-    SYSTICK.stk_cntfg().modify(|w| w.set_cntif(false));
+    SYSTICK.cntfg().modify(|w| w.set_cntif(false));
 }
 
 /// Whether the compare flag is set.
 #[inline]
 fn count_flag() -> bool {
     #[cfg(systick_sr)]
-    return SYSTICK.stk_sr().read().cntif();
+    return SYSTICK.sr().read().cntif();
     #[cfg(systick_cntfg)]
-    return SYSTICK.stk_cntfg().read().cntif();
+    return SYSTICK.cntfg().read().cntif();
     #[cfg(not(any(systick_sr, systick_cntfg)))]
     return false;
 }
@@ -148,14 +148,14 @@ pub unsafe fn init() {
 
     // Stop and rebase before changing the wrap point, so no stale compare
     // value can fire during the transition.
-    stk.stk_ctlr().modify(|w| w.set_ste(false));
+    stk.ctlr().modify(|w| w.set_ste(false));
     clear_count_flag();
-    stk.stk_cntl().write(|w| w.set_cntl(0));
+    stk.cntl().write(|w| w.set_cntl(0));
     set_compare(<SystickTimer as ReloadTimer>::MAX_PERIOD - 1);
 
     critical_section::with(|cs| DRIVER.state.reset::<SystickTimer>(cs, hz));
 
-    stk.stk_ctlr().modify(|w| {
+    stk.ctlr().modify(|w| {
         #[cfg(systick_mode)]
         w.set_mode(false); // up-count
         w.set_stclk(true); // HCLK, not HCLK/8
