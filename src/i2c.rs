@@ -1278,7 +1278,10 @@ impl SealedInstance for peripherals::I2C0 {
     }
 
     unsafe fn set_remap(remapped: bool) {
+        #[cfg(pin_i2c)]
         pac::SYS.pin_alternate().modify(|w| w.set_pin_i2c(remapped));
+        #[cfg(not(pin_i2c))]
+        let _ = remapped;
     }
 
     #[cfg(feature = "embassy")]
@@ -1313,14 +1316,18 @@ macro_rules! impl_pins {
 }
 
 // Datasheet table 7-8. On CH585 `PIN_I2C` clear is PB13/PB12 and set is
-// PB21/PB20. CH592 routes I2C0 to PB15 (SCL) and PB14 (SDA) with no remap
-// (CH592 datasheet table 7-7), so only that pair exists there.
-#[cfg(not(ch592))]
+// PB21/PB20. CH592 and CH595 route I2C0 to PB15 (SCL) and PB14 (SDA) with no
+// remap field, so only that pair exists there.
+#[cfg(not(any(ch572, ch592, ch595)))]
 impl_pins!(I2C0, 0, scl: [PB13], sda: [PB12]);
-#[cfg(not(ch592))]
+#[cfg(pin_i2c)]
 impl_pins!(I2C0, 1, scl: [PB21], sda: [PB20]);
-#[cfg(ch592)]
+#[cfg(any(ch592, ch595))]
 impl_pins!(I2C0, 0, scl: [PB15], sda: [PB14]);
+// CH572/CH570 use PA8 (SCL) and PA9 (SDA). `PIN_ALTERNATE_H.I2C_PIN` selects
+// other routes, which the single-bit remap API does not model.
+#[cfg(ch572)]
+impl_pins!(I2C0, 0, scl: [PA8], sda: [PA9]);
 
 // --- embedded-hal ----------------------------------------------------------
 

@@ -60,7 +60,13 @@ impl Default for Config {
             gain: adc::Gain::Div2,
             sample_clock: adc::SampleClock::Divide1,
         };
-        #[cfg(not(adc_ch583))]
+        // CH573's vendor touch setup keeps unity gain and the slowest clock.
+        #[cfg(adc_ch573)]
+        let adc = adc::Config {
+            gain: adc::Gain::Unity,
+            sample_clock: adc::SampleClock::Divide1,
+        };
+        #[cfg(not(any(adc_ch573, adc_ch583)))]
         let adc = adc::Config::default();
         Self {
             charge: 2,
@@ -118,6 +124,8 @@ impl<'d> TouchKey<'d> {
         pac::TOUCHKEY.cfg().write(|w| {
             w.set_pwr_on(true);
             w.set_current(config.high_current);
+            // CH573 has no drive shield.
+            #[cfg(touchkey_drv_en)]
             w.set_drv_en(config.shield);
         });
         Ok(Self {

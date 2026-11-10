@@ -101,11 +101,18 @@ fn rtc_count() -> u16 {
 /// Call once, from [`crate::init`].
 pub(crate) unsafe fn init() {
     // Free-running, up-count, HCLK source (`STCLK` set — clearing it would
-    // select HCLK/8). `STE` starts it.
+    // select HCLK/8). `STE` starts it. CH573 keeps the flag in `STK_CNTFG`
+    // and has no counter-direction bit.
+    #[cfg(systick_cntfg)]
+    SYSTICK.stk_cntfg().modify(|w| w.set_cntif(false));
+    #[cfg(not(systick_cntfg))]
     SYSTICK.stk_sr().modify(|w| w.set_cntif(false));
     SYSTICK.stk_cntl().write(|w| w.set_cntl(0));
+    // CH572 has a single 32-bit counter register and no high half.
+    #[cfg(systick_cnth)]
     SYSTICK.stk_cnth().write(|w| w.set_cnth(0));
     SYSTICK.stk_ctlr().modify(|w| {
+        #[cfg(systick_mode)]
         w.set_mode(false); // up-count
         w.set_stclk(true); // source: HCLK (not HCLK/8)
         w.set_stie(false); // poll, never interrupt

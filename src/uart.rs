@@ -239,7 +239,7 @@ pub(crate) trait SealedInstance {
 /// no-modem block only differs in two places: its THR write field is named
 /// `RBR` (same bits) and it has no `MCR.LOOP`.
 macro_rules! impl_instance {
-    ($inst:ident, $setter:ident, $loopback:expr) => {
+    ($inst:ident, $setter:ident, $loopback:expr, $pin_cfg:ident) => {
         impl SealedInstance for peripherals::$inst {
             #[inline]
             fn regs() -> pac::uart::UartFull {
@@ -248,11 +248,15 @@ macro_rules! impl_instance {
                 unsafe { pac::uart::UartFull::from_ptr(pac::$inst.as_ptr()) }
             }
 
-            const INTERNAL_LOOPBACK: bool = $loopback;
+            // CH572/CH570 keep the full block shape but have no `MCR.LOOP`.
+            const INTERNAL_LOOPBACK: bool = $loopback && cfg!(uart_mcr_loop);
 
             #[inline]
             unsafe fn set_remap(remapped: bool) {
+                #[cfg($pin_cfg)]
                 pac::SYS.pin_alternate().modify(|w| w.$setter(remapped));
+                #[cfg(not($pin_cfg))]
+                let _ = remapped;
             }
 
             #[inline]
@@ -271,18 +275,22 @@ macro_rules! impl_instance {
 /// Every UART is the full block unless the family selects `UART_NOMODEM` for
 /// that instance, which CH592, CH583, CH595 and CH573 do for UART1-3.
 macro_rules! impl_uart {
-    ($inst:ident, $setter:ident, $cfg:ident) => {
+    ($inst:ident, $setter:ident, $cfg:ident, $pin_cfg:ident) => {
         #[cfg(not($cfg))]
-        impl_instance!($inst, $setter, true);
+        impl_instance!($inst, $setter, true, $pin_cfg);
         #[cfg($cfg)]
-        impl_instance!($inst, $setter, false);
+        impl_instance!($inst, $setter, false, $pin_cfg);
     };
 }
 
-impl_uart!(UART0, set_pin_uart0, uart0_nomodem);
-impl_uart!(UART1, set_pin_uart1, uart1_nomodem);
-impl_uart!(UART2, set_pin_uart2, uart2_nomodem);
-impl_uart!(UART3, set_pin_uart3, uart3_nomodem);
+impl_uart!(UART0, set_pin_uart0, uart0_nomodem, pin_uart0);
+// CH572/CH570 have a single UART.
+#[cfg(uart1)]
+impl_uart!(UART1, set_pin_uart1, uart1_nomodem, pin_uart1);
+#[cfg(uart2)]
+impl_uart!(UART2, set_pin_uart2, uart2_nomodem, pin_uart2);
+#[cfg(uart3)]
+impl_uart!(UART3, set_pin_uart3, uart3_nomodem, pin_uart3);
 
 /// Interrupt handler shared by all async UART instances.
 ///
@@ -368,15 +376,27 @@ macro_rules! impl_pins {
     };
 }
 
-// Datasheet table 7-8, default column.
+// Datasheet table 7-8, default column. CH572/CH570 have their own two-pin
+// UART0 on PA2/PA3, selected with `PIN_ALTERNATE_H.UART_RXD/UART_TXD`.
+#[cfg(not(ch572))]
 impl_pins!(UART0, 0, rx: [PB4], tx: [PB7]);
+#[cfg(ch572)]
+impl_pins!(UART0, 0, rx: [PA2], tx: [PA3]);
+#[cfg(uart1)]
 impl_pins!(UART1, 0, rx: [PA8], tx: [PA9]);
+#[cfg(uart2)]
 impl_pins!(UART2, 0, rx: [PA6], tx: [PA7]);
+#[cfg(uart3)]
 impl_pins!(UART3, 0, rx: [PA4], tx: [PA5]);
-// Datasheet table 7-8, remapped column.
+// Datasheet table 7-8, remapped column. CH572 uses a different 3-bit pin
+// selector, and several other dies omit the field for some instances.
+#[cfg(pin_uart0)]
 impl_pins!(UART0, 1, rx: [PA15], tx: [PA14]);
+#[cfg(pin_uart1)]
 impl_pins!(UART1, 1, rx: [PB12], tx: [PB13]);
+#[cfg(pin_uart2)]
 impl_pins!(UART2, 1, rx: [PB22], tx: [PB23]);
+#[cfg(pin_uart3)]
 impl_pins!(UART3, 1, rx: [PB20], tx: [PB21]);
 
 /// Transmit half of a UART.
@@ -392,7 +412,7 @@ impl<'d, T: Instance, M: Mode> UartTx<'d, T, M> {
         for &byte in buffer {
             // TFC counts bytes waiting in the 8-byte TX FIFO.
             while r.tfc().read().tfc() >= 8 {}
-            r.thr().write(|w| w.set_thr(byte));
+            write_thr(&r, byte);
         }
         Ok(())
     }
@@ -412,6 +432,29 @@ impl<'d, T: Instance, M: Mode> UartTx<'d, T, M> {
     }
 }
 
+/// Write one byte to the transmitter.
+///
+/// The register type name follows the block variant (`Thr`, `ThrFull`,
+/// `ThrNomodem`), and CH572's THR fieldset calls the byte field `RBR`, so the
+/// setter is selected by chip rather than by a portable type path.
+#[inline]
+fn write_thr(r: &pac::uart::UartFull, byte: u8) {
+    #[cfg(ch572)]
+    r.thr().write(|w| w.set_rbr(byte));
+    #[cfg(not(ch572))]
+    r.thr().write(|w| w.set_thr(byte));
+}
+
+/// Enable or disable the UART's interrupt output. CH573 still calls the
+/// combined OUT2/INT_OE bit by its older name.
+#[inline]
+fn set_interrupt_output(r: &pac::uart::UartFull, enabled: bool) {
+    #[cfg(mcr_int_oe)]
+    r.mcr().modify(|w| w.set_mcr_int_oe(enabled));
+    #[cfg(mcr_int_oe_combined)]
+    r.mcr().modify(|w| w.set_mcr_out2_rb_mcr_int_oe(enabled));
+}
+
 impl<T: Instance, M: Mode> Drop for UartTx<'_, T, M> {
     fn drop(&mut self) {
         let r = T::regs();
@@ -422,7 +465,7 @@ impl<T: Instance, M: Mode> Drop for UartTx<'_, T, M> {
         // The receiver is always enabled, so RXD needs no separate disable.
         if T::state().owners.fetch_sub(1, Ordering::Relaxed) == 1 {
             T::Interrupt::disable();
-            r.mcr().modify(|w| w.set_mcr_int_oe(false));
+            set_interrupt_output(&r, false);
         }
         // Leave the pin as a pulled-up input, not a driven output. The global
         // mux is shared with other UART users and is intentionally left alone.
@@ -532,7 +575,7 @@ impl<T: Instance, M: Mode> Drop for UartRx<'_, T, M> {
         // sources it owns; dropping the last one disables the IRQ itself.
         if T::state().owners.fetch_sub(1, Ordering::Relaxed) == 1 {
             T::Interrupt::disable();
-            r.mcr().modify(|w| w.set_mcr_int_oe(false));
+            set_interrupt_output(&r, false);
         }
     }
 }
@@ -639,14 +682,18 @@ impl<'d, T: Instance, M: Mode> Uart<'d, T, M> {
     /// `MCR_LOOP` is set, so loopback has to be driven by polling. Use it with
     /// the blocking constructors, not the async ones.
     pub fn set_internal_loopback(&mut self, enable: bool) {
+        #[cfg(any(uart_mcr_loop, uart_fcr_clear))]
         let r = T::regs();
         assert!(
             !enable || T::INTERNAL_LOOPBACK,
             "this UART instance has no internal loopback"
         );
+        #[cfg(uart_mcr_loop)]
         if T::INTERNAL_LOOPBACK {
             r.mcr().modify(|w| w.set_mcr_loop(enable));
         }
+        // CH572/CH570 have no FIFO-clear bits to start the loopback clean.
+        #[cfg(uart_fcr_clear)]
         if enable {
             // Preserve FIFO mode: writing FCR with only the clear bit would
             // also clear `FCR_FIFO_EN`, leaving a one-byte receiver.
@@ -657,6 +704,8 @@ impl<'d, T: Instance, M: Mode> Uart<'d, T, M> {
             });
             let _ = r.lsr().read();
         }
+        #[cfg(not(uart_fcr_clear))]
+        let _ = enable;
     }
 }
 
@@ -853,7 +902,7 @@ impl<T: Instance> embedded_io_async::Write for UartTx<'_, T, Async> {
 /// `UARTx_INTCfg` sets it whenever it enables an interrupt.
 #[cfg(feature = "embassy")]
 fn enable_interrupt_output<T: Instance>() {
-    T::regs().mcr().modify(|w| w.set_mcr_int_oe(true));
+    set_interrupt_output(&T::regs(), true);
 }
 
 /// Queue bytes into the eight-byte TX FIFO and wait for room when it fills.
@@ -874,7 +923,7 @@ async fn write_async<T: Instance>(buffer: &[u8]) -> Result<(), Error> {
         state.tx_waker.register(cx.waker());
 
         while written < buffer.len() && r.tfc().read().tfc() < 8 {
-            r.thr().write(|w| w.set_thr(buffer[written]));
+            write_thr(&r, buffer[written]);
             written += 1;
         }
 
@@ -890,7 +939,7 @@ async fn write_async<T: Instance>(buffer: &[u8]) -> Result<(), Error> {
         compiler_fence(Ordering::SeqCst);
 
         while written < buffer.len() && r.tfc().read().tfc() < 8 {
-            r.thr().write(|w| w.set_thr(buffer[written]));
+            write_thr(&r, buffer[written]);
             written += 1;
         }
 
@@ -1133,16 +1182,22 @@ fn configure<T: Instance, const REMAP: u8>(config: &Config, enable_tx: bool) -> 
     let r = T::regs();
 
     // Software reset, then leave every interrupt disabled. Writing RESET alone
-    // also clears TXD_EN and the modem output enables.
+    // also clears TXD_EN and the modem output enables. CH572/CH570 have no
+    // reset bit; there the write below is the whole initialisation.
+    #[cfg(uart_ier_reset)]
     r.ier().write(|w| w.set_ier_reset(true));
     r.ier().write(|w| w.set_ier_txd_en(enable_tx));
 
     // The eight-byte FIFO is recommended over 16C450-compatible mode. Both
-    // clear bits are write-one, auto-clearing.
+    // clear bits are write-one, auto-clearing. CH572/CH570 only have the
+    // enable and trigger fields.
     r.fcr().write(|w| {
         w.set_fcr_fifo_en(true);
-        w.set_fcr_rx_fifo_clr(true);
-        w.set_fcr_tx_fifo_clr(true);
+        #[cfg(uart_fcr_clear)]
+        {
+            w.set_fcr_rx_fifo_clr(true);
+            w.set_fcr_tx_fifo_clr(true);
+        }
         w.set_fcr_fifo_trig(0);
     });
 

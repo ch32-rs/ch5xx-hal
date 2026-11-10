@@ -1173,10 +1173,21 @@ impl sealed::Instance for peripherals::USBFS {
 
     fn set_pins(enabled: bool) {
         critical_section::with(|_| {
+            #[cfg(usb_phy_pin_config)]
             pac::SYS.pin_config().modify(|w| {
                 w.set_pin_usb_en(enabled);
                 w.set_udp_pu_en(enabled);
-            })
+            });
+            #[cfg(usb_phy_pin_analog_ie)]
+            pac::SYS.pin_analog_ie().modify(|w| {
+                w.set_pin_usb_en(enabled);
+                w.set_udp_pu_en(enabled);
+            });
+            #[cfg(usb_phy_pin_alternate)]
+            pac::SYS.pin_alternate().modify(|w| {
+                w.set_pin_usb_en(enabled);
+                w.set_udp_pu_en(enabled);
+            });
         });
     }
 }
