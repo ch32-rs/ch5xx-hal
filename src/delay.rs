@@ -1,8 +1,11 @@
 //! Busy-wait delays on the core SysTick counter.
 //!
-//! CH5xx's SysTick is the WCH variant: `CTLR` (`STE` bit 0, `STCLK` bit 2,
-//! `MODE` bit 4), `SR.CNTIF`, and the 32-bit `CNTL` / `CMPLR` pair.
-//! There is no free-running 64-bit counter.
+//! Most CH5xx dies have the WCH up-counter variant: `CTLR` (`STE` bit 0,
+//! `STCLK` bit 2, `MODE` bit 4), `SR.CNTIF`, and the 32-bit `CNTL` / `CMPLR`
+//! pair. CH573 instead has the V3A core timer: a 64-bit **down-counter** with
+//! a one-shot `STRELOAD` load and the flag in `CNTFG`. Both are started as a
+//! free-running counter here; the direction only changes how elapsed time is
+//! computed.
 //!
 //! The counter is started **once** by `init` and left running; each delay
 //! only reads `CNT` and compares it against a target.
@@ -80,6 +83,22 @@ const CAL_ROUNDS: usize = 5;
 /// RTC frequency, for turning counts into seconds.
 const RTC_HZ: u32 = 32_768;
 
+/// SysTick counts elapsed between two `CNTL` reads.
+///
+/// Up-counters (`MODE = 0`) advance above `start`; CH573's V3A down-counter
+/// falls below it, so the subtraction is reversed.
+#[inline(always)]
+fn elapsed_ticks(start: u32, end: u32) -> u32 {
+    #[cfg(systick_downcounter)]
+    {
+        start.wrapping_sub(end)
+    }
+    #[cfg(not(systick_downcounter))]
+    {
+        end.wrapping_sub(start)
+    }
+}
+
 #[inline(always)]
 fn rtc_count() -> u16 {
     // `CNT_32K` is the 16-bit register at 0x38. It wraps every 2 s, but the
@@ -100,10 +119,15 @@ fn rtc_count() -> u16 {
 ///
 /// Call once, from [`crate::init`].
 pub(crate) unsafe fn init() {
-    // Free-running, up-count, HCLK source (`STCLK` set — clearing it would
-    // select HCLK/8). `STE` starts it. CH573 keeps the flag in `CNTFG`
-    // and has no counter-direction bit.
+    // Free-running, HCLK source (`STCLK` set — clearing it would select
+    // HCLK/8). `STE` starts it. CH573 keeps the flag in `CNTFG` and has no
+    // counter-direction bit; its 64-bit counter starts at the maximum value
+    // and counts down, so a zero-crossing is ~12,000 years away instead of
+    // firing right after `init`.
     cfg_select! {
+        systick_downcounter => {
+            SYSTICK.cntfg().modify(|w| w.set_cntif(false));
+        }
         systick_cntfg => {
             SYSTICK.cntfg().modify(|w| w.set_cntif(false));
         }
@@ -111,10 +135,18 @@ pub(crate) unsafe fn init() {
             SYSTICK.sr().modify(|w| w.set_cntif(false));
         }
     }
-    SYSTICK.cntl().write(|w| w.set_cntl(0));
-    // CH572 has a single 32-bit counter register and no high half.
-    #[cfg(systick_cnth)]
-    SYSTICK.cnth().write(|w| w.set_cnth(0));
+    cfg_select! {
+        systick_downcounter => {
+            SYSTICK.cntl().write(|w| w.set_cntl(u32::MAX));
+            SYSTICK.cnth().write(|w| w.set_cnth(u32::MAX));
+        }
+        _ => {
+            SYSTICK.cntl().write(|w| w.set_cntl(0));
+            // CH572 has a single 32-bit counter register and no high half.
+            #[cfg(systick_cnth)]
+            SYSTICK.cnth().write(|w| w.set_cnth(0));
+        }
+    }
     SYSTICK.ctlr().modify(|w| {
         #[cfg(systick_mode)]
         w.set_mode(false); // up-count
@@ -176,7 +208,7 @@ impl Delay {
             remaining -= chunk;
 
             let start = SYSTICK.cntl().read().cntl();
-            while SYSTICK.cntl().read().cntl().wrapping_sub(start) < chunk {
+            while elapsed_ticks(start, SYSTICK.cntl().read().cntl()) < chunk {
                 core::hint::spin_loop();
             }
         }
@@ -266,7 +298,7 @@ unsafe fn calibrate() -> u32 {
         };
 
         let end = SYSTICK.cntl().read().cntl();
-        let ticks = end.wrapping_sub(start) as u64;
+        let ticks = elapsed_ticks(start, end) as u64;
         let rtc_delta = rtc_delta as u64;
 
         // ticks per second = ticks * RTC_HZ / rtc_delta
