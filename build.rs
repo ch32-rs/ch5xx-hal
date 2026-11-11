@@ -353,6 +353,10 @@ fn main() {
     }
     if register_has_field(&chip_name, "systick", "STRELOAD") {
         println!("cargo:rustc-cfg=systick_streload");
+        // CH573's V3A core timer is a 64-bit down-counter with a one-shot
+        // reload, not the up-counter/auto-reload model of the other dies. The
+        // HAL provides a separate time driver and delay path for it.
+        println!("cargo:rustc-cfg=systick_downcounter");
     }
     // CH585-CH59x keep the flag in `SR`; CH572 and CH573 call it `CNTFG`.
     // CH572 has no high counter half at all.

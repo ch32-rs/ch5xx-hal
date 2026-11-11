@@ -5,7 +5,13 @@
 //! | Feature | Driver | Takes |
 //! | --- | --- | --- |
 //! | `time-driver-systick` | `time_driver_systick.rs` | the core SysTick counter |
+//! | `time-driver-systick` on CH573 | `time_driver_systick_ch573.rs` | the V3A down-counter SysTick |
 //! | `time-driver-tmr0` … `time-driver-tmr3` | `time_driver_tmr.rs` | that TMR instance |
+//!
+//! CH573's SysTick is a 64-bit down-counter with a one-shot reload, so it
+//! cannot share the up-counter/auto-reload driver. `build.rs` emits
+//! `systick_downcounter` from the register metadata and the selection below
+//! picks the matching module; a chip cannot silently use the wrong model.
 //!
 //! `time-driver-systick` is the lowest-latency option and is what the examples
 //! use. It reprograms SysTick for its own reload model, which
@@ -33,14 +39,24 @@
 
 use crate::pac;
 
+// The shared reload state machine drives the TMR instances and the up-counter
+// SysTick. CH573's down-counter driver carries its own state, so it does not
+// pull these in (and would otherwise leave them as dead code).
 #[cfg(any(
-    feature = "time-driver-systick",
+    all(feature = "time-driver-systick", not(systick_downcounter)),
     feature = "time-driver-tmr0",
     feature = "time-driver-tmr1",
     feature = "time-driver-tmr2",
     feature = "time-driver-tmr3"
 ))]
 mod reload_math;
+#[cfg(any(
+    all(feature = "time-driver-systick", not(systick_downcounter)),
+    feature = "time-driver-tmr0",
+    feature = "time-driver-tmr1",
+    feature = "time-driver-tmr2",
+    feature = "time-driver-tmr3"
+))]
 mod reload_timer;
 
 #[cfg(not(any(
@@ -78,7 +94,15 @@ compile_error!("enable only one time driver: `time-driver-systick` or a single `
 ))]
 compile_error!("enable only one `time-driver-tmr*` feature");
 
-#[cfg(feature = "time-driver-systick")]
+// CH573's V3A SysTick counts down and reloads from `CMP` only when software
+// pulses `STRELOAD`; the shared driver's up-counter/auto-reload model is wrong
+// there. Select the down-counter implementation from the capability cfg so a
+// new die with the same block picks it up automatically.
+#[cfg(all(feature = "time-driver-systick", systick_downcounter))]
+#[path = "time_driver_systick_ch573.rs"]
+pub mod time_driver_impl;
+
+#[cfg(all(feature = "time-driver-systick", not(systick_downcounter)))]
 #[path = "time_driver_systick.rs"]
 pub mod time_driver_impl;
 

@@ -9,6 +9,10 @@
 //! have real high words, but this driver still uses the low 32-bit pair with
 //! the same up-counter/auto-reload model, and never writes `CMPHR`.
 //!
+//! CH573 is **not** one of these. Its V3A SysTick counts down and has a
+//! one-shot reload, so `super::time_driver_systick_ch573` implements that
+//! model instead; `time_driver_impl` selects between the two at compile time.
+//!
 //! Measured behaviour:
 //!
 //! - With `STRE = 1` the counter counts up to `CMPLR` and restarts at 0.
@@ -157,11 +161,10 @@ pub unsafe fn init() {
         #[cfg(systick_mode)]
         w.set_mode(false); // up-count
         w.set_stclk(true); // HCLK, not HCLK/8
-                           // Reload at the compare value. CH573 calls the bit `STRELOAD`.
+                           // Reload at the compare value. CH573's one-shot
+                           // `STRELOAD` has its own driver and never reaches here.
         #[cfg(systick_stre)]
         w.set_stre(true);
-        #[cfg(systick_streload)]
-        w.set_streload(true);
         w.set_stie(true); // interrupt on compare
         w.set_ste(true);
     });
