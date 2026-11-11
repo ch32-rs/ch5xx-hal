@@ -14,7 +14,7 @@ Embassy support.
 | Chip | Core | Status |
 | --- | --- | --- |
 | CH585 | QingKe V3C | Exercised on hardware |
-| CH592 | QingKe V3C | Clocks, delay, GPIO, UART0, SPI0, ADC, RTC, watchdog, PWM, timers, power and TouchKey exercised on hardware; USBFS builds, host enumeration and I2C0 pending |
+| CH592 | QingKe V3C | Clocks, delay, GPIO, UART0, SPI0, ADC, RTC, watchdog, PWM, timers, power and TouchKey exercised on hardware; USBFS builds but does not enumerate yet, I2C0 blocked by the debug-pin conflict |
 | CH582 | QingKe V4A | GPIO, UART0, SPI0, I2C0, ADC, watchdog, timers and PWM exercised on hardware; USBFS, RTC, TouchKey and sleep pending |
 | CH584 | QingKe V3C | Builds; no board validation |
 | CH583 | QingKe V4A | Builds; no board validation |
@@ -48,9 +48,9 @@ chip feature, for example `ch585` or `ch592`.
 | `watchdog` | Window watchdog, reset cause, battery detector |
 | `delay` | SysTick or the Embassy timebase |
 | `power` | Halt and sleep, RTC wake |
-| `usb` | USBFS device, endpoints 0–7, packets up to 64 bytes |
+| `usb` | USBFS device, endpoints 0–7 on CH585/CH592 (0–3 on CH582/CH583), packets up to 64 bytes |
 | `usbhs` | USBHS device, endpoints 0–7, high-speed bulk 8–512 bytes |
-| Embassy time driver | SysTick or TMR0–TMR3, typed interrupt bindings |
+| Embassy time driver | SysTick (up-counter; CH573 down-counter) or TMR0–TMR3, typed interrupt bindings |
 | Timer count/PWM/capture/DMA | Experimental |
 | USB host, BLE, NFC | Not implemented |
 
