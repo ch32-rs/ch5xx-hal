@@ -260,7 +260,8 @@ impl Delay {
         loop {
             let now = SYSTICK.cntl().read().cntl();
             if now < prev {
-                let left = remaining / tpu;
+                // Round up: a truncated `left` of 0 would return 1 µs early.
+                let left = remaining.div_ceil(tpu);
                 let deadline = embassy_time_driver::now().saturating_add(left as u64);
                 while embassy_time_driver::now() < deadline {
                     core::hint::spin_loop();
