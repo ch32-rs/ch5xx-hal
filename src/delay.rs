@@ -193,6 +193,7 @@ impl Delay {
     /// Busy-wait for `us` microseconds.
     ///
     /// Panics in debug builds if called before [`crate::init`].
+    #[link_section = ".highcode"]
     pub fn delay_us(&mut self, us: u32) {
         let hz = TICKS_PER_SEC.load(Ordering::Relaxed);
         debug_assert!(hz != 0, "delay used before `ch5xx_hal::init`");
@@ -231,18 +232,59 @@ impl Delay {
 ///
 /// It is monotonic, so it carries the delay forward correctly; it just costs
 /// one tick of resolution instead of a raw counter read.
+///
+/// Even one `now()` poll is expensive here: converting counter ticks to time
+/// divides by the runtime-measured rate twice, and the V3C has no M extension,
+/// so each poll costs tens of microseconds. Short waits therefore chase the
+/// raw counter instead and only fall back to `now()` when the time driver
+/// moves the compare point out from under them.
 #[cfg(feature = "time-driver-systick")]
 impl Delay {
+    /// SysTick ticks per microsecond, rounded up so waits never come back
+    /// short.
+    fn ticks_per_us() -> u32 {
+        TICKS_PER_SEC.load(Ordering::Relaxed).div_ceil(1_000_000)
+    }
+
     /// Busy-wait for `us` microseconds.
+    ///
+    /// The conversion stays in `u32`/`u64`: the QingKe V3C has no M extension,
+    /// and a `u128` division here cost ~100 µs of CPU per call at 60 MHz,
+    /// which the soft-I2C half-period path called twice per bus bit.
+    #[link_section = ".highcode"]
     pub fn delay_us(&mut self, us: u32) {
-        let ticks = embassy_time_driver::TICK_HZ as u128 * us as u128 / 1_000_000;
-        self.wait_ticks(ticks as u64);
+        let tpu = Self::ticks_per_us();
+        let mut prev = SYSTICK.cntl().read().cntl();
+        let mut remaining = us;
+        let mut counted = 0u32; // raw ticks already waited
+        loop {
+            let now = SYSTICK.cntl().read().cntl();
+            if now < prev {
+                // The counter wrapped or the driver reprogrammed the compare;
+                // the raw reference is gone. Finish on the driver timebase.
+                let left = remaining.saturating_sub(counted / tpu).max(1);
+                let deadline = embassy_time_driver::now().saturating_add(left as u64);
+                while embassy_time_driver::now() < deadline {
+                    core::hint::spin_loop();
+                }
+                return;
+            }
+            counted = counted.wrapping_add(now.wrapping_sub(prev));
+            prev = now;
+            while counted >= tpu {
+                counted -= tpu;
+                remaining = remaining.saturating_sub(1);
+            }
+            if remaining == 0 {
+                return;
+            }
+        }
     }
 
     /// Busy-wait for `ms` milliseconds.
     pub fn delay_ms(&mut self, ms: u32) {
-        let ticks = embassy_time_driver::TICK_HZ as u128 * ms as u128 / 1_000;
-        self.wait_ticks(ticks as u64);
+        let ticks = (embassy_time_driver::TICK_HZ * ms as u64).div_ceil(1_000);
+        self.wait_ticks(ticks);
     }
 
     fn wait_ticks(&mut self, ticks: u64) {
