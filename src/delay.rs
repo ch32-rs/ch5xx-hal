@@ -35,14 +35,17 @@
 //! ticks with the calibrated rate. That is the cheapest option and it works
 //! with no other stack involved.
 //!
-//! Under `time-driver-systick` the embassy driver owns the counter and reloads
-//! it at a compare value it reprograms for every alarm, so a raw poll would
-//! measure an interval against a counter that restarts underneath it: measured
-//! on hardware with an alarm every 100 ms, `delay_ms(1000)` took **97 ms**.
-//! In that configuration [`Delay`] therefore reads the timebase through
-//! [`embassy_time_driver::now`] instead, which is monotonic by contract. The
-//! delay is no longer exactly calibrated — it is one embassy tick, rounded up —
-//! but it is correct, and that is the trade the feature makes.
+//! Under `time-driver-systick` the embassy driver owns the counter and
+//! reprograms its compare for every alarm, so a raw poll would measure an
+//! interval against a counter that restarts underneath it: measured on
+//! hardware with an alarm every 100 ms, `delay_ms(1000)` took **97 ms**.
+//! [`Delay::delay_us`] therefore chases the raw counter and switches to
+//! [`embassy_time_driver::now`] — monotonic by contract — as soon as the
+//! counter moves underneath it, and [`Delay::delay_ms`] reads the timebase
+//! through `now()` throughout. Both are one embassy tick of quantization,
+//! rounded up, instead of the exactly calibrated raw path; that is the trade
+//! the feature makes. See the methods for why one `now()` poll is expensive
+//! on the V3C.
 //!
 //! Note that an executor that never sleeps hides the problem: `CMPLR` stays
 //! at its initial `MAX_PERIOD - 1`, the counter never reaches it, and raw
@@ -193,7 +196,6 @@ impl Delay {
     /// Busy-wait for `us` microseconds.
     ///
     /// Panics in debug builds if called before [`crate::init`].
-    #[link_section = ".highcode"]
     pub fn delay_us(&mut self, us: u32) {
         let hz = TICKS_PER_SEC.load(Ordering::Relaxed);
         debug_assert!(hz != 0, "delay used before `ch5xx_hal::init`");
@@ -227,58 +229,78 @@ impl Delay {
     }
 }
 
-/// Under the SysTick time driver the counter is reloaded at the driver's
-/// compare value, so it cannot be polled. Read the driver's timebase instead.
-///
-/// It is monotonic, so it carries the delay forward correctly; it just costs
-/// one tick of resolution instead of a raw counter read.
-///
-/// Even one `now()` poll is expensive here: converting counter ticks to time
-/// divides by the runtime-measured rate twice, and the V3C has no M extension,
-/// so each poll costs tens of microseconds. Short waits therefore chase the
-/// raw counter instead and only fall back to `now()` when the time driver
-/// moves the compare point out from under them.
-#[cfg(feature = "time-driver-systick")]
+/// Under the SysTick time driver the counter's compare point belongs to the
+/// driver, so raw polling and `now()` each carry a trade-off: see the module
+/// docs. `delay_us` chases the raw counter and falls back to `now()`;
+/// `delay_ms` reads the timebase through `now()` throughout. Even one `now()`
+/// poll is expensive: converting counter ticks to time divides by the
+/// runtime-measured rate twice, and the V3C has no M extension, so each poll
+/// costs tens of microseconds.
+#[cfg(all(feature = "time-driver-systick", not(systick_downcounter)))]
 impl Delay {
-    /// SysTick ticks per microsecond, rounded up so waits never come back
-    /// short.
-    fn ticks_per_us() -> u32 {
-        TICKS_PER_SEC.load(Ordering::Relaxed).div_ceil(1_000_000)
-    }
-
     /// Busy-wait for `us` microseconds.
     ///
-    /// The conversion stays in `u32`/`u64`: the QingKe V3C has no M extension,
-    /// and a `u128` division here cost ~100 µs of CPU per call at 60 MHz,
-    /// which the soft-I2C half-period path called twice per bus bit.
-    #[link_section = ".highcode"]
+    /// The wait is budgeted in raw counter ticks up front — one microsecond is
+    /// `Fsys / 1 MHz` ticks, rounded up, so it never comes back short — and the
+    /// loop only subtracts. If the counter wraps, or the time driver
+    /// reprograms the compare point and reloads it, the raw reference is gone
+    /// and the remainder finishes on the driver timebase, which costs one
+    /// `now()` poll plus its quantization.
+    ///
+    /// `u32::MAX` microsecond requests saturate the budget at ~70 s of ticks;
+    /// use [`Delay::delay_ms`] for long waits. The conversion stays in
+    /// `u32`/`u64` math: a `u128` division here cost ~100 µs of CPU per call
+    /// at 60 MHz, which the soft-I2C half-period path called twice per bus
+    /// bit.
+    #[cfg_attr(highcode, link_section = ".highcode")]
     pub fn delay_us(&mut self, us: u32) {
-        let tpu = Self::ticks_per_us();
+        let tpu = TICKS_PER_SEC.load(Ordering::Relaxed).div_ceil(1_000_000);
+        let mut remaining = us.saturating_mul(tpu);
         let mut prev = SYSTICK.cntl().read().cntl();
-        let mut remaining = us;
-        let mut counted = 0u32; // raw ticks already waited
         loop {
             let now = SYSTICK.cntl().read().cntl();
             if now < prev {
-                // The counter wrapped or the driver reprogrammed the compare;
-                // the raw reference is gone. Finish on the driver timebase.
-                let left = remaining.saturating_sub(counted / tpu).max(1);
+                let left = remaining / tpu;
                 let deadline = embassy_time_driver::now().saturating_add(left as u64);
                 while embassy_time_driver::now() < deadline {
                     core::hint::spin_loop();
                 }
                 return;
             }
-            counted = counted.wrapping_add(now.wrapping_sub(prev));
+            remaining = remaining.saturating_sub(now.wrapping_sub(prev));
             prev = now;
-            while counted >= tpu {
-                counted -= tpu;
-                remaining = remaining.saturating_sub(1);
-            }
             if remaining == 0 {
                 return;
             }
         }
+    }
+
+    /// Busy-wait for `ms` milliseconds.
+    ///
+    /// Reads the timebase through `now()`; the ~tens-of-µs poll cost is
+    /// amortized over the wait and the deadline logic stays simple.
+    pub fn delay_ms(&mut self, ms: u32) {
+        let ticks = (embassy_time_driver::TICK_HZ * ms as u64).div_ceil(1_000);
+        self.wait_ticks(ticks);
+    }
+
+    fn wait_ticks(&mut self, ticks: u64) {
+        let deadline = embassy_time_driver::now().saturating_add(ticks);
+        while embassy_time_driver::now() < deadline {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// On the CH573 down-counter the one-shot `STRELOAD` restarts the counter at
+/// every alarm, so there is no raw reference to chase at all; everything
+/// reads the driver's monotonic timebase.
+#[cfg(all(feature = "time-driver-systick", systick_downcounter))]
+impl Delay {
+    /// Busy-wait for `us` microseconds.
+    pub fn delay_us(&mut self, us: u32) {
+        let ticks = (embassy_time_driver::TICK_HZ * us as u64).div_ceil(1_000_000);
+        self.wait_ticks(ticks);
     }
 
     /// Busy-wait for `ms` milliseconds.
