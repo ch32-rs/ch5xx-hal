@@ -128,16 +128,18 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=power_sleep_ch59x");
     }
-    // The SPI register block is not one layout. The `ch585`, `ch583` and
-    // `ch592` versions are the FIFO controller this driver programs; the
-    // others are not, and naming their registers would not compile. CH592
-    // narrows the DMA address registers to 16 bits and drops SPI1
-    // (`SPI_NODMA`); the driver casts the addresses to the field width and
-    // gates the second instance.
+    // The SPI register block is not one layout. The `ch585`, `ch583`,
+    // `ch592` and `ch595` versions are the FIFO controller this driver
+    // programs; the others are not, and naming their registers would not
+    // compile. CH592 and CH595 narrow the DMA address registers to 16 bits
+    // (15 address fields) and drop SPI1 (`SPI_NODMA`); the driver casts the
+    // addresses to the field width and gates the second instance.
     match register_version(&chip_name, "spi").as_str() {
         // CH573 and CH572/CH570 use the same FIFO controller; CH572 selects
         // its alternate SCK through `PIN_ALTERNATE_H` instead of `PIN_SPI0`.
-        "ch585" | "ch583" | "ch592" | "ch573" | "ch572" => println!("cargo:rustc-cfg=spi_fifo"),
+        "ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572" => {
+            println!("cargo:rustc-cfg=spi_fifo")
+        }
         _ => {}
     }
     // CH583 has single conversion and DMA but no scan sequencer. CH573 and
