@@ -196,6 +196,10 @@ impl Delay {
     /// Busy-wait for `us` microseconds.
     ///
     /// Panics in debug builds if called before [`crate::init`].
+    ///
+    /// Under a TMR time driver (or none) this module owns the raw counter,
+    /// so this is the same hot chase loop as under the SysTick driver.
+    #[cfg_attr(highcode, link_section = ".highcode")]
     pub fn delay_us(&mut self, us: u32) {
         let hz = TICKS_PER_SEC.load(Ordering::Relaxed);
         debug_assert!(hz != 0, "delay used before `ch5xx_hal::init`");
