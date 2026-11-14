@@ -40,13 +40,6 @@ fn main() {
     };
     println!("cargo:rustc-cfg={chip_name}");
 
-    // The `highcode` HAL feature moves marked hot loops (bit-banged I2C,
-    // short `delay_us`) into the `.highcode` section, which qingke-rt copies
-    // into SRAM when its own `highcode` feature is enabled.
-    if env::var_os("CARGO_FEATURE_HIGHCODE").is_some() {
-        println!("cargo:rustc-cfg=highcode");
-    }
-
     // CH570 is the CH572 die without the radio. The radio is a register-less
     // placeholder, so every modelled block is shared; emit the CH572 cfg as
     // well so the drivers keyed on that family apply.

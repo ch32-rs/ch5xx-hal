@@ -42,10 +42,10 @@
 //! [`Delay::delay_us`] therefore chases the raw counter and switches to
 //! [`embassy_time_driver::now`] — monotonic by contract — as soon as the
 //! counter moves underneath it, and [`Delay::delay_ms`] reads the timebase
-//! through `now()` throughout. Both are one embassy tick of quantization,
-//! rounded up, instead of the exactly calibrated raw path; that is the trade
-//! the feature makes. See the methods for why one `now()` poll is expensive
-//! on the V3C.
+//! through `now()` throughout. The `now()` fallback and `delay_ms` are one
+//! embassy tick of quantization, rounded up; the raw chase uses the calibrated
+//! rate directly. See the methods for why one `now()` poll is expensive on the
+//! V3C.
 //!
 //! Note that an executor that never sleeps hides the problem: `CMPLR` stays
 //! at its initial `MAX_PERIOD - 1`, the counter never reaches it, and raw
@@ -66,6 +66,20 @@ pub struct Delay;
 
 /// SysTick ticks per second, measured against the RTC at init.
 static TICKS_PER_SEC: crate::atomic::AtomicU32 = crate::atomic::AtomicU32::new(crate::rcc::DEFAULT_FREQUENCY.0);
+
+/// Ticks in one microsecond, in Q16 fixed point and rounded up.
+///
+/// Unused on CH573 under its one-shot SysTick driver, which reads the driver
+/// timebase instead of chasing raw ticks.
+#[cfg(not(all(feature = "time-driver-systick", systick_downcounter)))]
+const fn ticks_per_us_q16(hz: u32) -> u32 {
+    ((((hz as u64) << 16) + 999_999) / 1_000_000) as u32
+}
+
+/// [`ticks_per_us_q16`] for the measured rate, so `delay_us` needs no division.
+#[cfg(not(all(feature = "time-driver-systick", systick_downcounter)))]
+static TICKS_PER_US_Q16: crate::atomic::AtomicU32 =
+    crate::atomic::AtomicU32::new(ticks_per_us_q16(crate::rcc::DEFAULT_FREQUENCY.0));
 
 /// RTC block, whose `CNT_32K` counter is clocked by the independent 32 kHz
 /// oscillator and keeps running across anything the PLL does.
@@ -179,7 +193,10 @@ pub unsafe fn recalibrate() {
 
 /// Measure the counter and store the result for the busy-wait loops.
 unsafe fn measure() {
-    TICKS_PER_SEC.store(calibrate(), Ordering::Relaxed);
+    let hz = calibrate();
+    TICKS_PER_SEC.store(hz, Ordering::Relaxed);
+    #[cfg(not(all(feature = "time-driver-systick", systick_downcounter)))]
+    TICKS_PER_US_Q16.store(ticks_per_us_q16(hz), Ordering::Relaxed);
 }
 
 /// The SysTick rate this module measured at [`crate::init`] or at the last
@@ -199,20 +216,22 @@ impl Delay {
     ///
     /// Under a TMR time driver (or none) this module owns the raw counter,
     /// so this is the same hot chase loop as under the SysTick driver.
-    #[cfg_attr(highcode, inline(never), link_section = ".highcode")]
+    #[cfg_attr(feature = "highcode", inline(never), link_section = ".highcode")]
     pub fn delay_us(&mut self, us: u32) {
-        let hz = TICKS_PER_SEC.load(Ordering::Relaxed);
-        debug_assert!(hz != 0, "delay used before `ch5xx_hal::init`");
+        let q16 = TICKS_PER_US_Q16.load(Ordering::Relaxed) as u64;
+        debug_assert!(q16 != 0, "delay used before `ch5xx_hal::init`");
 
-        // `us * hz / 1_000_000` in 64 bits: `us` up to ~4e6 here, `hz` ~3e7, so
-        // the product needs more than 32 bits.
-        let mut remaining = (us as u64 * hz as u64 / 1_000_000) as u32;
+        // `us * q16 / 2^16` is the exact rate scaled in Q16, rounded up. The
+        // scale error is below 1/65536, far under one tick for short waits.
+        // The budget stays `u64`: a `u32` cast would truncate delays longer
+        // than one counter wrap (~70 s of ticks at 60 MHz).
+        let mut remaining = (us as u64 * q16 + 0xFFFF) >> 16;
 
         // The counter is 32 bits, so chase it in chunks to keep the
         // wrapping comparison meaningful.
         while remaining > 0 {
-            let chunk = remaining.min(u32::MAX / 2);
-            remaining -= chunk;
+            let chunk = remaining.min(u64::from(u32::MAX / 2)) as u32;
+            remaining -= chunk as u64;
 
             let start = SYSTICK.cntl().read().cntl();
             while elapsed_ticks(start, SYSTICK.cntl().read().cntl()) < chunk {
@@ -265,11 +284,12 @@ impl Delay {
 
     /// Busy-wait for `us` microseconds (up-counter dies).
     ///
-    /// The wait is budgeted in raw counter ticks up front — one microsecond is
-    /// `Fsys / 1 MHz` ticks, rounded up — and the loop only subtracts. The
-    /// budget is `u64`, so any `us` fits exactly; no `u128` is needed (a
-    /// `u128` division here cost ~100 µs of CPU per call at 60 MHz, which the
-    /// soft-I2C half-period path called twice per bus bit).
+    /// The wait is budgeted in raw counter ticks up front — `us * Fsys / 1 MHz`,
+    /// rounded up, so it never comes back short — and the loop only subtracts.
+    /// The budget is `u64`, so any `us` fits, and the Q16 rate precomputed at
+    /// `init` keeps a division out of the path (a `u128` division here cost
+    /// ~100 µs of CPU per call at 60 MHz, and soft I2C calls this twice per
+    /// bus bit).
     ///
     /// If the counter wraps, or the time driver reprograms the compare point
     /// and reloads it, the raw reference is gone and the remainder finishes on
@@ -287,30 +307,39 @@ impl Delay {
     /// short spin loop; route long waits through [`Delay::delay_ms`], which
     /// is safe because it reads the monotonic timebase throughout.
     #[cfg(not(systick_downcounter))]
-    #[cfg_attr(highcode, inline(never), link_section = ".highcode")]
+    #[cfg_attr(feature = "highcode", inline(never), link_section = ".highcode")]
     pub fn delay_us(&mut self, us: u32) {
-        let tpu = TICKS_PER_SEC.load(Ordering::Relaxed).div_ceil(1_000_000) as u64;
-        let mut remaining = us as u64 * tpu;
+        let q16 = TICKS_PER_US_Q16.load(Ordering::Relaxed) as u64;
+        let mut remaining = ((us as u64 * q16 + 0xFFFF) >> 16) as u64;
         let mut prev = SYSTICK.cntl().read().cntl();
         loop {
             let now = SYSTICK.cntl().read().cntl();
             if now < prev {
-                // Round up: a truncated remainder of 0 would return 1 µs
-                // early. `left_us` converts back to the driver's tick units.
-                let left_us = remaining / tpu;
-                let ticks = (left_us * embassy_time_driver::TICK_HZ).div_ceil(1_000_000);
-                let deadline = embassy_time_driver::now().saturating_add(ticks);
-                while embassy_time_driver::now() < deadline {
-                    core::hint::spin_loop();
-                }
+                self.finish_on_timebase(remaining);
                 return;
             }
-            remaining = remaining.saturating_sub(now.wrapping_sub(prev) as u64);
+            remaining = remaining.saturating_sub(elapsed_ticks(prev, now) as u64);
             prev = now;
             if remaining == 0 {
                 return;
             }
         }
+    }
+
+    /// Finish a wait whose raw counter reference was lost to a reload.
+    ///
+    /// Kept out of `.highcode`: the fallback is cold and would otherwise be
+    /// copied into SRAM with the hot loop.
+    #[cfg(not(systick_downcounter))]
+    #[cold]
+    #[inline(never)]
+    fn finish_on_timebase(&mut self, remaining: u64) {
+        let hz = TICKS_PER_SEC.load(Ordering::Relaxed) as u64;
+        // `remaining * TICK_HZ / hz`, rounded up; split so the product cannot
+        // overflow `u64`.
+        let whole = (remaining / hz) * embassy_time_driver::TICK_HZ;
+        let frac = ((remaining % hz) * embassy_time_driver::TICK_HZ).div_ceil(hz);
+        self.wait_ticks(whole + frac);
     }
 
     /// Busy-wait for `us` microseconds (CH573 down-counter).
