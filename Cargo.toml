@@ -31,6 +31,10 @@ embedded-io = "0.7.1"
 # Async I/O traits share the blocking traits' error type.
 embedded-io-async = { version = "0.7.0", optional = true }
 
+# NOR flash traits for the internal FlashROM driver. Optional so a binary that
+# never touches flash does not pull the trait crate in.
+embedded-storage = { version = "0.3.2", optional = true }
+
 embassy-hal-internal = "0.5.0"
 
 # Embassy time driver support. Optional so a bare-metal user does not pull in
@@ -104,6 +108,15 @@ embassy = [
 ## Forwards to `qingke-rt`'s `highcode` feature, which copies the `.highcode`
 ## section into SRAM at boot. No effect while `qingke-rt` itself is absent.
 highcode = ["qingke-rt?/highcode"]
+
+## Internal flash driver: the code region and, where the die has one, the user
+## data region.
+##
+## The serial engine's command sequences must run from RAM: the core cannot
+## fetch from flash while the engine owns it. This feature therefore also turns
+## on `qingke-rt`'s `highcode` support. The CH595 page-latch controller does
+## not need it.
+flash = ["rt", "qingke-rt?/highcode", "dep:embedded-storage"]
 
 ## Time driver on the core SysTick counter. Lowest latency, but it takes SysTick
 ## away from the blocking `delay` driver — both cannot own it.

@@ -695,6 +695,21 @@ pub fn clocks() -> Clocks {
 /// Stop and quiesce active Timer/DMA/NFC sessions before changing clocks, then
 /// rebuild their timing state. Dedicated NFC clock mode does not remove its
 /// system-clock precondition or make a live session safe across this change.
+/// Registers WCH's CH585/CH584/CH581 `SetSysClock` writes but the PAC does
+/// not model.
+#[cfg(pll_312)]
+#[cfg(not(any(ch592, power_plan_ch58x)))]
+mod ch585_flash_raw {
+    /// Safe-mode control; bit 4 selects the 312 MHz XROM clock.
+    pub const SAFE_MODE_CTRL: *mut u32 = 0x4000_1010 as *mut u32;
+    /// `R8_FLASH_SCK`, FlashROM SCK timing; bit 4 differs by clock source.
+    pub const FLASH_SCK: *mut u8 = 0x4000_1805 as *mut u8;
+    /// `R8_FLASH_CFG`, FlashROM access config.
+    pub const FLASH_CFG: *mut u8 = 0x4000_1807 as *mut u8;
+    pub const XROM_312M_SEL: u32 = 1 << 4;
+    pub const FLASH_SCK_BIT: u8 = 1 << 4;
+}
+
 #[cfg(not(any(ch592, power_plan_ch58x)))]
 pub unsafe fn set_config(config: Config) -> Clocks {
     validate(&config);
@@ -756,6 +771,39 @@ pub unsafe fn set_config(config: Config) -> Clocks {
             .xt32m_tune()
             .modify(|w| w.set_xt32m_c_load(config.hse_cap as u8));
     });
+
+    // WCH's `SetSysClock` runs the XROM at 312 MHz and rewrites the FlashROM
+    // access config for the new clock. The reset value is only correct for the
+    // slow reset clock: port 78 MHz with it and the erase/program engine starts
+    // dropping commands.
+    #[cfg(pll_312)]
+    {
+        let (flash_cfg, sck_high) = match config.sys {
+            Sys::Pll(0) => (0x07, true),
+            Sys::Pll(div) if div < 10 => (0x01, false),
+            Sys::Pll(div) if div < 16 => (0x02, false),
+            Sys::Pll(_) => (0x07, false),
+            Sys::Divided(div) if div < 8 => (0x51, false),
+            _ => (0x57, false),
+        };
+        unsafe {
+            let ctrl = core::ptr::read_volatile(ch585_flash_raw::SAFE_MODE_CTRL);
+            core::ptr::write_volatile(
+                ch585_flash_raw::SAFE_MODE_CTRL,
+                ctrl | ch585_flash_raw::XROM_312M_SEL,
+            );
+        }
+        with_safe_access(|| unsafe {
+            let sck = core::ptr::read_volatile(ch585_flash_raw::FLASH_SCK);
+            let sck = if sck_high {
+                sck | ch585_flash_raw::FLASH_SCK_BIT
+            } else {
+                sck & !ch585_flash_raw::FLASH_SCK_BIT
+            };
+            core::ptr::write_volatile(ch585_flash_raw::FLASH_SCK, sck);
+            core::ptr::write_volatile(ch585_flash_raw::FLASH_CFG, flash_cfg);
+        });
+    }
 
     with_safe_access(|| {
         pac::SYS.clk_cfg().write(|w| {

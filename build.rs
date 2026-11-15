@@ -79,6 +79,28 @@ fn main() {
     if pin_intx {
         println!("cargo:rustc-cfg=gpio_pin_intx");
     }
+    // The FlashROM control engine is metadata as an address only: the serial
+    // command protocol is modeled by the HAL, not by the PAC. Every CH5xx
+    // family that shares this map carries the placeholder, so the driver is
+    // gated on its presence rather than on a chip feature. CH595 is excluded:
+    // it replaced the engine with a pre-program/page-latch controller at
+    // `0x4000_1800..0x4000_1820`, and none of these commands apply.
+    if chip_name != "ch595" && METADATA.peripherals.iter().any(|p| p.name == "FLASHROM") {
+        println!("cargo:rustc-cfg=flashrom");
+    }
+    // The user data region only exists on the dies whose memory map has one;
+    // CH570/CH572 and CH595 do not. Their flash driver can still cover the
+    // code region, so this is a separate gate.
+    if has_data_flash(&chip_name) {
+        println!("cargo:rustc-cfg=flashrom_data");
+    }
+    // ISP583 (CH582/CH583) and ISP592 (CH592) address the data region with the
+    // engine's `0x80000` frame bit set; ISP573/ISP585 parts use the plain
+    // address. Measured in `libISP583.a`'s `FLASH_EEPROM_CMD`, which ORs
+    // `0x80000` into `0x70000 + offset`, and in `libISP585.a`, which does not.
+    if matches!(chip_name.as_str(), "ch582" | "ch583" | "ch592") {
+        println!("cargo:rustc-cfg=flashrom_data_frame_80000");
+    }
     // The low-power driver writes the sleep and power-plan bytes of the SYS
     // block. CH592 has no HFCK_PWR_CTRL, so the set is not shared by every
     // selectable die; the driver only compiles where all of it exists.
@@ -413,18 +435,23 @@ fn main() {
 
     // Peripheral singletons. Skip the register-less placeholders (BLE) and the
     // core-internal blocks (PFIC, SysTick) — the HAL never hands those out.
+    // FLASHROM is the exception: the metadata deliberately carries only its
+    // base address, because the control engine is a serial command/data
+    // interface that the flash driver models itself.
     const SKIP_KINDS: &[&str] = &["pfic", "systick"];
     let mut singletons: Vec<String> = Vec::new();
     for p in METADATA.peripherals {
-        if p.registers.is_none() {
+        if p.registers.is_none() && p.name != "FLASHROM" {
             continue;
         }
-        if SKIP_KINDS.contains(&p.registers.as_ref().unwrap().kind) {
-            continue;
-        }
-        if p.registers.as_ref().unwrap().kind == "gpio" {
-            // Pins are the user-facing singletons; the port block itself is not.
-            continue;
+        if let Some(registers) = &p.registers {
+            if SKIP_KINDS.contains(&registers.kind) {
+                continue;
+            }
+            if registers.kind == "gpio" {
+                // Pins are the user-facing singletons; the port block itself is not.
+                continue;
+            }
         }
         let name = normalize(p.name);
         if time_driver_peripheral.as_deref() == Some(name.as_str()) {
@@ -586,6 +613,13 @@ fn register_has_field(chip: &str, kind: &str, field: &str) -> bool {
 
 fn data_root() -> PathBuf {
     PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../ch5xx-data/data")
+}
+
+/// Whether the chip's memory map has a user data-flash region.
+fn has_data_flash(chip: &str) -> bool {
+    let path = data_root().join(format!("chips/{}.yaml", chip.to_ascii_uppercase()));
+    let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+    text.lines().any(|line| line.trim() == "- name: DATAFLASH")
 }
 
 /// `(instance name, block)` for every peripheral whose name starts with
