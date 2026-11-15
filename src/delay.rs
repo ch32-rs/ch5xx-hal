@@ -252,7 +252,7 @@ const fn gcd(a: u64, b: u64) -> u64 {
 /// `TICK_HZ * us` overflows `u64` at the 5.24 GHz tick rates embassy supports.
 #[cfg(feature = "time-driver-systick")]
 const GCD_MS: u64 = gcd(embassy_time_driver::TICK_HZ, 1_000);
-#[cfg(feature = "time-driver-systick")]
+#[cfg(all(feature = "time-driver-systick", systick_downcounter))]
 const GCD_US: u64 = gcd(embassy_time_driver::TICK_HZ, 1_000_000);
 
 /// Under the SysTick time driver the counter's compare point belongs to the
@@ -290,9 +290,9 @@ impl Delay {
     /// the driver timebase in one round-up via a cold fallback.
     ///
     /// Caveat: a reload is only caught if observed across two reads. An
-    /// interrupt preempting the loop for a full reload period can hide it,
-    /// under-counting by up to one period; route long waits through
-    /// [`Self::delay_ms`], which reads the monotonic timebase throughout.
+    /// interrupt preempting the loop for a reload period or more can hide
+    /// several reloads, under-counting the wait and extending it; route long
+    /// waits through [`Self::delay_ms`], which reads the timebase throughout.
     #[cfg(not(systick_downcounter))]
     #[cfg_attr(feature = "highcode", inline(never), link_section = ".highcode")]
     pub fn delay_us(&mut self, us: u32) {
