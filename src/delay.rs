@@ -242,6 +242,19 @@ impl Delay {
     }
 }
 
+/// Compile-time GCD, so tick conversions reduce before multiplying.
+#[cfg(feature = "time-driver-systick")]
+const fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Reduced ms/us tick factors (same trick as Embassy's `Duration`); a literal
+/// `TICK_HZ * us` overflows `u64` at the 5.24 GHz tick rates embassy supports.
+#[cfg(feature = "time-driver-systick")]
+const GCD_MS: u64 = gcd(embassy_time_driver::TICK_HZ, 1_000);
+#[cfg(feature = "time-driver-systick")]
+const GCD_US: u64 = gcd(embassy_time_driver::TICK_HZ, 1_000_000);
+
 /// Under the SysTick time driver the counter's compare point belongs to the
 /// driver (see the module docs). `delay_us` chases the raw counter and falls
 /// back to `now()`; `delay_ms` reads `now()` throughout — expensive on the
@@ -257,7 +270,7 @@ impl Delay {
     /// Reads the timebase through `now()`; the ~tens-of-µs poll cost is
     /// amortized over the wait and the deadline logic stays simple.
     pub fn delay_ms(&mut self, ms: u32) {
-        let ticks = (embassy_time_driver::TICK_HZ * ms as u64).div_ceil(1_000);
+        let ticks = (ms as u64 * (embassy_time_driver::TICK_HZ / GCD_MS)).div_ceil(1_000 / GCD_MS);
         self.wait_ticks(ticks);
     }
 
@@ -320,7 +333,7 @@ impl Delay {
     /// is no raw reference to chase; everything reads the driver's timebase.
     #[cfg(systick_downcounter)]
     pub fn delay_us(&mut self, us: u32) {
-        let ticks = (embassy_time_driver::TICK_HZ * us as u64).div_ceil(1_000_000);
+        let ticks = (us as u64 * (embassy_time_driver::TICK_HZ / GCD_US)).div_ceil(1_000_000 / GCD_US);
         self.wait_ticks(ticks);
     }
 }
