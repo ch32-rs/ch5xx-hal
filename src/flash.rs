@@ -15,7 +15,8 @@
 //! | `0x0000_0000-0x0006_FFFF` | 448 KiB | user code |
 //! | `0x0007_0000-0x0007_7FFF` | 32 KiB | user data |
 //! | `0x0007_8000-0x0007_DFFF` | 24 KiB | bootloader, never exposed |
-//! | `0x0007_E000-0x0007_FFFF` | 8 KiB | info flash, never exposed |
+//! | `0x0007_E000-0x0007_EFFF` | 4 KiB | user info, tool-set only |
+//! | `0x0007_F000-0x0007_FFFF` | 4 KiB | info flash, holds the MAC at `0x7F018` |
 //!
 //! CH570/CH572 have a 240 KiB code region and no user data region. The CH584X
 //! die variant exposes 480 KiB and moves the code region to engine address
