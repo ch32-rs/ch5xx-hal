@@ -35,9 +35,10 @@
 //! On the serial-engine dies code reads go through the engine too. The byte
 //! port answers with garbage on the code region, so [`CodeFlash::blocking_read`]
 //! latches dwords through `R32_FLASH_DATA` — the path the ROM's own verify
-//! routine uses. Erased code does not read as `0xFF`: every path answers
-//! `0xF3F9BDA9`, WCH's read-protection placeholder. CH595 reads are plain
-//! memory-mapped loads and erased bytes read `0xFF`.
+//! routine uses. Erased code does not read as `0xFF`: every path answers a
+//! placeholder that varies per die — measured `0xF3F9BDA9` on CH582/CH585/CH592
+//! and `0xF5F9BDA9` on CH573 — so a blank check must use its own die's value.
+//! CH595 reads are plain memory-mapped loads and erased bytes read `0xFF`.
 //!
 //! # Execution constraints
 //!

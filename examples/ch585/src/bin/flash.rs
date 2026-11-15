@@ -7,9 +7,9 @@
 //! and read-backs. The image ends around `0x2500`; the sectors used here start
 //! at `0x3000`.
 //!
-//! Erased code flash does not read as `0xFF`: every path answers with
-//! `0xF3F9BDA9`, WCH's read-protection placeholder. The data region reads
-//! `0xFF`.
+//! Erased code flash does not read as `0xFF`: every path answers with a
+//! per-die placeholder (`0xF3F9BDA9` here; CH573 reads `0xF5F9BDA9`).
+//! The data region reads `0xFF`.
 //!
 //! Build with the `flash` feature:
 //!
@@ -35,7 +35,7 @@ const SECTOR_LEN: u32 = 0x1000;
 /// The 64 KiB code block erased with the block command, clear of the image.
 const BLOCK: u32 = 0x1_0000;
 const BLOCK_LEN: u32 = 0x1_0000;
-/// What the engine answers for an erased code word.
+/// What the engine answers for an erased code word on CH585 (CH573 differs).
 const BLANK_WORD: [u8; 4] = [0xA9, 0xBD, 0xF9, 0xF3];
 
 #[entry]
