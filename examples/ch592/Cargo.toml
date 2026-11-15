@@ -15,7 +15,7 @@ time-driver-tmr3 = ["ch5xx-hal/time-driver-tmr3"]
 flash = ["ch5xx-hal/flash"]
 
 [[bin]]
-name = "flash_info"
+name = "flash_identity"
 required-features = ["flash"]
 
 [dependencies]

@@ -1,7 +1,7 @@
 //! Read the factory MAC address and unique ID through the flash engine.
 //!
 //! ```console
-//! PROBE_RS_PROBE=1a86:8010:7E238F0602BE cargo run --release --bin flash_info --features flash
+//! PROBE_RS_PROBE=1a86:8010:7E238F0602BE cargo run --release --bin flash_identity --features flash
 //! ```
 
 #![no_std]
@@ -26,7 +26,7 @@ fn main() -> ! {
         Ok(id) => defmt::info!("unique id: {:#018x}", id),
         Err(err) => defmt::error!("FAIL unique id: {}", what(err)),
     }
-    defmt::info!("PASS flash info");
+    defmt::info!("PASS identity");
 
     // Stay halted without the watchdog resetting the part; a reset would clear
     // the RTT block and the log with it.
