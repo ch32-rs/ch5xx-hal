@@ -11,6 +11,13 @@ time-driver-tmr1 = ["ch5xx-hal/time-driver-tmr1"]
 time-driver-tmr2 = ["ch5xx-hal/time-driver-tmr2"]
 time-driver-tmr3 = ["ch5xx-hal/time-driver-tmr3"]
 
+# Internal flash engine, for the identity reads.
+flash = ["ch5xx-hal/flash"]
+
+[[bin]]
+name = "flash_info"
+required-features = ["flash"]
+
 [dependencies]
 ch5xx-hal = { path = "../../", features = ["ch592", "rt", "memory-x"] }
 

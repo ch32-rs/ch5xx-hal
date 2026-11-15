@@ -95,9 +95,10 @@ jobs:
           - example: ch585
             target: riscv32imc-unknown-none-elf
             features: "--no-default-features --features time-driver-tmr0,flash"
+          # `flash_info` is behind `required-features = ["flash"]`.
           - example: ch592
             target: riscv32imc-unknown-none-elf
-            features: ""
+            features: "--features flash"
     steps:
       - uses: actions/checkout@v4
       - name: Fetch ch5xx-data

@@ -49,6 +49,14 @@ fn main() -> ! {
         flash.data_flash().capacity(),
         hal::rcc::clocks().sysclk.0
     );
+    match flash.mac_address() {
+        Ok(mac) => defmt::info!("factory mac: {=[u8]:02x}", mac),
+        Err(err) => defmt::error!("FAIL mac: {}", step("mac", err)),
+    }
+    match flash.unique_id() {
+        Ok(id) => defmt::info!("unique id: {:#018x}", id),
+        Err(err) => defmt::error!("FAIL unique id: {}", step("uid", err)),
+    }
 
     if let Err(what) = data_round(&mut flash) {
         defmt::error!("FAIL data region: {}", what);
