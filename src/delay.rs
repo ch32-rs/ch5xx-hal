@@ -245,7 +245,11 @@ impl Delay {
 /// Compile-time GCD, so tick conversions reduce before multiplying.
 #[cfg(feature = "time-driver-systick")]
 const fn gcd(a: u64, b: u64) -> u64 {
-    if b == 0 { a } else { gcd(b, a % b) }
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 /// Reduced ms/us tick factors (same trick as Embassy's `Duration`); a literal
