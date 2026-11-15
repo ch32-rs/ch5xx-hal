@@ -32,6 +32,10 @@
 //! CH595 has a 240 KiB code region, no user data region, 2 KiB sectors and
 //! 64 KiB banks, and programs through a 256-byte page latch.
 //!
+//! The engine also holds the die's identity: `Flash::mac_address` returns the
+//! six factory MAC bytes from InfoFlash and `Flash::unique_id` the 64-bit ID.
+//! The CH595 controller has neither command, so its build omits both.
+//!
 //! On the serial-engine dies code reads go through the engine too. The byte
 //! port answers with garbage on the code region, so [`CodeFlash::blocking_read`]
 //! latches dwords through `R32_FLASH_DATA` — the path the ROM's own verify
@@ -116,6 +120,10 @@ pub const CODE_ERASE_SIZE: usize = 0x1000;
 pub const CODE_BLOCK_ERASE_SIZE: usize = 0x1_0000;
 /// Program unit of the code region: 32-bit words.
 pub const CODE_WRITE_SIZE: usize = 4;
+
+/// `ROM_CFG_MAC_ADDR`: six MAC bytes followed by a two-byte checksum.
+#[cfg(not(ch595))]
+const MAC_ADDR: u32 = 0x0007_F018;
 
 /// Start of the user data region, an offset into the flash address space.
 #[cfg(flashrom_data)]
@@ -222,6 +230,29 @@ impl<'d, MODE> Flash<'d, MODE> {
     /// Borrow the user code region.
     pub fn code_flash(&mut self) -> CodeFlash<'_, 'd, MODE> {
         CodeFlash { flash: self }
+    }
+
+    /// The six factory MAC bytes, read from InfoFlash through the engine.
+    ///
+    /// This is the address the BLE ROM library broadcasts by default. Reading
+    /// requires the die's read-out protection to be off (`CFG_ROM_READ`).
+    #[cfg(not(ch595))]
+    pub fn mac_address(&mut self) -> Result<[u8; 6], Error> {
+        let is_584x = unsafe { serial::is_584x() };
+        let mut bytes = [0u8; 8];
+        unsafe { serial::ram_read_words(MAC_ADDR, bytes.as_mut_ptr(), 8, is_584x)? };
+        Ok([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]])
+    }
+
+    /// The 64-bit factory unique ID.
+    ///
+    /// WCH documents it as one ID per die; the ROM derives it from the engine's
+    /// sixteen-byte answer, not from a plain memory read.
+    #[cfg(not(ch595))]
+    pub fn unique_id(&mut self) -> Result<u64, Error> {
+        let mut id = [0u8; 8];
+        unsafe { serial::ram_read_unique_id(id.as_mut_ptr())? };
+        Ok(u64::from_le_bytes(id))
     }
 
     /// Borrow the user data region.

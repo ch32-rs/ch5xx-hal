@@ -75,12 +75,16 @@ pub(super) const CMD_ERASE_DATA: u8 = 0x81;
 const CMD_PROGRAM: u8 = 0x02;
 /// Read bytes back through the engine.
 const CMD_READ: u8 = 0x0B;
+/// Read the 64-bit factory unique ID; read-like, so it takes no `0x06` prefix.
+const CMD_READ_UNIQUE_ID: u8 = 0x4B;
 /// Prefix the engine wants before an erase or program.
 const CMD_PREFIX: u8 = 0x06;
 /// Engine reset command.
 const CMD_RESET: u8 = 0xFF;
 /// Status-poll command.
 const CMD_STATUS: u8 = 0x05;
+// Left unexposed: boot info (`0x06` at `0x7DFF8`, inconsistent byte count), power
+// up/down (`0x0C`/`0x0D`) and CH57x's protection lock (`0x08`, can lock the part).
 
 /// Status answer for a completed erase or program.
 const STATUS_DONE: u8 = 0x00;
@@ -184,12 +188,12 @@ unsafe fn addr_cmd(command: u8, addr: u32) -> Result<(), Error> {
     }
 }
 
-/// Start the read command; the engine expects a five-byte frame (three
+/// Start a read-like command; the engine expects a five-byte frame (three
 /// address bytes and two zero bytes) and no `0x06` prefix.
 #[inline(always)]
-unsafe fn read_addr(addr: u32) -> Result<(), Error> {
+unsafe fn read_frame(command: u8, addr: u32) -> Result<(), Error> {
     unsafe {
-        begin(CMD_READ);
+        begin(command);
         address(addr)?;
         out(0)?;
         out(0)
@@ -411,7 +415,7 @@ pub(super) unsafe fn ram_read_bytes(addr: u32, buf: *mut u8, len: u32) -> Result
                 // so every chunk starts its own command.
                 let to_boundary = 0x100 - ((addr + read) & 0xFF);
                 let chunk = core::cmp::min(len - read, to_boundary);
-                read_addr(addr + read)?;
+                read_frame(CMD_READ, addr + read)?;
                 for index in 0..chunk {
                     *buf.add((read + index) as usize) = read_byte()?;
                 }
@@ -440,7 +444,7 @@ pub(super) unsafe fn ram_read_words(addr: u32, buf: *mut u8, len: u32, is_584x: 
                 let at = addr + read;
                 let to_boundary = 0x100 - (at & 0xFF);
                 let chunk = core::cmp::min(len - read, to_boundary);
-                read_addr(code_frame(at, is_584x))?;
+                read_frame(CMD_READ, code_frame(at, is_584x))?;
                 let mut done = 0;
                 while done < chunk {
                     for _ in 0..4 {
@@ -461,6 +465,28 @@ pub(super) unsafe fn ram_read_words(addr: u32, buf: *mut u8, len: u32, is_584x: 
                 read += chunk;
             }
             Ok(())
+        })
+    }
+}
+
+/// Read the 64-bit factory unique ID. Runs from RAM.
+///
+/// The engine answers with sixteen bytes; the vendor library XOR-folds the
+/// bytes eight apart into the eight it returns.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(never)]
+pub(super) unsafe fn ram_read_unique_id(buf: *mut u8) -> Result<(), Error> {
+    unsafe {
+        unlocked(|| {
+            for index in 0..8 {
+                *buf.add(index) = 0;
+            }
+            read_frame(CMD_READ_UNIQUE_ID, 0)?;
+            for index in 0..16 {
+                let byte = read_byte()?;
+                *buf.add(index & 7) ^= byte;
+            }
+            wait_done()
         })
     }
 }
