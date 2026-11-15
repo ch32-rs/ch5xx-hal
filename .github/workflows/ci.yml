@@ -49,6 +49,8 @@ jobs:
           - base
           - systick
           - tmr0
+          # The flash driver is feature-gated; without this it never compiles.
+          - flash
     steps:
       - uses: actions/checkout@v4
       - name: Fetch ch5xx-data
@@ -69,6 +71,7 @@ jobs:
           case "${{ matrix.driver }}" in
             systick) features="$features,embassy,time-driver-systick" ;;
             tmr0)    features="$features,embassy,time-driver-tmr0" ;;
+            flash)   features="$features,flash" ;;
           esac
           cargo check --lib --target "$target" --no-default-features --features "$features"
 
@@ -87,10 +90,11 @@ jobs:
             target: riscv32imac-unknown-none-elf
             features: "--features spi-async,usb-cdc"
           # `embassy_time_tmr` needs a TMR driver, so build every bin against
-          # TMR0 instead of the default SysTick driver.
+          # TMR0 instead of the default SysTick driver. `flash` adds the
+          # flash example, which is behind `required-features`.
           - example: ch585
             target: riscv32imc-unknown-none-elf
-            features: "--no-default-features --features time-driver-tmr0"
+            features: "--no-default-features --features time-driver-tmr0,flash"
           - example: ch592
             target: riscv32imc-unknown-none-elf
             features: ""
