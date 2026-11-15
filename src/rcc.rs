@@ -788,10 +788,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
         };
         unsafe {
             let ctrl = core::ptr::read_volatile(ch585_flash_raw::SAFE_MODE_CTRL);
-            core::ptr::write_volatile(
-                ch585_flash_raw::SAFE_MODE_CTRL,
-                ctrl | ch585_flash_raw::XROM_312M_SEL,
-            );
+            core::ptr::write_volatile(ch585_flash_raw::SAFE_MODE_CTRL, ctrl | ch585_flash_raw::XROM_312M_SEL);
         }
         with_safe_access(|| unsafe {
             let sck = core::ptr::read_volatile(ch585_flash_raw::FLASH_SCK);
