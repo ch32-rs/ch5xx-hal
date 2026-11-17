@@ -79,6 +79,27 @@ fn main() {
     if pin_intx {
         println!("cargo:rustc-cfg=gpio_pin_intx");
     }
+    // The flash controller version selects the protocol: serial engine or
+    // CH595 page latch.
+    if let Some(version) = METADATA
+        .peripherals
+        .iter()
+        .find(|p| p.name == "FLASHROM")
+        .and_then(|p| p.registers.as_ref())
+        .map(|registers| registers.version)
+    {
+        println!("cargo:rustc-cfg=flashrom");
+        println!("cargo:rustc-cfg=flashrom_{version}");
+    }
+    // Not every die has a user data region.
+    if has_data_flash(&chip_name) {
+        println!("cargo:rustc-cfg=flashrom_data");
+    }
+    // ISP583/ISP592 address DataFlash through the engine's `0x80000` frame;
+    // ISP573/ISP585 use the plain address.
+    if matches!(chip_name.as_str(), "ch582" | "ch583" | "ch592") {
+        println!("cargo:rustc-cfg=flashrom_data_frame_80000");
+    }
     // The low-power driver writes the sleep and power-plan bytes of the SYS
     // block. CH592 has no HFCK_PWR_CTRL, so the set is not shared by every
     // selectable die; the driver only compiles where all of it exists.
@@ -419,12 +440,14 @@ fn main() {
         if p.registers.is_none() {
             continue;
         }
-        if SKIP_KINDS.contains(&p.registers.as_ref().unwrap().kind) {
-            continue;
-        }
-        if p.registers.as_ref().unwrap().kind == "gpio" {
-            // Pins are the user-facing singletons; the port block itself is not.
-            continue;
+        if let Some(registers) = &p.registers {
+            if SKIP_KINDS.contains(&registers.kind) {
+                continue;
+            }
+            if registers.kind == "gpio" {
+                // Pins are the user-facing singletons; the port block itself is not.
+                continue;
+            }
         }
         let name = normalize(p.name);
         if time_driver_peripheral.as_deref() == Some(name.as_str()) {
@@ -586,6 +609,13 @@ fn register_has_field(chip: &str, kind: &str, field: &str) -> bool {
 
 fn data_root() -> PathBuf {
     PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../ch5xx-data/data")
+}
+
+/// Whether the chip's memory map has a user data-flash region.
+fn has_data_flash(chip: &str) -> bool {
+    let path = data_root().join(format!("chips/{}.yaml", chip.to_ascii_uppercase()));
+    let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+    text.lines().any(|line| line.trim() == "- name: DATAFLASH")
 }
 
 /// `(instance name, block)` for every peripheral whose name starts with

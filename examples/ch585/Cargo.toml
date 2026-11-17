@@ -14,6 +14,14 @@ time-driver-tmr1 = ["ch5xx-hal/time-driver-tmr1"]
 time-driver-tmr2 = ["ch5xx-hal/time-driver-tmr2"]
 time-driver-tmr3 = ["ch5xx-hal/time-driver-tmr3"]
 
+# Internal FlashROM driver. Only the `flash` example needs it, and it changes
+# the linker layout (the erase/program routines run from `.highcode`).
+flash = ["ch5xx-hal/flash"]
+
+[[bin]]
+name = "flash"
+required-features = ["flash"]
+
 [dependencies]
 ch5xx-hal = { path = "../../", features = ["ch585", "rt", "memory-x"] }
 

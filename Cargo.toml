@@ -15,7 +15,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 # Generated PAC, published as its own repository until a crates.io release.
-ch5xx-metapac = { git = "https://github.com/ch32-rs/ch5xx-metapac", rev = "ee136f4", features = ["rt"] }
+ch5xx-metapac = { git = "https://github.com/ch32-rs/ch5xx-metapac", rev = "680e2e12", features = ["rt"] }
 
 # `unsafe-trust-wch-atomics`: qingke refuses to build whenever the target claims
 # byte atomics unless this is set. The CH5xx target JSON declares atomics (the
@@ -30,6 +30,10 @@ embedded-io = "0.7.1"
 
 # Async I/O traits share the blocking traits' error type.
 embedded-io-async = { version = "0.7.0", optional = true }
+
+# NOR flash traits for the internal FlashROM driver. Optional so a binary that
+# never touches flash does not pull the trait crate in.
+embedded-storage = { version = "0.3.2", optional = true }
 
 embassy-hal-internal = "0.5.0"
 
@@ -55,7 +59,7 @@ version = "1.0"
 version = "1.0"
 
 [build-dependencies]
-ch5xx-metapac = { git = "https://github.com/ch32-rs/ch5xx-metapac", rev = "ee136f4", default-features = false, features = [
+ch5xx-metapac = { git = "https://github.com/ch32-rs/ch5xx-metapac", rev = "680e2e12", default-features = false, features = [
     "metadata",
 ] }
 
@@ -104,6 +108,13 @@ embassy = [
 ## Forwards to `qingke-rt`'s `highcode` feature, which copies the `.highcode`
 ## section into SRAM at boot. No effect while `qingke-rt` itself is absent.
 highcode = ["qingke-rt?/highcode"]
+
+## Internal flash driver: the code region and, where the die has one, the user
+## data region.
+##
+## The serial engine and the CH595 page-latch erase/program sequences must run
+## from RAM, so this feature also turns on `qingke-rt`'s `highcode` support.
+flash = ["rt", "qingke-rt?/highcode", "dep:embedded-storage"]
 
 ## Time driver on the core SysTick counter. Lowest latency, but it takes SysTick
 ## away from the blocking `delay` driver — both cannot own it.

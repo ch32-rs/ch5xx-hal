@@ -90,10 +90,15 @@ pub(crate) mod _generated {
 
 pub use crate::_generated::{peripherals, Peripherals};
 
+#[cfg(all(feature = "flash", not(any(flashrom_ch570, flashrom_ch595))))]
+compile_error!("the `flash` feature needs a flash controller this HAL models");
+
 #[cfg(any(adc_ch573, adc_ch583, adc_ch585, adc_ch592, adc_ch595))]
 pub mod adc;
 pub mod delay;
 pub mod dma;
+#[cfg(all(feature = "flash", any(flashrom_ch570, flashrom_ch595)))]
+pub mod flash;
 pub mod gpio;
 #[cfg(i2c_present)]
 pub mod i2c;

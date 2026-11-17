@@ -8,7 +8,7 @@
 //! | [`halt`] | stopped | stopped, restarts on wake | on | 150 us |
 //! | [`sleep`] | stopped | off, restarts on wake | off, ULP-LDO supplies the core | 400 us |
 //!
-//! Shutdown ends in a PMU reset (`RB_RESET_FLAG = GRWSM`) instead of a return,
+//! Shutdown ends in a PMU reset (`RESET_FLAG = GRWSM`) instead of a return,
 //! so it is not part of this driver.
 //!
 //! # Entering and leaving

@@ -39,7 +39,7 @@
 //! starts at the 32 MHz crystal and has a 480 MHz PLL: `CLK_SYS_MOD = 00`
 //! divides the crystal (at least by 2, so 16 MHz is the maximum here), `01`
 //! divides the PLL, and `11` selects 32 kHz. The reset default is 32 MHz / 5 =
-//! 6.4 MHz. The Flash timing byte in `R8_FLASH_CFG` is part of a clock change
+//! 6.4 MHz. The `FLASHROM.CFG` timing byte is part of a clock change
 //! on these dies, and the safe-access window is only ~16 `Tsys`, so
 //! `with_safe_access` flushes the instruction prefetch around it.
 //!
@@ -695,6 +695,18 @@ pub fn clocks() -> Clocks {
 /// Stop and quiesce active Timer/DMA/NFC sessions before changing clocks, then
 /// rebuild their timing state. Dedicated NFC clock mode does not remove its
 /// system-clock precondition or make a live session safe across this change.
+/// Registers WCH's `SetSysClock` writes but the PAC does not model.
+#[cfg(pll_312)]
+mod xrom_raw {
+    /// Safe-mode control; bit 4 selects the 312 MHz XROM clock.
+    pub const SAFE_MODE_CTRL: *mut u32 = 0x4000_1010 as *mut u32;
+    pub const XROM_312M_SEL: u32 = 1 << 4;
+}
+
+/// `FLASHROM.SCK` bit 4 selects the fast SCK timing.
+#[cfg(any(pll_312, ch572))]
+const FLASH_SCK_BIT: u8 = 1 << 4;
+
 #[cfg(not(any(ch592, power_plan_ch58x)))]
 pub unsafe fn set_config(config: Config) -> Clocks {
     validate(&config);
@@ -722,9 +734,14 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     #[cfg(clk_cfg_osc32m)]
     let pll_gate_diss = before.osc32m_sel() != osc32m_sel;
 
-    // Power the oscillators this configuration needs. Reset leaves HSI, HSE
-    // and the PLL powered, so in the normal path this only re-asserts bits
-    // that are already set.
+    // CH573 resets with the PLL powered down; selecting it before it locks
+    // wedges the core. WCH spins 2000*2 nops after power-up in `SetSysClock`.
+    #[cfg(any(ch572, ch573))]
+    let pll_was_off = !pac::SYS.hfck_pwr_ctrl().read().clk_pll_pon();
+
+    // Power the oscillators this configuration needs. Reset powers the ones
+    // this tree uses, except for the CH573 PLL, so this usually only
+    // re-asserts bits that are already set.
     with_safe_access(|| {
         pac::SYS.hfck_pwr_ctrl().modify(|w| {
             match config.osc {
@@ -739,6 +756,13 @@ pub unsafe fn set_config(config: Config) -> Clocks {
             }
         });
     });
+
+    #[cfg(any(ch572, ch573))]
+    if pll_was_off && matches!(config.sys, Sys::Pll(_)) {
+        for _ in 0..4000 {
+            core::hint::spin_loop();
+        }
+    }
 
     // CH585/CH581/CH584/CH595 select between HSI and HSE. CH57x always runs
     // from the crystal, so its tuning applies unconditionally.
@@ -757,6 +781,67 @@ pub unsafe fn set_config(config: Config) -> Clocks {
             .modify(|w| w.set_xt32m_c_load(config.hse_cap as u8));
     });
 
+    // WCH's `SetSysClock` rewrites the FlashROM access config for the new
+    // clock. The reset value is only correct for the slow reset clock: port a
+    // faster clock with it and the erase/program engine drops commands.
+    #[cfg(pll_312)]
+    let (flash_cfg, sck_high) = match config.sys {
+        Sys::Pll(0) => (0x07, true),
+        Sys::Pll(div) if div < 10 => (0x01, false),
+        Sys::Pll(div) if div < 16 => (0x02, false),
+        Sys::Pll(_) => (0x07, false),
+        Sys::Divided(div) if div < 8 => (0x51, false),
+        _ => (0x57, false),
+    };
+    #[cfg(ch573)]
+    let flash_cfg = match config.sys {
+        Sys::Pll(_) => 0x53,
+        _ => 0x51,
+    };
+    #[cfg(ch572)]
+    let flash_cfg = match config.sys {
+        Sys::Pll(_) => 0x01,
+        Sys::Divided(_) => 0x02,
+        Sys::Direct => 0x07,
+    };
+
+    // CH572 and the CH58x write the new timing before the switch so the first
+    // fetch after it is already timed for the new clock.
+    #[cfg(any(pll_312, ch572))]
+    {
+        #[cfg(pll_312)]
+        unsafe {
+            let ctrl = core::ptr::read_volatile(xrom_raw::SAFE_MODE_CTRL);
+            core::ptr::write_volatile(xrom_raw::SAFE_MODE_CTRL, ctrl | xrom_raw::XROM_312M_SEL);
+        }
+        with_safe_access(|| {
+            let sck = pac::FLASHROM.sck().read();
+            #[cfg(pll_312)]
+            let sck = if sck_high {
+                sck | FLASH_SCK_BIT
+            } else {
+                sck & !FLASH_SCK_BIT
+            };
+            #[cfg(ch572)]
+            let sck = if matches!(config.sys, Sys::Pll(_)) {
+                sck | FLASH_SCK_BIT
+            } else {
+                sck
+            };
+            pac::FLASHROM.sck().write_value(sck);
+            pac::FLASHROM.cfg().write_value(flash_cfg);
+        });
+    }
+
+    // CH595 read timing is `FLASHROM.RD_CTRL`: WCH writes 0x49 for dividers
+    // 1..7 and 0x45 otherwise, before the clock switch.
+    #[cfg(flashrom_ch595)]
+    with_safe_access(|| {
+        pac::FLASHROM
+            .rd_ctrl()
+            .write_value(if (1..8).contains(&div) { 0x49 } else { 0x45 });
+    });
+
     with_safe_access(|| {
         pac::SYS.clk_cfg().write(|w| {
             w.set_clk_pll_div(div);
@@ -771,6 +856,10 @@ pub unsafe fn set_config(config: Config) -> Clocks {
             w.set_pll_gate_time(false);
         });
     });
+
+    // CH573's `SetSysClock` writes the timing byte after the clock switch.
+    #[cfg(ch573)]
+    with_safe_access(|| pac::FLASHROM.cfg().write_value(flash_cfg));
 
     // The oscillator multiplexer needs 1 us to settle after OSC32M_SEL changes
     // (datasheet 6.3). No timer is available at this point, so spin a fixed
@@ -795,8 +884,6 @@ pub unsafe fn set_config(config: Config) -> Clocks {
 /// Register addresses WCH's `CH59x_sys.c` writes but the PAC does not model.
 #[cfg(ch592)]
 mod ch592_raw {
-    /// `R8_FLASH_CFG`, FlashROM access timing (datasheet table 6-1).
-    pub const FLASH_CFG: *mut u8 = 0x4000_1807 as *mut u8;
     /// `ROM_CFG_VERISON`, chip configuration information.
     pub const ROM_CFG_VERSION: *const u32 = 0x0007_F010 as *const u32;
     /// `DEF_CHIP_ID_CH592A` (QFN28) in `ISP592.h`.
@@ -823,7 +910,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     };
 
     // The vendor sequence starts by clearing bit 5 of PLL_CONFIG, which is
-    // inside the reserved-by-name `RB_PLL_CFG_DAT` field of the PAC.
+    // inside the reserved-by-name `PLL_CFG_DAT` field of the PAC.
     with_safe_access(|| {
         pac::SYSTEM_CONTROL.pll_config().modify(|w| w.0 &= !(1 << 5));
     });
@@ -864,7 +951,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     } else {
         0x51
     };
-    with_safe_access(|| core::ptr::write_volatile(ch592_raw::FLASH_CFG, flash_cfg));
+    with_safe_access(|| pac::FLASHROM.cfg().write_value(flash_cfg));
 
     // WCH sets bit 7 after the Flash timing write. It is outside the PAC's
     // `pll_cfg_dat` mask, so write the raw field.
@@ -1069,21 +1156,21 @@ fn validate(config: &Config) {
 pub(crate) fn with_safe_access<R>(f: impl FnOnce() -> R) -> R {
     critical_section::with(|_| {
         let sig = pac::SYSTEM_CONTROL.safe_access_sig();
-        // The CH58x and CH592 vendor safe-access sequences flush the
-        // instruction prefetch around their shorter access windows.
-        #[cfg(any(ch592, power_plan_ch58x))]
+        // The vendor safe-access sequences flush the instruction prefetch
+        // around their shorter access windows.
+        #[cfg(any(ch572, ch573, ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG1));
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG2));
-        #[cfg(any(ch592, power_plan_ch58x))]
+        #[cfg(any(ch572, ch573, ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }
         let result = f();
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG0));
-        #[cfg(any(ch592, power_plan_ch58x))]
+        #[cfg(any(ch572, ch573, ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }
