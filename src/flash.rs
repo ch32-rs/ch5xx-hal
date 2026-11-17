@@ -11,7 +11,7 @@
 //! and has no supported data path. CH595 reads are plain loads, erase to
 //! `0xFF`, and have no identity commands.
 //!
-//! The safe-access readback lies on CH585 (`R8_RESET_STATUS` shares the
+//! The safe-access readback lies on CH585 (`RESET_STATUS` shares the
 //! address), so the unlock sequence always runs. `rcc` owns the engine timing;
 //! a custom clock setup must keep it. A timed-out erase may leave the debug
 //! port unresponsive: reset the part rather than retry.

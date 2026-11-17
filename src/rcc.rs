@@ -39,7 +39,7 @@
 //! starts at the 32 MHz crystal and has a 480 MHz PLL: `CLK_SYS_MOD = 00`
 //! divides the crystal (at least by 2, so 16 MHz is the maximum here), `01`
 //! divides the PLL, and `11` selects 32 kHz. The reset default is 32 MHz / 5 =
-//! 6.4 MHz. The Flash timing byte in `R8_FLASH_CFG` is part of a clock change
+//! 6.4 MHz. The `FLASHROM.CFG` timing byte is part of a clock change
 //! on these dies, and the safe-access window is only ~16 `Tsys`, so
 //! `with_safe_access` flushes the instruction prefetch around it.
 //!
@@ -703,7 +703,7 @@ mod xrom_raw {
     pub const XROM_312M_SEL: u32 = 1 << 4;
 }
 
-/// `R8_FLASH_SCK` bit 4 selects the fast SCK timing.
+/// `FLASHROM.SCK` bit 4 selects the fast SCK timing.
 #[cfg(any(pll_312, ch572))]
 const FLASH_SCK_BIT: u8 = 1 << 4;
 
@@ -833,8 +833,8 @@ pub unsafe fn set_config(config: Config) -> Clocks {
         });
     }
 
-    // CH595 read timing is a separate byte: WCH writes 0x49 for dividers 1..7
-    // and 0x45 otherwise, before the clock switch.
+    // CH595 read timing is `FLASHROM.RD_CTRL`: WCH writes 0x49 for dividers
+    // 1..7 and 0x45 otherwise, before the clock switch.
     #[cfg(flashrom_ch595)]
     with_safe_access(|| {
         pac::FLASHROM
@@ -910,7 +910,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     };
 
     // The vendor sequence starts by clearing bit 5 of PLL_CONFIG, which is
-    // inside the reserved-by-name `RB_PLL_CFG_DAT` field of the PAC.
+    // inside the reserved-by-name `PLL_CFG_DAT` field of the PAC.
     with_safe_access(|| {
         pac::SYSTEM_CONTROL.pll_config().modify(|w| w.0 &= !(1 << 5));
     });

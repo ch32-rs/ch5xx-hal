@@ -47,7 +47,7 @@ unsafe fn engine_busy() -> bool {
 /// `ROM_CFG_CHIP_ID`: low nibble `0x08` marks the CH584X die variant. This is
 /// an info-flash datum, not a register.
 const ROM_CFG_CHIP_ID: *const u32 = 0x0007_F024 as *const u32;
-/// `R8_CHIP_ID` value shared by the CH584/CH585 dies.
+/// `CHIP_ID` value shared by the CH584/CH585 dies.
 const CHIP_ID_584X: u8 = 0x92;
 
 /// Erase one code sector (4 KiB).
@@ -70,23 +70,24 @@ const CMD_STATUS: u8 = 0x05;
 
 /// Status answer for a completed erase or program.
 const STATUS_DONE: u8 = 0x00;
-/// Status answer for a command the engine has not started. Seen on the CH585
-/// right after a chunk while the previous program cycle is still finishing.
+/// Seen on the CH585 after a chunk while the previous cycle was finishing.
+/// WCH's `FLASH_ROM_WAIT` only tests bit 0 and accepts `0x02`; this driver
+/// settles and re-issues because treating it as done dropped writes on-board.
 const STATUS_REJECTED: u8 = 0x02;
 
 /// Re-issues of a rejected command before it is reported as an error.
 const COMMAND_ATTEMPTS: u32 = 4;
 /// Settle spins between a rejection and the re-issue.
 const SETTLE_SPINS: u32 = 0x2000;
-/// `R8_FLASH_CTRL` bit 7: the engine is busy.
+/// `FLASHROM.CTRL` bit 7: the engine is busy.
 const CTRL_BUSY: u8 = 0x80;
-/// `R8_FLASH_CTRL` value that releases the current handshake.
+/// `FLASHROM.CTRL` value that releases the current handshake.
 const CTRL_IDLE: u8 = 0x00;
-/// `R8_FLASH_CTRL` value that starts a command frame.
+/// `FLASHROM.CTRL` value that starts a command frame.
 const CTRL_START: u8 = 0x05;
-/// `R8_FLASH_CTRL` value that restarts the command engine.
+/// `FLASHROM.CTRL` value that restarts the command engine.
 const CTRL_ENGINE_RESET: u8 = 0x04;
-/// `R8_FLASH_CTRL` value that latches one dword of the code program path.
+/// `FLASHROM.CTRL` value that latches one dword of the code program path.
 const CTRL_DWORD_LATCH: u8 = 0x15;
 /// Engine frame offset of the code region on the CH584X die variant.
 const CH584X_CODE_FRAME_OFFSET: u32 = 0x0008_0000;
@@ -188,8 +189,8 @@ unsafe fn engine_reset() -> Result<(), Error> {
     }
 }
 
-/// Poll command 5: a leading byte, then the status. CH585 answers `0x02` while
-/// a command has not started; treating that as done drops the write.
+/// Poll command 5: a leading byte, then the status. Returns `false` when the
+/// command must be re-issued.
 #[inline(always)]
 unsafe fn poll_status(limit: u32) -> Result<bool, Error> {
     for _ in 0..limit {
@@ -392,7 +393,7 @@ pub(super) unsafe fn ram_read_bytes(addr: u32, buf: *mut u8, len: u32) -> Result
 }
 
 /// Read `len` bytes of the code region, 4-byte aligned, through
-/// [`R32_FLASH_DATA`]. Runs from RAM.
+/// `FLASHROM.DATA`. Runs from RAM.
 ///
 /// The byte port answers with garbage on the code region (measured on the
 /// CH585); the ROM's own verify routine reads four byte handshakes and then

@@ -9,8 +9,8 @@ use core::ptr::{read_volatile, write_volatile};
 
 use super::*;
 
-/// `R8_GLOBAL_CONFIG` after the safe-access signature: control interface and
-/// both write enables.
+/// `GLOB_ROM_CFG` after the safe-access signature: control interface and both
+/// write enables.
 const GLOBAL_CONFIG_UNLOCKED: u8 = 0xE1;
 /// `CH59x_flash.h` `ROM_CFG_ADDR`: touching it after an operation restores
 /// flash reads, a vendor workaround.
