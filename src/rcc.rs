@@ -782,7 +782,9 @@ pub unsafe fn set_config(config: Config) -> Clocks {
 
     with_safe_access(|| {
         pac::SYS.clk_pll_div().write(|w| w.0 = 0x40 | div);
-        pac::SYS.clk_cfg_ctrl().write(|w| w.0 = 0x80 | if use_pll { 0x02 } else { 0 });
+        pac::SYS
+            .clk_cfg_ctrl()
+            .write(|w| w.0 = 0x80 | if use_pll { 0x02 } else { 0 });
     });
 
     // Let the new divider settle before SysTick and the flash prefetch see it.

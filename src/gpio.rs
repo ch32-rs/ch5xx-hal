@@ -260,8 +260,7 @@ pub(crate) trait SealedPin {
             Port::A => {
                 gpio.pa_pu().modify(|w| w.set_pa_pu(n, pull == Pull::Up));
                 #[cfg(gpio_split_pd_drv)]
-                gpio.pa_pd()
-                    .modify(|w| w.set_pa_pd(n, matches!(pull, Pull::Down)));
+                gpio.pa_pd().modify(|w| w.set_pa_pd(n, matches!(pull, Pull::Down)));
                 #[cfg(not(gpio_split_pd_drv))]
                 gpio.pa_pd_drv()
                     .modify(|w| w.set_pa_pd_drv(n, matches!(pull, Pull::Down)));
@@ -270,8 +269,7 @@ pub(crate) trait SealedPin {
             Port::B => {
                 gpio.pb_pu().modify(|w| w.set_pb_pu(n, pull == Pull::Up));
                 #[cfg(gpio_split_pd_drv)]
-                gpio.pb_pd()
-                    .modify(|w| w.set_pb_pd(n, matches!(pull, Pull::Down)));
+                gpio.pb_pd().modify(|w| w.set_pb_pd(n, matches!(pull, Pull::Down)));
                 #[cfg(not(gpio_split_pd_drv))]
                 gpio.pb_pd_drv()
                     .modify(|w| w.set_pb_pd_drv(n, matches!(pull, Pull::Down)));
@@ -868,9 +866,7 @@ fn arm(_pin: &AnyPin, line: &InterruptLine, trigger: InterruptTrigger) {
 #[cfg(gpio_single_irq)]
 fn disarm(line: &InterruptLine) {
     critical_section::with(|_| {
-        pac::GPIO
-            .int_enable()
-            .modify(|w| w.0 &= !(1 << line.bit));
+        pac::GPIO.int_enable().modify(|w| w.0 &= !(1 << line.bit));
     });
 }
 

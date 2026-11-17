@@ -100,11 +100,7 @@ const RTC_HZ: u32 = 32_768;
 ///
 /// Up-counters (`MODE = 0`) advance above `start`; CH573's V3A down-counter
 /// falls below it, so the subtraction is reversed.
-#[cfg(not(all(
-    delay_no_rtc,
-    feature = "time-driver-systick",
-    systick_downcounter
-)))]
+#[cfg(not(all(delay_no_rtc, feature = "time-driver-systick", systick_downcounter)))]
 #[inline(always)]
 fn elapsed_ticks(start: u32, end: u32) -> u32 {
     #[cfg(systick_downcounter)]
