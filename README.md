@@ -23,9 +23,10 @@ Embassy support.
 | CH573 | QingKe V3A | Builds; no board validation |
 | CH572 | QingKe V3A | Builds; no board validation |
 | CH570 | QingKe V3A | Builds; no board validation |
+| CH569 | QingKe V3A | Board-tested: GPIO, UART, TMR, SysTick time driver, watchdog; USB, DMA, flash and high-speed peripherals pending |
 
-CH571, CH584X and CH591 are not selectable yet; CH564, CH565 and CH569 are
-outside this HAL.
+CH571, CH584X and CH591 are not selectable yet; CH564 and CH565 are outside
+this HAL.
 
 ## Driver status
 
