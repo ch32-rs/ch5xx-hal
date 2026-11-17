@@ -16,6 +16,10 @@
 //! reloads at `CMPLR` in hardware. That model is wrong here, so this module
 //! implements the down-counter/one-shot-load model instead.
 //!
+//! CH569 shares the register layout but not the reload: its counter reloads
+//! itself from `CMP` at the crossing (`systick_autoreload`), while CH573's
+//! runs on past zero to `2^64 - 1`.
+//!
 //! # Timebase
 //!
 //! Each arm loads `CNT` with the period and records two values under a
@@ -28,7 +32,9 @@
 //!
 //! which stays correct before *and* after the counter crosses zero: after the
 //! crossing the hardware wraps `CNT` to `2^64 - 1`, and the wrapping
-//! subtraction turns into `period + ticks_since_zero`.
+//! subtraction turns into `period + ticks_since_zero`. Where the counter
+//! reloads itself instead, the reloaded `CNT` would rewind that expression by
+//! almost a whole period, so a set `CNTIF` pins the answer to `base + period`.
 //!
 //! The zero-crossing interrupt advances the anchor to the observed `now` and
 //! reloads the counter for the next deadline, mirroring
@@ -124,6 +130,20 @@ impl State {
     fn ticks_locked(&self, cs: CriticalSection) -> u64 {
         let period = self.period.borrow(cs).get();
         let base = self.base.borrow(cs).get();
+
+        // CH569 reloads `CNT` from `CMP` by itself at the crossing, so the
+        // counter no longer says how far past the boundary it is; the flag
+        // does. Read `CNT` first: a crossing in between then only moves the
+        // answer forward by the few ticks that were left of the period.
+        #[cfg(systick_autoreload)]
+        {
+            let count = read_count();
+            if SYSTICK.cntfg().read().cntif() {
+                return base.wrapping_add(period);
+            }
+            return base.wrapping_add(period.wrapping_sub(count));
+        }
+        #[cfg(not(systick_autoreload))]
         base.wrapping_add(period.wrapping_sub(read_count()))
     }
 
@@ -216,13 +236,10 @@ fn SysTick() {
         // Not ours. Leave the flag alone; nothing else uses this counter.
         return;
     }
-    clear_count_flag();
 
     critical_section::with(|cs| {
-        // The counter has crossed zero. Sample the true time once, then run
-        // the queue and load the next deadline. `arm` moves the anchor to
-        // this value, so the interrupt latency is preserved instead of
-        // discarded.
+        // Sample the time while the flag still says a crossing happened:
+        // `ticks_locked` needs it to place the anchor. `arm` clears the flag.
         let now = DRIVER.state.ticks_locked(cs);
         DRIVER.state.trigger_alarm_at(cs, now);
     });

@@ -2,9 +2,10 @@
 //!
 //! The window watchdog counts up at `Fsys / 131072` and overflows from 255. A
 //! reload of 0 is the longest interval, about 6.3 s at the 5.333 MHz reset
-//! clock and about 0.43 s at 78 MHz. Overflow can raise `WDOG_BAT` or reset the
-//! chip. That interrupt is shared with the battery detector, and this driver
-//! does not claim the handler; poll [`Watchdog::overflowed`] instead.
+//! clock and about 0.43 s at 78 MHz. CH569 counts four times slower
+//! (`Fsys / 524288`). Overflow can raise `WDOG_BAT` or reset the chip. That
+//! interrupt is shared with the battery detector, and this driver does not
+//! claim the handler; poll [`Watchdog::overflowed`] instead.
 //!
 //! [`reset_cause`] reads the flag the hardware latches, on the chips whose
 //! system-control block has that register. CH573 does not, so the function is
@@ -46,7 +47,12 @@ pub enum ResetCause {
 /// Read the latched reset flag.
 #[cfg(reset_status)]
 pub fn reset_cause() -> ResetCause {
-    match pac::SYSTEM_CONTROL.reset_status().read().reset_flag() {
+    // CH569 calls the byte `RST_BOOT_STAT`; the flag encoding is the same.
+    #[cfg(ch569)]
+    let flag = pac::SYSTEM_CONTROL.rst_boot_stat().read().reset_flag();
+    #[cfg(not(ch569))]
+    let flag = pac::SYSTEM_CONTROL.reset_status().read().reset_flag();
+    match flag {
         0 => ResetCause::Software,
         1 => ResetCause::PowerOn,
         2 => ResetCause::Watchdog,
@@ -60,10 +66,12 @@ pub fn reset_cause() -> ResetCause {
 pub fn software_reset() -> ! {
     // `WDOG_INT_FLAG` is write-1-to-clear, so the written flag bit stays 0.
     rcc::with_safe_access(|| {
-        pac::SYSTEM_CONTROL.rst_wdog_ctrl().modify(|w| {
-            w.set_software_reset(true);
-            w.set_wdog_int_flag(false);
-        });
+        let ctrl = pac::SYSTEM_CONTROL.rst_wdog_ctrl();
+        let value = (ctrl.read().0 & 0x3e) | 0x01;
+        // CH569 takes [7:6] as a write key and drops the write without 01b.
+        #[cfg(ch569)]
+        let value = value | 0x40;
+        ctrl.write(|w| w.0 = value);
     });
     loop {
         core::hint::spin_loop();
@@ -106,10 +114,12 @@ impl<'d, T: Instance> Watchdog<'d, T> {
         // `WDOG_INT_FLAG` is write-1-to-clear. A read-modify-write that copies a
         // set flag back would clear it, so the written flag bit stays 0.
         rcc::with_safe_access(|| {
-            pac::SYSTEM_CONTROL.rst_wdog_ctrl().modify(|w| {
-                w.set_wdog_rst_en(enabled);
-                w.set_wdog_int_flag(false);
-            });
+            let ctrl = pac::SYSTEM_CONTROL.rst_wdog_ctrl();
+            let value = ((ctrl.read().0 & 0x3e) & !0x02) | (u8::from(enabled) << 1);
+            // CH569 takes [7:6] as a write key and drops the write without 01b.
+            #[cfg(ch569)]
+            let value = value | 0x40;
+            ctrl.write(|w| w.0 = value);
         });
     }
 

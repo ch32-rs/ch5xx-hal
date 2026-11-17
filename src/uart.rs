@@ -378,19 +378,31 @@ macro_rules! impl_pins {
 
 // Datasheet table 7-8, default column. CH572/CH570 have their own two-pin
 // UART0 on PA2/PA3, selected with `PIN_ALTERNATE_H.UART_RXD/UART_TXD`.
-#[cfg(not(ch572))]
+#[cfg(not(any(ch569, ch572)))]
 impl_pins!(UART0, 0, rx: [PB4], tx: [PB7]);
 #[cfg(ch572)]
 impl_pins!(UART0, 0, rx: [PA2], tx: [PA3]);
-#[cfg(uart1)]
+#[cfg(all(uart1, not(ch569)))]
 impl_pins!(UART1, 0, rx: [PA8], tx: [PA9]);
-#[cfg(uart2)]
+#[cfg(all(uart2, not(ch569)))]
 impl_pins!(UART2, 0, rx: [PA6], tx: [PA7]);
-#[cfg(uart3)]
+#[cfg(all(uart3, not(ch569)))]
 impl_pins!(UART3, 0, rx: [PA4], tx: [PA5]);
+// CH565/CH569: UART0 PB5/PB6 with the PA5/PA6 remap, and only UART0 has a
+// remap bit; UART1/2/3 keep one pin pair each (CH569DS1 pin table).
+#[cfg(ch569)]
+impl_pins!(UART0, 0, rx: [PB5], tx: [PB6]);
+#[cfg(ch569)]
+impl_pins!(UART0, 1, rx: [PA5], tx: [PA6]);
+#[cfg(all(ch569, uart1))]
+impl_pins!(UART1, 0, rx: [PA7], tx: [PA8]);
+#[cfg(all(ch569, uart2))]
+impl_pins!(UART2, 0, rx: [PA2], tx: [PA3]);
+#[cfg(all(ch569, uart3))]
+impl_pins!(UART3, 0, rx: [PB3], tx: [PB4]);
 // Datasheet table 7-8, remapped column. CH572 uses a different 3-bit pin
 // selector, and several other dies omit the field for some instances.
-#[cfg(pin_uart0)]
+#[cfg(all(pin_uart0, not(ch569)))]
 impl_pins!(UART0, 1, rx: [PA15], tx: [PA14]);
 #[cfg(pin_uart1)]
 impl_pins!(UART1, 1, rx: [PB12], tx: [PB13]);
@@ -453,6 +465,8 @@ fn set_interrupt_output(r: &pac::uart::UartFull, enabled: bool) {
     r.mcr().modify(|w| w.set_mcr_int_oe(enabled));
     #[cfg(mcr_int_oe_combined)]
     r.mcr().modify(|w| w.set_mcr_out2_rb_mcr_int_oe(enabled));
+    #[cfg(mcr_out2)]
+    r.mcr().modify(|w| w.set_mcr_out2(enabled));
 }
 
 impl<T: Instance, M: Mode> Drop for UartTx<'_, T, M> {
@@ -1215,7 +1229,9 @@ fn configure<T: Instance, const REMAP: u8>(config: &Config, enable_tx: bool) -> 
         w.set_lcr_par_mod(par_mod);
     });
 
-    r.div().write(|w| w.set_div(1));
+    // The full and no-modem blocks name this byte differently; it is the
+    // whole prescaler either way.
+    r.div().write(|w| w.0 = 1);
     r.dl().write(|w| w.set_dl(dl as u16));
 
     Ok(())
