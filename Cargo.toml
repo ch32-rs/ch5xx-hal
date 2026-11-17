@@ -78,12 +78,12 @@ rt = ["dep:qingke-rt"]
 #
 # `qingke-rt?/<core>` only applies when `rt` has pulled the optional runtime
 # in. CH582 and CH583 are on hardware; the others select a PAC and exist so a
-# shared driver can be compiled against their register block. CH564 and CH569
-# are absent because their GPIO blocks are not the 16-bit port registers this
-# driver programs.
+# shared driver can be compiled against their register block. CH564 is absent
+# because its GPIO block is not the port-register layout this driver programs.
 ch570 = ["ch5xx-metapac/ch570", "qingke/v3a", "qingke-rt?/v3a"]
 ch572 = ["ch5xx-metapac/ch572", "qingke/v3a", "qingke-rt?/v3a"]
 ch573 = ["ch5xx-metapac/ch573", "qingke/v3a", "qingke-rt?/v3a"]
+ch569 = ["ch5xx-metapac/ch569", "qingke/v3a", "qingke-rt?/v3a"]
 ch581 = ["ch5xx-metapac/ch581", "qingke/v3c", "qingke-rt?/v3c"]
 ch582 = ["ch5xx-metapac/ch582", "qingke/v4a", "qingke-rt?/v4a", "qingke-rt?/highcode"]
 ch583 = ["ch5xx-metapac/ch583", "qingke/v4a", "qingke-rt?/v4a", "qingke-rt?/highcode"]
