@@ -7,9 +7,7 @@ use core::ptr::read_volatile;
 
 use super::*;
 
-// The routines below run from RAM. A fetch from flash while the engine is busy
-// would fault, so they are self-contained, use only volatile register accesses,
-// and are inlined into the RAM-resident entry points.
+// RAM-resident: a flash fetch while the engine is busy would fault.
 
 #[inline(always)]
 unsafe fn read_ctrl() -> u8 {
@@ -59,17 +57,13 @@ pub(super) const CMD_ERASE_BLOCK: u8 = 0xD8;
 /// Erase one data block (256 bytes).
 #[cfg(flashrom_data)]
 pub(super) const CMD_ERASE_DATA: u8 = 0x81;
-/// Program data at an address.
 const CMD_PROGRAM: u8 = 0x02;
-/// Read bytes back through the engine.
 const CMD_READ: u8 = 0x0B;
 /// Read the 64-bit factory unique ID; read-like, so it takes no `0x06` prefix.
 const CMD_READ_UNIQUE_ID: u8 = 0x4B;
 /// Prefix the engine wants before an erase or program.
 const CMD_PREFIX: u8 = 0x06;
-/// Engine reset command.
 const CMD_RESET: u8 = 0xFF;
-/// Status-poll command.
 const CMD_STATUS: u8 = 0x05;
 // Left unexposed: boot info (`0x06` at `0x7DFF8`, inconsistent byte count), power
 // up/down (`0x0C`/`0x0D`) and CH57x's protection lock (`0x08`, can lock the part).
@@ -97,9 +91,7 @@ const CTRL_DWORD_LATCH: u8 = 0x15;
 /// Engine frame offset of the code region on the CH584X die variant.
 const CH584X_CODE_FRAME_OFFSET: u32 = 0x0008_0000;
 
-/// Busy-handshake spins before a command is declared timed out. The engine
-/// answers in microseconds; the limit only exists so a broken engine does not
-/// hang the core forever.
+/// Poll limit. The engine answers in microseconds; this only bounds a hang.
 const BUSY_SPINS: u32 = 0x0100_0000;
 
 /// Start a command: the engine expects a zero, a five, two dead cycles, then
@@ -114,8 +106,6 @@ unsafe fn begin(command: u8) {
     }
 }
 
-/// Wait until the engine is ready, bounded so a broken engine cannot hang the
-/// core.
 #[inline(always)]
 unsafe fn wait_ready() -> Result<(), Error> {
     for _ in 0..BUSY_SPINS {
@@ -126,7 +116,6 @@ unsafe fn wait_ready() -> Result<(), Error> {
     Err(Error::Timeout)
 }
 
-/// Wait until the engine is ready, then drop the handshake.
 #[inline(always)]
 unsafe fn wait_done() -> Result<(), Error> {
     unsafe {
@@ -188,10 +177,8 @@ unsafe fn read_frame(command: u8, addr: u32) -> Result<(), Error> {
     }
 }
 
-/// Restart the command engine before an erase or program: a four, then the
-/// `0xFF` command. The CH583/CH585 ROM routine sends no extra parameter byte;
-/// with one, the engine ignores the following command and every poll times
-/// out.
+/// Reset the engine before erase/program. No parameter byte: with one, the
+/// CH583/CH585 engine ignores the next command.
 #[inline(always)]
 unsafe fn engine_reset() -> Result<(), Error> {
     unsafe {
@@ -201,11 +188,8 @@ unsafe fn engine_reset() -> Result<(), Error> {
     }
 }
 
-/// Poll the engine status. Command 5 answers with a leading byte and then a
-/// status byte. The vendor CH583 routine tests bit 0 alone, but on the CH585
-/// the engine answers `0x02` for a command it has not started yet; treating
-/// that as success drops the write, so it is reported as a rejection.
-/// `true` means the command completed, `false` that it should be re-issued.
+/// Poll command 5: a leading byte, then the status. CH585 answers `0x02` while
+/// a command has not started; treating that as done drops the write.
 #[inline(always)]
 unsafe fn poll_status(limit: u32) -> Result<bool, Error> {
     for _ in 0..limit {
@@ -245,11 +229,8 @@ unsafe fn open_safe_access() {
     pac::SYSTEM_CONTROL
         .safe_access_sig()
         .write_value(SafeAccessSig(SAFE_ACCESS_KEY2));
-    // Unconditional: this register reads back as the reset status even
-    // while the write direction is locked, so a readback test proves
-    // nothing. `modify` keeps the bits the read returns and sets the
-    // enables, matching the ROM routine's `saved | 0xE0` (CH570/CH572 fold
-    // the data and code write enables into one two-bit field).
+    // The readback aliases the reset status while locked, so always run the
+    // writes instead of testing first.
     #[cfg(not(any(ch570, ch572)))]
     pac::SYSTEM_CONTROL.glob_rom_cfg().modify(|w| {
         w.set_rom_ctrl_en(true);
@@ -264,8 +245,7 @@ unsafe fn open_safe_access() {
     pac::SYSTEM_CONTROL.safe_access_sig().write_value(SafeAccessSig(0));
 }
 
-/// Restore the flash write protection and close the safe-access window,
-/// keeping only the code-offset selection the ROM routine preserves.
+/// Restore write protection, keeping the code-offset bit as the ROM routine does.
 #[inline(always)]
 unsafe fn close_safe_access() {
     use pac::system_control::regs::{GlobRomCfg, SafeAccessSig};
@@ -282,8 +262,7 @@ unsafe fn close_safe_access() {
     pac::SYSTEM_CONTROL.safe_access_sig().write_value(SafeAccessSig(0));
 }
 
-/// Run the body inside one unlock window with interrupts masked. The whole
-/// function, including the unlock, must be called from RAM.
+/// One unlock window with interrupts masked; runs from RAM.
 #[inline(always)]
 unsafe fn unlocked<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     unsafe {
@@ -300,9 +279,8 @@ unsafe fn unlocked<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, Erro
     }
 }
 
-/// Whether this die is the CH584X variant: chip ID `0x92` and the CH584X code
-/// in `ROM_CFG_CHIP_ID`. The read is a flash bus access and must happen before
-/// the unlock window opens; the ROM routine does the same.
+/// CH584X variant: chip ID `0x92` plus the info-flash marker. The read must
+/// happen before the unlock window opens.
 #[inline(always)]
 pub(super) unsafe fn is_584x() -> bool {
     unsafe {
@@ -351,10 +329,7 @@ pub(super) fn data_frame(addr: u32) -> u32 {
     addr | DATA_FRAME_OFFSET
 }
 
-/// Reject the CH584X die on the data region. It addresses DataFlash 0-based
-/// in the engine and erases in 4 KiB blocks, so the plain frame this driver
-/// sends would fall into CodeFlash instead. Checked before the unlock window,
-/// like [`is_584x`].
+/// CH584X has no supported data path: its 0-based frame would hit CodeFlash.
 #[cfg(flashrom_data)]
 #[inline(always)]
 pub(super) fn check_die() -> Result<(), Error> {

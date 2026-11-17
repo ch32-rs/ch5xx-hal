@@ -1,15 +1,9 @@
 //! CH595 page-latch flash controller.
 //!
-//! CH595 and CH596 replaced the serial command engine with a hardware state
-//! machine at `0x4000_1800` that programs through a 256-byte page latch and
-//! erases 2 KiB sectors or 64 KiB banks. Reads are plain memory-mapped loads;
-//! the controller is not involved.
-//!
-//! The sequence follows the vendor `CH59x_flash.c`: turn off the safe-access
-//! auto-close so the write channel stays open across the long waits, unlock
-//! with the standard signature and `R32_GLOBAL_CONFIG = 0xE1`, then run
-//! pre-program plus erase or latch plus program and poll `R32_FLASH_STATUS`
-//! (bit 31 busy, bit 19 ready).
+//! Programs through a 256-byte page latch; erases 2 KiB sectors or 64 KiB
+//! banks. Reads are plain memory-mapped loads. The sequence follows the vendor
+//! `CH59x_flash.c`, with safe-access auto-close disabled so the write channel
+//! stays open across the long waits.
 
 use core::ptr::{read_volatile, write_volatile};
 

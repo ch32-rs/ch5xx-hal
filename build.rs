@@ -79,25 +79,24 @@ fn main() {
     if pin_intx {
         println!("cargo:rustc-cfg=gpio_pin_intx");
     }
-    // The FlashROM control engine is metadata as an address only: the serial
-    // command protocol is modeled by the HAL, not by the PAC. Every CH5xx
-    // family that shares this map carries the placeholder, so the driver is
-    // gated on its presence rather than on a chip feature. CH595 is excluded:
-    // it replaced the engine with a pre-program/page-latch controller at
-    // `0x4000_1800..0x4000_1820`, and none of these commands apply.
-    if chip_name != "ch595" && METADATA.peripherals.iter().any(|p| p.name == "FLASHROM") {
+    // The flash controller version selects the protocol: serial engine or
+    // CH595 page latch.
+    if let Some(version) = METADATA
+        .peripherals
+        .iter()
+        .find(|p| p.name == "FLASHROM")
+        .and_then(|p| p.registers.as_ref())
+        .map(|registers| registers.version)
+    {
         println!("cargo:rustc-cfg=flashrom");
+        println!("cargo:rustc-cfg=flashrom_{version}");
     }
-    // The user data region only exists on the dies whose memory map has one;
-    // CH570/CH572 and CH595 do not. Their flash driver can still cover the
-    // code region, so this is a separate gate.
+    // Not every die has a user data region.
     if has_data_flash(&chip_name) {
         println!("cargo:rustc-cfg=flashrom_data");
     }
-    // ISP583 (CH582/CH583) and ISP592 (CH592) address the data region with the
-    // engine's `0x80000` frame bit set; ISP573/ISP585 parts use the plain
-    // address. Measured in `libISP583.a`'s `FLASH_EEPROM_CMD`, which ORs
-    // `0x80000` into `0x70000 + offset`, and in `libISP585.a`, which does not.
+    // ISP583/ISP592 address DataFlash through the engine's `0x80000` frame;
+    // ISP573/ISP585 use the plain address.
     if matches!(chip_name.as_str(), "ch582" | "ch583" | "ch592") {
         println!("cargo:rustc-cfg=flashrom_data_frame_80000");
     }

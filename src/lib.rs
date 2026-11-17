@@ -90,18 +90,14 @@ pub(crate) mod _generated {
 
 pub use crate::_generated::{peripherals, Peripherals};
 
-// The flash driver needs a controller it models: the serial engine (the
-// metadata's address-only FlashROM placeholder, every die but CH595) or the
-// CH595 page-latch controller. Both backends' erase/program sequences need
-// `qingke-rt`'s `highcode` section, or they would run from the flash they program.
-#[cfg(all(feature = "flash", not(any(flashrom, ch595))))]
+#[cfg(all(feature = "flash", not(any(flashrom_ch570, flashrom_ch595))))]
 compile_error!("the `flash` feature needs a flash controller this HAL models");
 
 #[cfg(any(adc_ch573, adc_ch583, adc_ch585, adc_ch592, adc_ch595))]
 pub mod adc;
 pub mod delay;
 pub mod dma;
-#[cfg(all(feature = "flash", any(flashrom, ch595)))]
+#[cfg(all(feature = "flash", any(flashrom_ch570, flashrom_ch595)))]
 pub mod flash;
 pub mod gpio;
 #[cfg(i2c_present)]

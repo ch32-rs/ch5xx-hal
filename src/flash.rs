@@ -1,102 +1,31 @@
-//! Internal FlashROM: the code region and the user data region.
+//! Internal FlashROM driver.
 //!
-//! The CH5xx flash is programmed through a serial command engine at
-//! `0x4000_1800`, not through control registers like the CH32 parts. Every
-//! erase or program is a command byte plus address bytes, followed by a word
-//! or a byte at a time, with a handshake register polled for completion. The
-//! sequence is the one the CH583/CH585 ROM routine uses, cross-checked against
-//! `wlink`'s algorithm and probe-rs's CH5xx flash algorithm. The CH595 family
-//! replaced the engine with a page-latch controller; that backend is separate.
+//! Serial dies use the command engine at `0x4000_1800`; CH595 uses its
+//! page-latch controller. Erase and program run from RAM with interrupts
+//! masked, so keep other bus masters idle and pass source buffers in RAM.
 //!
-//! # Layout (datasheet table 2-2-1)
+//! Serial code reads latch dwords through the engine. An erased word is a
+//! per-die sentinel (`0xF3F9BDA9` on CH582/CH585/CH592, `0xF5F9BDA9` on CH573),
+//! so only CH595 code flash implements `NorFlash`. ISP583/ISP592 set the
+//! engine's `0x80000` frame bit for DataFlash; CH584X is detected at run time
+//! and has no supported data path. CH595 reads are plain loads, erase to
+//! `0xFF`, and have no identity commands.
 //!
-//! | Range | Size | Content |
-//! | --- | --- | --- |
-//! | `0x0000_0000-0x0006_FFFF` | 448 KiB | user code |
-//! | `0x0007_0000-0x0007_7FFF` | 32 KiB | user data |
-//! | `0x0007_8000-0x0007_DFFF` | 24 KiB | bootloader, never exposed |
-//! | `0x0007_E000-0x0007_EFFF` | 4 KiB | user info, tool-set only |
-//! | `0x0007_F000-0x0007_FFFF` | 4 KiB | info flash, holds the MAC at `0x7F018` |
-//!
-//! CH570/CH572 have a 240 KiB code region and no user data region; their MAC
-//! sits at `0x3F018` instead. The CH584X
-//! die variant exposes 480 KiB and moves the code region to engine address
-//! `0x0008_0000`; the driver detects the variant at run time from the chip ID,
-//! as the ROM routine does, and refuses data-region access on it: that die
-//! addresses DataFlash 0-based in the engine and erases in 4 KiB blocks, which
-//! this driver does not implement.
-//!
-//! The data region's engine frame differs by ROM family: ISP585 (CH581/CH584/
-//! CH585) and ISP573 (CH573) address `0x7_0000` directly, while ISP583
-//! (CH582/CH583) and ISP592 (CH592) set the engine's `0x80000` bit. The CPU
-//! address is `0x0007_0000-0x0007_7FFF` on all of them.
-//!
-//! CH595 has a 240 KiB code region, no user data region, 2 KiB sectors and
-//! 64 KiB banks, and programs through a 256-byte page latch.
-//!
-//! The engine also holds the die's identity: `Flash::mac_address` returns the
-//! six factory MAC bytes from InfoFlash and `Flash::unique_id` the 64-bit ID.
-//! The CH595 controller has neither command, so its build omits both.
-//!
-//! On the serial-engine dies code reads go through the engine too. The byte
-//! port answers with garbage on the code region, so [`CodeFlash::blocking_read`]
-//! latches dwords through `R32_FLASH_DATA` — the path the ROM's own verify
-//! routine uses. Erased code does not read as `0xFF`: every path answers a
-//! placeholder that varies per die — measured `0xF3F9BDA9` on CH582/CH585/CH592
-//! and `0xF5F9BDA9` on CH573 — so a blank check must use its own die's value.
-//! CH595 reads are plain memory-mapped loads and erased bytes read `0xFF`.
-//!
-//! # Execution constraints
-//!
-//! The serial engine has no DMA and the core cannot fetch from flash while the
-//! engine or the CH595 controller owns it, so every erase/program sequence runs
-//! from RAM (the `.highcode` section, copied by `qingke-rt` when its `highcode`
-//! feature is on — the `flash` feature enables it). Interrupts are masked per
-//! operation, which makes every call a bounded stall.
-//!
-//! Callers must also stop anything else that touches flash or the bus for the
-//! duration: the radio/DMA must be idle, and a program source buffer passed as
-//! `&[u8]` must live in RAM (a `const`/`include_bytes!` slice lives in the
-//! flash being programmed). The driver cannot check either at compile time.
-//!
-//! The unlock is a safe-access write (`0x57`, `0xA8`, then
-//! `R8_GLOB_ROM_CFG = saved | 0xE0`). On the CH585 that register reads back as
-//! `R8_RESET_STATUS`, whose top bits are constant, so a readback test always
-//! claims "already unlocked" while the write port is still locked. This driver
-//! never tests it and always runs the sequence, reading `saved` inside the
-//! safe-access window.
-//!
-//! A failed erase can leave the engine busy and the debug port unresponsive;
-//! on `Error::Timeout` the caller should stop using flash and reset the part
-//! rather than retry.
-//!
-//! The engine's timing comes from the clock tree: `R8_FLASH_CFG`/`R8_FLASH_SCK`
-//! are programmed by [`crate::rcc`] for the selected clock. With the reset
-//! value at 78 MHz the engine silently drops erase and program commands, so a
-//! custom clock setup must keep those writes.
-//!
-//! # Bring-up status
-//!
-//! Validated on CH585 (2026-11-15): the whole data-region path (erase, blank
-//! check, program including a cross-page write, engine read-back), the code
-//! region's 4 KiB sector erase and 64 KiB block erase, dword program and
-//! engine read-back, including writes across a page boundary. Not run on
-//! target: the CH584X die path, the CH582/CH583/CH592 `0x80000` data frame,
-//! the CH595 page-latch backend, and the CH570/CH572 build (no board). A failed code erase stalls the AHB
-//! and can take the debug port down until the flash is erased from outside, so
-//! validate on regions the running image does not use, with an external-erase
-//! recovery plan ready.
+//! The safe-access readback lies on CH585 (`R8_RESET_STATUS` shares the
+//! address), so the unlock sequence always runs. `rcc` owns the engine timing;
+//! a custom clock setup must keep it. A timed-out erase may leave the debug
+//! port unresponsive: reset the part rather than retry.
 
 use core::marker::PhantomData;
 
 use crate::{pac, peripherals, Peri};
 
-#[cfg(ch595)]
+#[cfg(flashrom_ch595)]
 mod latch;
-#[cfg(not(ch595))]
+#[cfg(flashrom_ch570)]
 mod serial;
 
-/// Start of the user code region, an offset into the flash address space.
+/// Start of the user code region.
 pub const CODE_FLASH_BASE: u32 = 0x0000_0000;
 /// Size of the user code region exposed on this die.
 #[cfg(any(ch570, ch572, ch595))]
@@ -108,14 +37,11 @@ pub const CODE_FLASH_SIZE: u32 = 0x0007_0000;
 /// bootloader flag is set.
 #[cfg(not(any(ch570, ch572, ch595)))]
 const CH584X_CODE_FLASH_SIZE: u32 = 0x0007_8000;
-/// Erase granularity of the code region.
-///
-/// The serial-engine dies erase 4 KiB per `0x20` command; the CH595 page-latch
-/// controller erases 2 KiB sectors and 64 KiB banks.
-#[cfg(ch595)]
+/// Erase granularity: 4 KiB on serial dies, 2 KiB on CH595.
+#[cfg(flashrom_ch595)]
 pub const CODE_ERASE_SIZE: usize = 0x800;
 /// Erase granularity of the code region; see [`CODE_ERASE_SIZE`].
-#[cfg(not(ch595))]
+#[cfg(flashrom_ch570)]
 pub const CODE_ERASE_SIZE: usize = 0x1000;
 /// 64 KiB block erase; the region is not always a multiple.
 pub const CODE_BLOCK_ERASE_SIZE: usize = 0x1_0000;
@@ -123,13 +49,13 @@ pub const CODE_BLOCK_ERASE_SIZE: usize = 0x1_0000;
 pub const CODE_WRITE_SIZE: usize = 4;
 
 /// `ROM_CFG_MAC_ADDR`: six MAC bytes followed by a two-byte checksum.
-#[cfg(all(not(ch595), any(ch570, ch572)))]
+#[cfg(all(flashrom_ch570, any(ch570, ch572)))]
 const MAC_ADDR: u32 = 0x0003_F018;
 /// `ROM_CFG_MAC_ADDR`; see the CH570/CH572 value above.
-#[cfg(all(not(ch595), not(any(ch570, ch572))))]
+#[cfg(all(flashrom_ch570, not(any(ch570, ch572))))]
 const MAC_ADDR: u32 = 0x0007_F018;
 
-/// Start of the user data region, an offset into the flash address space.
+/// Start of the user data region.
 #[cfg(flashrom_data)]
 pub const DATA_FLASH_BASE: u32 = 0x0007_0000;
 /// Size of the user data region.
@@ -141,9 +67,7 @@ pub const DATA_ERASE_SIZE: usize = 0x100;
 /// Program unit of the data region: the engine shifts in single bytes.
 #[cfg(flashrom_data)]
 pub const DATA_WRITE_SIZE: usize = 1;
-/// Engine frame bit of the data region. ISP583 (CH582/CH583) and ISP592
-/// (CH592) set the `0x80000` bit; ISP573/ISP585 parts address `0x7_0000`
-/// directly. The CPU-side address stays `0x7_0000..0x7_7FFF` on both.
+/// ISP583/ISP592 set the engine's `0x80000` frame bit; ISP573/ISP585 do not.
 #[cfg(flashrom_data)]
 #[cfg(flashrom_data_frame_80000)]
 const DATA_FRAME_OFFSET: u32 = 0x0008_0000;
@@ -151,10 +75,9 @@ const DATA_FRAME_OFFSET: u32 = 0x0008_0000;
 #[cfg(flashrom_data)]
 #[cfg(not(flashrom_data_frame_80000))]
 const DATA_FRAME_OFFSET: u32 = 0;
-/// Value of an erased byte.
 pub const ERASED: u8 = 0xFF;
 
-/// Safe-access key bytes. Two writes in order open the protected write port.
+/// Safe-access keys; write both in order.
 const SAFE_ACCESS_KEY1: u8 = 0x57;
 const SAFE_ACCESS_KEY2: u8 = 0xA8;
 
@@ -193,9 +116,8 @@ pub enum Async {}
 /// Configuration for a flash handle.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
-    /// Status polls before an operation is declared timed out. One poll is a
-    /// full command sequence, so the default is already seconds of engine
-    /// time; the limit only exists so a broken engine cannot hang forever.
+    /// Polls before timeout. One poll is a full command sequence, so the
+    /// default already spans seconds.
     pub poll_limit: u32,
 }
 
@@ -240,7 +162,7 @@ impl<'d, MODE> Flash<'d, MODE> {
     ///
     /// This is the address the BLE ROM library broadcasts by default. Reading
     /// requires the die's read-out protection to be off (`CFG_ROM_READ`).
-    #[cfg(not(ch595))]
+    #[cfg(flashrom_ch570)]
     pub fn mac_address(&mut self) -> Result<[u8; 6], Error> {
         let is_584x = unsafe { serial::is_584x() };
         let mut bytes = [0u8; 8];
@@ -252,7 +174,7 @@ impl<'d, MODE> Flash<'d, MODE> {
     ///
     /// WCH documents it as one ID per die; the ROM derives it from the engine's
     /// sixteen-byte answer, not from a plain memory read.
-    #[cfg(not(ch595))]
+    #[cfg(flashrom_ch570)]
     pub fn unique_id(&mut self) -> Result<u64, Error> {
         let mut id = [0u8; 8];
         unsafe { serial::ram_read_unique_id(id.as_mut_ptr())? };
@@ -274,7 +196,7 @@ pub struct CodeFlash<'f, 'd, MODE = Blocking> {
     flash: &'f mut Flash<'d, MODE>,
 }
 
-#[cfg(not(ch595))]
+#[cfg(flashrom_ch570)]
 impl<MODE> CodeFlash<'_, '_, MODE> {
     /// The region size in bytes on the die in the socket.
     pub fn capacity(&self) -> usize {
@@ -358,7 +280,7 @@ impl<MODE> CodeFlash<'_, '_, MODE> {
     }
 }
 
-#[cfg(ch595)]
+#[cfg(flashrom_ch595)]
 impl<MODE> CodeFlash<'_, '_, MODE> {
     /// The region size in bytes.
     pub fn capacity(&self) -> usize {
@@ -494,7 +416,7 @@ macro_rules! read_nor_flash_impl {
     };
 }
 
-#[cfg(any(ch595, flashrom_data))]
+#[cfg(any(flashrom_ch595, flashrom_data))]
 macro_rules! nor_flash_impl {
     ($region:ident, $read:literal, $write:literal, $erase:expr) => {
         read_nor_flash_impl!($region, $read);
@@ -516,9 +438,9 @@ macro_rules! nor_flash_impl {
 
 // Serial code flash erases to a per-die sentinel, not `0xFF`; `NorFlash` promises
 // all ones, so only the latch controller can implement it.
-#[cfg(ch595)]
+#[cfg(flashrom_ch595)]
 nor_flash_impl!(CodeFlash, 4, 4, CODE_ERASE_SIZE);
-#[cfg(not(ch595))]
+#[cfg(flashrom_ch570)]
 read_nor_flash_impl!(CodeFlash, 4);
 #[cfg(flashrom_data)]
 nor_flash_impl!(DataFlash, 1, 1, DATA_ERASE_SIZE);
