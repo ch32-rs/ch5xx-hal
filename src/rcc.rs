@@ -695,18 +695,21 @@ pub fn clocks() -> Clocks {
 /// Stop and quiesce active Timer/DMA/NFC sessions before changing clocks, then
 /// rebuild their timing state. Dedicated NFC clock mode does not remove its
 /// system-clock precondition or make a live session safe across this change.
-/// Registers WCH's CH585/CH584/CH581 `SetSysClock` writes but the PAC does
-/// not model.
-#[cfg(pll_312)]
+/// Registers WCH's `SetSysClock` writes but the PAC does not model.
+#[cfg(any(pll_312, ch572, ch573))]
 #[cfg(not(any(ch592, power_plan_ch58x)))]
-mod ch585_flash_raw {
+mod flash_timing_raw {
     /// Safe-mode control; bit 4 selects the 312 MHz XROM clock.
+    #[cfg(pll_312)]
     pub const SAFE_MODE_CTRL: *mut u32 = 0x4000_1010 as *mut u32;
     /// `R8_FLASH_SCK`, FlashROM SCK timing; bit 4 differs by clock source.
+    #[cfg(any(pll_312, ch572))]
     pub const FLASH_SCK: *mut u8 = 0x4000_1805 as *mut u8;
     /// `R8_FLASH_CFG`, FlashROM access config.
     pub const FLASH_CFG: *mut u8 = 0x4000_1807 as *mut u8;
+    #[cfg(pll_312)]
     pub const XROM_312M_SEL: u32 = 1 << 4;
+    #[cfg(any(pll_312, ch572))]
     pub const FLASH_SCK_BIT: u8 = 1 << 4;
 }
 
@@ -737,9 +740,14 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     #[cfg(clk_cfg_osc32m)]
     let pll_gate_diss = before.osc32m_sel() != osc32m_sel;
 
-    // Power the oscillators this configuration needs. Reset leaves HSI, HSE
-    // and the PLL powered, so in the normal path this only re-asserts bits
-    // that are already set.
+    // CH573 resets with the PLL powered down; selecting it before it locks
+    // wedges the core. WCH spins 2000*2 nops after power-up in `SetSysClock`.
+    #[cfg(any(ch572, ch573))]
+    let pll_was_off = !pac::SYS.hfck_pwr_ctrl().read().clk_pll_pon();
+
+    // Power the oscillators this configuration needs. Reset powers the ones
+    // this tree uses, except for the CH573 PLL, so this usually only
+    // re-asserts bits that are already set.
     with_safe_access(|| {
         pac::SYS.hfck_pwr_ctrl().modify(|w| {
             match config.osc {
@@ -754,6 +762,13 @@ pub unsafe fn set_config(config: Config) -> Clocks {
             }
         });
     });
+
+    #[cfg(any(ch572, ch573))]
+    if pll_was_off && matches!(config.sys, Sys::Pll(_)) {
+        for _ in 0..4000 {
+            core::hint::spin_loop();
+        }
+    }
 
     // CH585/CH581/CH584/CH595 select between HSI and HSE. CH57x always runs
     // from the crystal, so its tuning applies unconditionally.
@@ -772,33 +787,55 @@ pub unsafe fn set_config(config: Config) -> Clocks {
             .modify(|w| w.set_xt32m_c_load(config.hse_cap as u8));
     });
 
-    // WCH's `SetSysClock` runs the XROM at 312 MHz and rewrites the FlashROM
-    // access config for the new clock. The reset value is only correct for the
-    // slow reset clock: port 78 MHz with it and the erase/program engine starts
-    // dropping commands.
+    // WCH's `SetSysClock` rewrites the FlashROM access config for the new
+    // clock. The reset value is only correct for the slow reset clock: port a
+    // faster clock with it and the erase/program engine drops commands.
     #[cfg(pll_312)]
+    let (flash_cfg, sck_high) = match config.sys {
+        Sys::Pll(0) => (0x07, true),
+        Sys::Pll(div) if div < 10 => (0x01, false),
+        Sys::Pll(div) if div < 16 => (0x02, false),
+        Sys::Pll(_) => (0x07, false),
+        Sys::Divided(div) if div < 8 => (0x51, false),
+        _ => (0x57, false),
+    };
+    #[cfg(ch573)]
+    let flash_cfg = match config.sys {
+        Sys::Pll(_) => 0x53,
+        _ => 0x51,
+    };
+    #[cfg(ch572)]
+    let flash_cfg = match config.sys {
+        Sys::Pll(_) => 0x01,
+        Sys::Divided(_) => 0x02,
+        Sys::Direct => 0x07,
+    };
+
+    // CH572 and the CH58x write the new timing before the switch so the first
+    // fetch after it is already timed for the new clock.
+    #[cfg(any(pll_312, ch572))]
     {
-        let (flash_cfg, sck_high) = match config.sys {
-            Sys::Pll(0) => (0x07, true),
-            Sys::Pll(div) if div < 10 => (0x01, false),
-            Sys::Pll(div) if div < 16 => (0x02, false),
-            Sys::Pll(_) => (0x07, false),
-            Sys::Divided(div) if div < 8 => (0x51, false),
-            _ => (0x57, false),
-        };
+        #[cfg(pll_312)]
         unsafe {
-            let ctrl = core::ptr::read_volatile(ch585_flash_raw::SAFE_MODE_CTRL);
-            core::ptr::write_volatile(ch585_flash_raw::SAFE_MODE_CTRL, ctrl | ch585_flash_raw::XROM_312M_SEL);
+            let ctrl = core::ptr::read_volatile(flash_timing_raw::SAFE_MODE_CTRL);
+            core::ptr::write_volatile(flash_timing_raw::SAFE_MODE_CTRL, ctrl | flash_timing_raw::XROM_312M_SEL);
         }
         with_safe_access(|| unsafe {
-            let sck = core::ptr::read_volatile(ch585_flash_raw::FLASH_SCK);
+            let sck = core::ptr::read_volatile(flash_timing_raw::FLASH_SCK);
+            #[cfg(pll_312)]
             let sck = if sck_high {
-                sck | ch585_flash_raw::FLASH_SCK_BIT
+                sck | flash_timing_raw::FLASH_SCK_BIT
             } else {
-                sck & !ch585_flash_raw::FLASH_SCK_BIT
+                sck & !flash_timing_raw::FLASH_SCK_BIT
             };
-            core::ptr::write_volatile(ch585_flash_raw::FLASH_SCK, sck);
-            core::ptr::write_volatile(ch585_flash_raw::FLASH_CFG, flash_cfg);
+            #[cfg(ch572)]
+            let sck = if matches!(config.sys, Sys::Pll(_)) {
+                sck | flash_timing_raw::FLASH_SCK_BIT
+            } else {
+                sck
+            };
+            core::ptr::write_volatile(flash_timing_raw::FLASH_SCK, sck);
+            core::ptr::write_volatile(flash_timing_raw::FLASH_CFG, flash_cfg);
         });
     }
 
@@ -815,6 +852,12 @@ pub unsafe fn set_config(config: Config) -> Clocks {
             #[cfg(clk_cfg_pll_gate_time)]
             w.set_pll_gate_time(false);
         });
+    });
+
+    // CH573's `SetSysClock` writes the timing byte after the clock switch.
+    #[cfg(ch573)]
+    with_safe_access(|| unsafe {
+        core::ptr::write_volatile(flash_timing_raw::FLASH_CFG, flash_cfg);
     });
 
     // The oscillator multiplexer needs 1 us to settle after OSC32M_SEL changes
@@ -1114,21 +1157,21 @@ fn validate(config: &Config) {
 pub(crate) fn with_safe_access<R>(f: impl FnOnce() -> R) -> R {
     critical_section::with(|_| {
         let sig = pac::SYSTEM_CONTROL.safe_access_sig();
-        // The CH58x and CH592 vendor safe-access sequences flush the
-        // instruction prefetch around their shorter access windows.
-        #[cfg(any(ch592, power_plan_ch58x))]
+        // The vendor safe-access sequences flush the instruction prefetch
+        // around their shorter access windows.
+        #[cfg(any(ch572, ch573, ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG1));
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG2));
-        #[cfg(any(ch592, power_plan_ch58x))]
+        #[cfg(any(ch572, ch573, ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }
         let result = f();
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG0));
-        #[cfg(any(ch592, power_plan_ch58x))]
+        #[cfg(any(ch572, ch573, ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }

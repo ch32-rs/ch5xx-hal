@@ -92,8 +92,8 @@ pub use crate::_generated::{peripherals, Peripherals};
 
 // The flash driver needs a controller it models: the serial engine (the
 // metadata's address-only FlashROM placeholder, every die but CH595) or the
-// CH595 page-latch controller. The serial sequences also need `qingke-rt`'s
-// `highcode` section, or they would run from the flash they program.
+// CH595 page-latch controller. Both backends' erase/program sequences need
+// `qingke-rt`'s `highcode` section, or they would run from the flash they program.
 #[cfg(all(feature = "flash", not(any(flashrom, ch595))))]
 compile_error!("the `flash` feature needs a flash controller this HAL models");
 

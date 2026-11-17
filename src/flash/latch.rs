@@ -79,6 +79,8 @@ pub(super) unsafe fn read(offset: u32, buf: *mut u8, len: u32) -> Result<(), Err
 }
 
 /// Erase `from..to` in 2 KiB sectors.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(never)]
 pub(super) unsafe fn erase(from: u32, to: u32, limit: u32) -> Result<(), Error> {
     unsafe {
         unlocked(|| {
@@ -92,6 +94,8 @@ pub(super) unsafe fn erase(from: u32, to: u32, limit: u32) -> Result<(), Error> 
 }
 
 /// Erase `from..to` in 64 KiB banks.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(never)]
 pub(super) unsafe fn erase_blocks(from: u32, to: u32, limit: u32) -> Result<(), Error> {
     unsafe {
         unlocked(|| {
@@ -105,6 +109,8 @@ pub(super) unsafe fn erase_blocks(from: u32, to: u32, limit: u32) -> Result<(), 
 }
 
 /// Program `len` bytes from `data`, one latch load per page.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(never)]
 pub(super) unsafe fn write(addr: u32, data: *const u8, len: u32, limit: u32) -> Result<(), Error> {
     unsafe {
         unlocked(|| {
@@ -151,6 +157,8 @@ pub(super) unsafe fn write(addr: u32, data: *const u8, len: u32, limit: u32) -> 
 }
 
 /// One pre-program plus erase cycle.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(never)]
 unsafe fn erase_mode(addr: u32, prepg: u8, erase: u8, limit: u32) -> Result<(), Error> {
     unsafe {
         w32(addr_of_mut!((*CONTROLLER).addr), addr);
@@ -166,6 +174,8 @@ unsafe fn erase_mode(addr: u32, prepg: u8, erase: u8, limit: u32) -> Result<(), 
 }
 
 /// Wait until the controller is idle and ready.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(never)]
 unsafe fn ready(limit: u32) -> Result<(), Error> {
     unsafe {
         let mut spins = 0;
@@ -187,6 +197,8 @@ unsafe fn ready(limit: u32) -> Result<(), Error> {
 }
 
 /// Open the erase/program channel for one body, then close it.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(always)]
 unsafe fn unlocked<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     unsafe {
         let saved = disable_interrupts();
@@ -205,6 +217,8 @@ unsafe fn unlocked<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, Erro
 /// Open the write channel. Safe-access auto-close is turned off first: the
 /// signature only opens a short window, so nothing else may run between it and
 /// the `GLOBAL_CONFIG` write.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(never)]
 unsafe fn open_safe_access() {
     use pac::system_control::regs::{GlobRomCfg, SafeAccessSig};
 
@@ -222,6 +236,8 @@ unsafe fn open_safe_access() {
 }
 
 /// Restore auto-close and the write protection.
+#[cfg_attr(target_arch = "riscv32", link_section = ".highcode")]
+#[inline(never)]
 unsafe fn close_safe_access() {
     pac::SYS.slp_wake_cfg().modify(|w| {
         w.set_acauto_enable(true);

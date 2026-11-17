@@ -18,7 +18,8 @@
 //! | `0x0007_E000-0x0007_EFFF` | 4 KiB | user info, tool-set only |
 //! | `0x0007_F000-0x0007_FFFF` | 4 KiB | info flash, holds the MAC at `0x7F018` |
 //!
-//! CH570/CH572 have a 240 KiB code region and no user data region. The CH584X
+//! CH570/CH572 have a 240 KiB code region and no user data region; their MAC
+//! sits at `0x3F018` instead. The CH584X
 //! die variant exposes 480 KiB and moves the code region to engine address
 //! `0x0008_0000`; the driver detects the variant at run time from the chip ID,
 //! as the ROM routine does, and refuses data-region access on it: that die
@@ -48,10 +49,10 @@
 //! # Execution constraints
 //!
 //! The serial engine has no DMA and the core cannot fetch from flash while the
-//! engine owns it, so every serial command sequence runs from RAM (the
-//! `.highcode` section, copied by `qingke-rt` when its `highcode` feature is
-//! on — the `flash` feature enables it). Interrupts are masked per operation,
-//! which makes every call a bounded stall.
+//! engine or the CH595 controller owns it, so every erase/program sequence runs
+//! from RAM (the `.highcode` section, copied by `qingke-rt` when its `highcode`
+//! feature is on — the `flash` feature enables it). Interrupts are masked per
+//! operation, which makes every call a bounded stall.
 //!
 //! Callers must also stop anything else that touches flash or the bus for the
 //! duration: the radio/DMA must be idle, and a program source buffer passed as
@@ -123,7 +124,10 @@ pub const CODE_BLOCK_ERASE_SIZE: usize = 0x1_0000;
 pub const CODE_WRITE_SIZE: usize = 4;
 
 /// `ROM_CFG_MAC_ADDR`: six MAC bytes followed by a two-byte checksum.
-#[cfg(not(ch595))]
+#[cfg(all(not(ch595), any(ch570, ch572)))]
+const MAC_ADDR: u32 = 0x0003_F018;
+/// `ROM_CFG_MAC_ADDR`; see the CH570/CH572 value above.
+#[cfg(all(not(ch595), not(any(ch570, ch572))))]
 const MAC_ADDR: u32 = 0x0007_F018;
 
 /// Start of the user data region, an offset into the flash address space.
@@ -471,8 +475,8 @@ impl<MODE> DataFlash<'_, '_, MODE> {
     }
 }
 
-macro_rules! nor_flash_impl {
-    ($region:ident, $read:literal, $write:literal, $erase:expr) => {
+macro_rules! read_nor_flash_impl {
+    ($region:ident, $read:literal) => {
         impl<MODE> embedded_storage::nor_flash::ErrorType for $region<'_, '_, MODE> {
             type Error = Error;
         }
@@ -488,6 +492,13 @@ macro_rules! nor_flash_impl {
                 self.capacity()
             }
         }
+    };
+}
+
+#[cfg(any(ch595, flashrom_data))]
+macro_rules! nor_flash_impl {
+    ($region:ident, $read:literal, $write:literal, $erase:expr) => {
+        read_nor_flash_impl!($region, $read);
 
         impl embedded_storage::nor_flash::NorFlash for $region<'_, '_, Blocking> {
             const WRITE_SIZE: usize = $write;
@@ -504,7 +515,12 @@ macro_rules! nor_flash_impl {
     };
 }
 
+// Serial code flash erases to a per-die sentinel, not `0xFF`; `NorFlash` promises
+// all ones, so only the latch controller can implement it.
+#[cfg(ch595)]
 nor_flash_impl!(CodeFlash, 4, 4, CODE_ERASE_SIZE);
+#[cfg(not(ch595))]
+read_nor_flash_impl!(CodeFlash, 4);
 #[cfg(flashrom_data)]
 nor_flash_impl!(DataFlash, 1, 1, DATA_ERASE_SIZE);
 
