@@ -112,17 +112,29 @@ macro_rules! pin {
         impl TimerPin<peripherals::$tmr, $remap> for peripherals::$pin {}
     };
 }
-#[cfg(all(not(feature = "time-driver-tmr0"), remap_tmr0))]
+// CH569: TMR0 has no remap bit (PA9 only), TMR1 and TMR2 use their own pairs
+// (CH569DS1 V1.3 table 5-10).
+#[cfg(all(not(feature = "time-driver-tmr0"), ch569))]
 pin!(TMR0, 0, PA9);
-#[cfg(all(not(feature = "time-driver-tmr0"), remap_tmr0))]
+#[cfg(all(ch569, tmr1, not(feature = "time-driver-tmr1")))]
+pin!(TMR1, 0, PB15);
+#[cfg(all(ch569, tmr1, not(feature = "time-driver-tmr1")))]
+pin!(TMR1, 1, PB0);
+#[cfg(all(ch569, tmr2, not(feature = "time-driver-tmr2")))]
+pin!(TMR2, 0, PA4);
+#[cfg(all(ch569, tmr2, not(feature = "time-driver-tmr2")))]
+pin!(TMR2, 1, PB3);
+#[cfg(all(not(feature = "time-driver-tmr0"), not(ch569), remap_tmr0))]
+pin!(TMR0, 0, PA9);
+#[cfg(all(not(feature = "time-driver-tmr0"), not(ch569), remap_tmr0))]
 pin!(TMR0, 1, PB23);
-#[cfg(all(tmr1, not(feature = "time-driver-tmr1"), remap_tmr1))]
+#[cfg(all(tmr1, not(feature = "time-driver-tmr1"), not(ch569), remap_tmr1))]
 pin!(TMR1, 0, PA10);
-#[cfg(all(tmr1, not(feature = "time-driver-tmr1"), remap_tmr1))]
+#[cfg(all(tmr1, not(feature = "time-driver-tmr1"), not(ch569), remap_tmr1))]
 pin!(TMR1, 1, PB10);
-#[cfg(all(tmr2, not(feature = "time-driver-tmr2"), remap_tmr2))]
+#[cfg(all(tmr2, not(feature = "time-driver-tmr2"), not(ch569), remap_tmr2))]
 pin!(TMR2, 0, PA11);
-#[cfg(all(tmr2, not(feature = "time-driver-tmr2"), remap_tmr2))]
+#[cfg(all(tmr2, not(feature = "time-driver-tmr2"), not(ch569), remap_tmr2))]
 pin!(TMR2, 1, PB11);
 #[cfg(all(tmr3, not(feature = "time-driver-tmr3"), remap_tmr3))]
 pin!(TMR3, 0, PB22);
