@@ -174,7 +174,7 @@ fn main() {
     match register_version(&chip_name, "spi").as_str() {
         // CH573 and CH572/CH570 use the same FIFO controller; CH572 selects
         // its alternate SCK through `PIN_ALTERNATE_H` instead of `PIN_SPI0`.
-        "ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572" => {
+        "ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572" | "ch569" => {
             println!("cargo:rustc-cfg=spi_fifo")
         }
         _ => {}
@@ -241,11 +241,12 @@ fn main() {
     if register_has_field(&chip_name, "touchkey", "DRV_EN") {
         println!("cargo:rustc-cfg=touchkey_drv_en");
     }
-    // PWMx has three layouts: the CH572 block drives PWM1-PWM5 with 16-bit
-    // cycle registers, the CH573 block drives PWM4-PWM11 with byte duty
-    // registers, and the CH585/CH592 blocks add the wide mode and four stagger
-    // pairs.
+    // PWMx has four layouts: CH569 drives PWM0-PWM3 with byte registers and a
+    // 256/255 cycle, CH572 drives PWM1-PWM5 with 16-bit cycle registers, CH573
+    // drives PWM4-PWM11 with byte duty registers, and CH585/CH592 add the wide
+    // mode and four stagger pairs.
     match register_version_opt(&chip_name, "pwmx").as_deref() {
+        Some("ch569") => println!("cargo:rustc-cfg=pwmx_ch569"),
         Some("ch572") => println!("cargo:rustc-cfg=pwmx_ch572"),
         Some("ch573") => println!("cargo:rustc-cfg=pwmx_ch573"),
         Some("ch585") => println!("cargo:rustc-cfg=pwmx_ch585"),
@@ -424,9 +425,7 @@ fn main() {
         println!("cargo:rustc-cfg=mcr_int_oe_combined");
     }
     // CH564/CH569 call the OUT2/interrupt-output bit `MCR_OUT2`.
-    if register_has_field(&chip_name, "uart", "MCR_OUT2")
-        && !register_has_field(&chip_name, "uart", "MCR_INT_OE")
-    {
+    if register_has_field(&chip_name, "uart", "MCR_OUT2") && !register_has_field(&chip_name, "uart", "MCR_INT_OE") {
         println!("cargo:rustc-cfg=mcr_out2");
     }
     // CH572/CH570's UART has no software-reset bit, no FIFO-clear bits and no
