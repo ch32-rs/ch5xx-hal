@@ -82,7 +82,7 @@ where
     R: RxPin<T, 0>,
     X: TxPin<T, 0>,
 {
-    let mut uart = Uart::new_blocking(peri, rx, tx, Config::new(115_200)).unwrap();
+    let uart = Uart::new_blocking(peri, rx, tx, Config::new(115_200)).unwrap();
     let (mut tx, _rx) = uart.split();
     tx.blocking_write(b"CH569 UARTn TX OK\r\n").unwrap();
 
