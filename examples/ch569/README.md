@@ -17,12 +17,19 @@ board.
 
 ## Memory map
 
-This crate ships its own `memory.x` instead of the PAC's `memory-x` output. The
-128K window at `0x20020000` is split between writable RAMX and the zero-wait ROM
-code area by `USER_MEM` in InfoFlash: 32K/64K/96K of RAMX. This board has the
-64K + 64K split and the PAC declares 96K, so a map taken from the PAC can place
-data where writes are silently dropped. If your board's `USER_MEM` differs,
-change `LENGTH` of `RAMX` in `memory.x`.
+This crate generates `memory.x` in `build.rs` instead of using the PAC's
+`memory-x` output. The 128K window at `0x20020000` is split between writable
+RAMX and the zero-wait ROM code area by `USER_MEM` in InfoFlash: 32K/64K/96K of
+RAMX. Writes above the real end are dropped silently, and the PAC declares 96K
+regardless of the part option, so a map taken from the PAC can place data where
+it never lands.
+
+The default is 64K, the option this EVT board ships with. For a board with a
+different `USER_MEM`, build with the option your die was programmed with:
+
+```console
+CH569_USER_MEM=96 cargo build --release --bin blinky
+```
 
 ## Features
 
@@ -58,6 +65,11 @@ probe-rs read --chip CH569 --probe 1a86:8010:<SERIAL> b32 0x20021000 8
 | `gpio_in_probe` | Input path and both internal pulls on eight pins; no wiring |
 | `gpio_pull` | Pull settings on the LED pins |
 | `uart_loop_probe` | UART0 internal loopback and UART1/UART3 transmit completion |
+| `pwmx_probe` | PWMX duty read back from the pad on PA4/PB1/PB2; no wiring |
+| `pwm_tmr_capture_probe` | PWM3 (PB2) into TMR2 (PA4) capture; checks both pads first |
+| `spi_flash_probe` | SPI0 JEDEC ID, status and SFDP from the board's W25Q32JV |
+| `gpio_irq_probe` | Pin interrupt: PB1 toggles into PA4, counts on UART1 |
+| `uart1_bridge_probe` | UART1 echo and idle heartbeat against a host link |
 | `crossing_probe` | SysTick down-counter reload behaviour at the zero crossing |
 | `tmr_probe` | TMR0/1/2 counter rate against `Instant` |
 | `tmr_irq_probe` | TMR0/1/2 period interrupt through PFIC and the HAL handler |
