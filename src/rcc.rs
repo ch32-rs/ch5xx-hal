@@ -833,6 +833,15 @@ pub unsafe fn set_config(config: Config) -> Clocks {
         });
     }
 
+    // CH595 read timing is a separate byte: WCH writes 0x49 for dividers 1..7
+    // and 0x45 otherwise, before the clock switch.
+    #[cfg(flashrom_ch595)]
+    with_safe_access(|| {
+        pac::FLASHROM
+            .rd_ctrl()
+            .write_value(if (1..8).contains(&div) { 0x49 } else { 0x45 });
+    });
+
     with_safe_access(|| {
         pac::SYS.clk_cfg().write(|w| {
             w.set_clk_pll_div(div);
