@@ -435,13 +435,10 @@ fn main() {
 
     // Peripheral singletons. Skip the register-less placeholders (BLE) and the
     // core-internal blocks (PFIC, SysTick) — the HAL never hands those out.
-    // FLASHROM is the exception: the metadata deliberately carries only its
-    // base address, because the control engine is a serial command/data
-    // interface that the flash driver models itself.
     const SKIP_KINDS: &[&str] = &["pfic", "systick"];
     let mut singletons: Vec<String> = Vec::new();
     for p in METADATA.peripherals {
-        if p.registers.is_none() && p.name != "FLASHROM" {
+        if p.registers.is_none() {
             continue;
         }
         if let Some(registers) = &p.registers {

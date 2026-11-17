@@ -7,55 +7,43 @@ use core::ptr::read_volatile;
 
 use super::*;
 
-#[inline(always)]
-unsafe fn r8(addr: *const u8) -> u8 {
-    unsafe { read_volatile(addr) }
-}
-
 // The routines below run from RAM. A fetch from flash while the engine is busy
-// would fault, so they are self-contained, use only volatile pointer accesses,
+// would fault, so they are self-contained, use only volatile register accesses,
 // and are inlined into the RAM-resident entry points.
 
-/// Register file of the serial flash command engine.
-///
-/// `ch5xx-data` models `FLASHROM` as an address only, because the engine is a
-/// command/data interface rather than a set of independent registers. The HAL
-/// owns the layout, and the protocol functions below go through these named
-/// accessors instead of raw addresses.
-#[repr(C)]
-pub(super) struct Engine {
-    /// `R32_FLASH_DATA` (0x00): whole-word program data.
-    data_word: u32,
-    /// `R8_FLASH_DATA` (0x04): command, address and byte-program data.
-    data_byte: u8,
-    /// `R8_FLASH_SCK` (0x05): SCK timing, owned by [`crate::rcc`].
-    sck: u8,
-    /// `R8_FLASH_CTRL` (0x06): bit 7 is busy.
-    ctrl: u8,
-    /// `R8_FLASH_CFG` (0x07).
-    cfg: u8,
-}
-
-const ENGINE: *mut Engine = pac::FLASHROM as *mut Engine;
-
 #[inline(always)]
-unsafe fn engine_ctrl() -> *mut u8 {
-    unsafe { core::ptr::addr_of_mut!((*ENGINE).ctrl) }
+unsafe fn read_ctrl() -> u8 {
+    pac::FLASHROM.ctrl().read()
 }
 
 #[inline(always)]
-unsafe fn engine_data() -> *mut u8 {
-    unsafe { core::ptr::addr_of_mut!((*ENGINE).data_byte) }
+unsafe fn write_ctrl(value: u8) {
+    pac::FLASHROM.ctrl().write_value(value)
 }
 
 #[inline(always)]
-unsafe fn engine_data_word() -> *mut u32 {
-    unsafe { core::ptr::addr_of_mut!((*ENGINE).data_word) }
+unsafe fn read_data() -> u8 {
+    pac::FLASHROM.data_byte().read()
+}
+
+#[inline(always)]
+unsafe fn write_data(value: u8) {
+    pac::FLASHROM.data_byte().write_value(value)
+}
+
+#[inline(always)]
+unsafe fn read_data_word() -> u32 {
+    pac::FLASHROM.data().read()
+}
+
+#[inline(always)]
+unsafe fn write_data_word(value: u32) {
+    pac::FLASHROM.data().write_value(value)
 }
 
 #[inline(always)]
 unsafe fn engine_busy() -> bool {
-    unsafe { r8(engine_ctrl()) & CTRL_BUSY != 0 }
+    read_ctrl() & CTRL_BUSY != 0
 }
 
 /// `ROM_CFG_CHIP_ID`: low nibble `0x08` marks the CH584X die variant. This is
@@ -119,10 +107,10 @@ const BUSY_SPINS: u32 = 0x0100_0000;
 #[inline(always)]
 unsafe fn begin(command: u8) {
     unsafe {
-        w8(engine_ctrl(), CTRL_IDLE);
-        w8(engine_ctrl(), CTRL_START);
+        write_ctrl(CTRL_IDLE);
+        write_ctrl(CTRL_START);
         core::arch::asm!("nop", "nop");
-        w8(engine_data(), command);
+        write_data(command);
     }
 }
 
@@ -143,7 +131,7 @@ unsafe fn wait_ready() -> Result<(), Error> {
 unsafe fn wait_done() -> Result<(), Error> {
     unsafe {
         wait_ready()?;
-        w8(engine_ctrl(), CTRL_IDLE);
+        write_ctrl(CTRL_IDLE);
     }
     Ok(())
 }
@@ -153,7 +141,7 @@ unsafe fn wait_done() -> Result<(), Error> {
 unsafe fn out(byte: u8) -> Result<(), Error> {
     unsafe {
         wait_ready()?;
-        w8(engine_data(), byte);
+        write_data(byte);
     }
     Ok(())
 }
@@ -163,7 +151,7 @@ unsafe fn out(byte: u8) -> Result<(), Error> {
 unsafe fn read_byte() -> Result<u8, Error> {
     unsafe {
         wait_ready()?;
-        Ok(r8(engine_data()))
+        Ok(read_data())
     }
 }
 
@@ -207,7 +195,7 @@ unsafe fn read_frame(command: u8, addr: u32) -> Result<(), Error> {
 #[inline(always)]
 unsafe fn engine_reset() -> Result<(), Error> {
     unsafe {
-        w8(engine_ctrl(), CTRL_ENGINE_RESET);
+        write_ctrl(CTRL_ENGINE_RESET);
         begin(CMD_RESET);
         wait_done()
     }
@@ -243,7 +231,7 @@ unsafe fn poll_status(limit: u32) -> Result<bool, Error> {
 #[inline(always)]
 unsafe fn settle() {
     for _ in 0..SETTLE_SPINS {
-        unsafe { core::hint::black_box(r8(engine_ctrl())) };
+        unsafe { core::hint::black_box(read_ctrl()) };
     }
 }
 
@@ -452,7 +440,7 @@ pub(super) unsafe fn ram_read_words(addr: u32, buf: *mut u8, len: u32, is_584x: 
                     }
                     // Fixed 4-byte copy: a variable-length one compiles into a
                     // call to flash-resident `memcpy`, which faults here.
-                    let bytes = u32::from_le(read_volatile(engine_data_word())).to_le_bytes();
+                    let bytes = u32::from_le(read_data_word()).to_le_bytes();
                     let index = (read + done) as usize;
                     *buf.add(index) = bytes[0];
                     *buf.add(index + 1) = bytes[1];
@@ -557,11 +545,11 @@ pub(super) unsafe fn ram_write_words(
                             read_volatile(p.add(2)),
                             read_volatile(p.add(3)),
                         ]);
-                        w32(engine_data_word(), word);
+                        write_data_word(word);
                         // Four handshakes latch one dword.
                         for _ in 0..4 {
                             wait_ready()?;
-                            w8(engine_ctrl(), CTRL_DWORD_LATCH);
+                            write_ctrl(CTRL_DWORD_LATCH);
                         }
                         offset += CODE_WRITE_SIZE as u32;
                     }

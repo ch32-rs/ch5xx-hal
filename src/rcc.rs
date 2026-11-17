@@ -696,22 +696,16 @@ pub fn clocks() -> Clocks {
 /// rebuild their timing state. Dedicated NFC clock mode does not remove its
 /// system-clock precondition or make a live session safe across this change.
 /// Registers WCH's `SetSysClock` writes but the PAC does not model.
-#[cfg(any(pll_312, ch572, ch573))]
-#[cfg(not(any(ch592, power_plan_ch58x)))]
-mod flash_timing_raw {
+#[cfg(pll_312)]
+mod xrom_raw {
     /// Safe-mode control; bit 4 selects the 312 MHz XROM clock.
-    #[cfg(pll_312)]
     pub const SAFE_MODE_CTRL: *mut u32 = 0x4000_1010 as *mut u32;
-    /// `R8_FLASH_SCK`, FlashROM SCK timing; bit 4 differs by clock source.
-    #[cfg(any(pll_312, ch572))]
-    pub const FLASH_SCK: *mut u8 = 0x4000_1805 as *mut u8;
-    /// `R8_FLASH_CFG`, FlashROM access config.
-    pub const FLASH_CFG: *mut u8 = 0x4000_1807 as *mut u8;
-    #[cfg(pll_312)]
     pub const XROM_312M_SEL: u32 = 1 << 4;
-    #[cfg(any(pll_312, ch572))]
-    pub const FLASH_SCK_BIT: u8 = 1 << 4;
 }
+
+/// `R8_FLASH_SCK` bit 4 selects the fast SCK timing.
+#[cfg(any(pll_312, ch572))]
+const FLASH_SCK_BIT: u8 = 1 << 4;
 
 #[cfg(not(any(ch592, power_plan_ch58x)))]
 pub unsafe fn set_config(config: Config) -> Clocks {
@@ -817,25 +811,25 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     {
         #[cfg(pll_312)]
         unsafe {
-            let ctrl = core::ptr::read_volatile(flash_timing_raw::SAFE_MODE_CTRL);
-            core::ptr::write_volatile(flash_timing_raw::SAFE_MODE_CTRL, ctrl | flash_timing_raw::XROM_312M_SEL);
+            let ctrl = core::ptr::read_volatile(xrom_raw::SAFE_MODE_CTRL);
+            core::ptr::write_volatile(xrom_raw::SAFE_MODE_CTRL, ctrl | xrom_raw::XROM_312M_SEL);
         }
-        with_safe_access(|| unsafe {
-            let sck = core::ptr::read_volatile(flash_timing_raw::FLASH_SCK);
+        with_safe_access(|| {
+            let sck = pac::FLASHROM.sck().read();
             #[cfg(pll_312)]
             let sck = if sck_high {
-                sck | flash_timing_raw::FLASH_SCK_BIT
+                sck | FLASH_SCK_BIT
             } else {
-                sck & !flash_timing_raw::FLASH_SCK_BIT
+                sck & !FLASH_SCK_BIT
             };
             #[cfg(ch572)]
             let sck = if matches!(config.sys, Sys::Pll(_)) {
-                sck | flash_timing_raw::FLASH_SCK_BIT
+                sck | FLASH_SCK_BIT
             } else {
                 sck
             };
-            core::ptr::write_volatile(flash_timing_raw::FLASH_SCK, sck);
-            core::ptr::write_volatile(flash_timing_raw::FLASH_CFG, flash_cfg);
+            pac::FLASHROM.sck().write_value(sck);
+            pac::FLASHROM.cfg().write_value(flash_cfg);
         });
     }
 
@@ -856,9 +850,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
 
     // CH573's `SetSysClock` writes the timing byte after the clock switch.
     #[cfg(ch573)]
-    with_safe_access(|| unsafe {
-        core::ptr::write_volatile(flash_timing_raw::FLASH_CFG, flash_cfg);
-    });
+    with_safe_access(|| pac::FLASHROM.cfg().write_value(flash_cfg));
 
     // The oscillator multiplexer needs 1 us to settle after OSC32M_SEL changes
     // (datasheet 6.3). No timer is available at this point, so spin a fixed
@@ -883,8 +875,6 @@ pub unsafe fn set_config(config: Config) -> Clocks {
 /// Register addresses WCH's `CH59x_sys.c` writes but the PAC does not model.
 #[cfg(ch592)]
 mod ch592_raw {
-    /// `R8_FLASH_CFG`, FlashROM access timing (datasheet table 6-1).
-    pub const FLASH_CFG: *mut u8 = 0x4000_1807 as *mut u8;
     /// `ROM_CFG_VERISON`, chip configuration information.
     pub const ROM_CFG_VERSION: *const u32 = 0x0007_F010 as *const u32;
     /// `DEF_CHIP_ID_CH592A` (QFN28) in `ISP592.h`.
@@ -952,7 +942,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     } else {
         0x51
     };
-    with_safe_access(|| core::ptr::write_volatile(ch592_raw::FLASH_CFG, flash_cfg));
+    with_safe_access(|| pac::FLASHROM.cfg().write_value(flash_cfg));
 
     // WCH sets bit 7 after the Flash timing write. It is outside the PAC's
     // `pll_cfg_dat` mask, so write the raw field.

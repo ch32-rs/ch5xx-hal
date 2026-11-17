@@ -16,6 +16,10 @@ use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use super::*;
 
 /// Register file of the page-latch controller.
+///
+/// `ch5xx-data` models the byte-wide control registers as 32-bit, so the PAC
+/// accessors would emit misaligned word stores. Keep byte accesses here until
+/// the data block declares their widths.
 #[repr(C)]
 struct Controller {
     /// `R8_PREPG_CTRL` (0x00): pre-program mode and start bit.
@@ -39,7 +43,7 @@ struct Controller {
     status: u32,
 }
 
-const CONTROLLER: *mut Controller = pac::FLASHROM as *mut Controller;
+const CONTROLLER: *mut Controller = pac::FLASHROM.as_ptr() as *mut Controller;
 
 /// `R8_GLOBAL_CONFIG` after the safe-access signature: control interface and
 /// both write enables.

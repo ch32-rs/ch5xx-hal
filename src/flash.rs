@@ -88,6 +88,7 @@
 //! recovery plan ready.
 
 use core::marker::PhantomData;
+#[cfg(ch595)]
 use core::ptr::write_volatile;
 
 use crate::{pac, peripherals, Peri};
@@ -548,11 +549,13 @@ fn check_range(from: u32, to: u32, align: usize, size: u32) -> Result<(), Error>
     Ok(())
 }
 
+#[cfg(ch595)]
 #[inline(always)]
 unsafe fn w8(addr: *mut u8, value: u8) {
     unsafe { write_volatile(addr, value) }
 }
 
+#[cfg(ch595)]
 #[inline(always)]
 unsafe fn w32(addr: *mut u32, value: u32) {
     unsafe { write_volatile(addr, value) }
