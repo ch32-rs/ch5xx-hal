@@ -4,8 +4,8 @@
 //! gets an erase, a blank check, three program patterns (one crossing a
 //! 256-byte block boundary) and a read-back; the code region gets a 4 KiB
 //! sector erase, a dword program with a cross-page tail, a 64 KiB block erase
-//! and read-backs. The image ends around `0x2500`; the sectors used here start
-//! at `0x3000`.
+//! and read-backs. The scratch sector and block are the last ones in the code
+//! region, and the example aborts if either overlaps the image.
 //!
 //! Erased code flash does not read as `0xFF`: every path answers with a
 //! per-die placeholder (`0xF3F9BDA9` here; CH573 reads `0xF5F9BDA9`).
@@ -32,11 +32,38 @@ const DATA_BLOCK: u32 = 0x100;
 const DATA_REGION: usize = 2 * DATA_BLOCK as usize;
 /// Erase granularity of the code region.
 const SECTOR_LEN: u32 = 0x1000;
-/// The 64 KiB code block erased with the block command, clear of the image.
-const BLOCK: u32 = 0x1_0000;
+/// Erase granularity of the block command.
 const BLOCK_LEN: u32 = 0x1_0000;
 /// What the engine answers for an erased code word on CH585 (CH573 differs).
 const BLANK_WORD: [u8; 4] = [0xA9, 0xBD, 0xF9, 0xF3];
+
+unsafe extern "C" {
+    static _data_lma: u8;
+    static _data_vma: u8;
+    static _edata: u8;
+}
+
+/// End of the loaded image in flash, from the qingke-rt linker script.
+fn image_end() -> u32 {
+    let lma = core::ptr::addr_of!(_data_lma) as u32;
+    let vma = core::ptr::addr_of!(_data_vma) as u32;
+    let end = core::ptr::addr_of!(_edata) as u32;
+    lma + (end - vma)
+}
+
+/// Last 4 KiB sector of the code region.
+fn scratch_sector(capacity: u32) -> u32 {
+    let sector = capacity - SECTOR_LEN;
+    assert!(sector >= image_end(), "scratch sector overlaps the image");
+    sector
+}
+
+/// Last full 64 KiB block of the code region.
+fn scratch_block(capacity: u32) -> u32 {
+    let block = (capacity & !(BLOCK_LEN - 1)) - BLOCK_LEN;
+    assert!(block >= image_end(), "scratch block overlaps the image");
+    block
+}
 
 #[entry]
 fn main() -> ! {
@@ -51,11 +78,17 @@ fn main() -> ! {
     );
     match flash.mac_address() {
         Ok(mac) => defmt::info!("factory mac: {=[u8]:02x}", mac),
-        Err(err) => defmt::error!("FAIL mac: {}", step("mac", err)),
+        Err(err) => {
+            defmt::error!("FAIL mac: {}", step("mac", err));
+            halt();
+        }
     }
     match flash.unique_id() {
         Ok(id) => defmt::info!("unique id: {:#018x}", id),
-        Err(err) => defmt::error!("FAIL unique id: {}", step("uid", err)),
+        Err(err) => {
+            defmt::error!("FAIL unique id: {}", step("uid", err));
+            halt();
+        }
     }
 
     if let Err(what) = data_round(&mut flash) {
@@ -66,7 +99,10 @@ fn main() -> ! {
         defmt::error!("FAIL code region: {}", what);
         halt();
     }
-    block_round(&mut flash);
+    if let Err(what) = block_round(&mut flash) {
+        defmt::error!("FAIL block: {}", what);
+        halt();
+    }
 
     defmt::info!("PASS flash");
     halt()
@@ -146,7 +182,7 @@ fn data_round(flash: &mut Flash<'_, Blocking>) -> Result<(), &'static str> {
 /// cross-page tail, then read both back.
 fn code_round(flash: &mut Flash<'_, Blocking>) -> Result<(), &'static str> {
     let mut code = flash.code_flash();
-    let sector = 0x3_000;
+    let sector = scratch_sector(code.capacity() as u32);
 
     let mut buf = [0u8; 256];
     code.blocking_read(sector + 0x100, &mut buf)
@@ -201,42 +237,42 @@ fn code_round(flash: &mut Flash<'_, Blocking>) -> Result<(), &'static str> {
 
 /// Erase a whole 64 KiB block, check every word is blank, then program and
 /// read back 64 bytes inside it.
-fn block_round(flash: &mut Flash<'_, Blocking>) {
+fn block_round(flash: &mut Flash<'_, Blocking>) -> Result<(), &'static str> {
     let mut code = flash.code_flash();
+    let block = scratch_block(code.capacity() as u32);
     let mut buf = [0u8; 256];
 
-    if let Err(err) = code.blocking_read(BLOCK + 0x100, &mut buf) {
-        fail("block before read", err);
-    }
-    defmt::info!("{:#x} block before @0x100: {=[u8]:02x}", BLOCK, &buf[..8]);
+    code.blocking_read(block + 0x100, &mut buf)
+        .map_err(|err| step("block before read", err))?;
+    defmt::info!("{:#x} block before @0x100: {=[u8]:02x}", block, &buf[..8]);
 
-    if let Err(err) = code.blocking_erase_blocks(BLOCK, BLOCK + BLOCK_LEN) {
-        fail("block erase", err);
-    }
+    code.blocking_erase_blocks(block, block + BLOCK_LEN)
+        .map_err(|err| step("block erase", err))?;
     let mut programmed = 0u32;
     for page in 0..BLOCK_LEN / 0x100 {
-        if let Err(err) = code.blocking_read(BLOCK + page * 0x100, &mut buf) {
-            fail("block page read", err);
-        }
+        code.blocking_read(block + page * 0x100, &mut buf)
+            .map_err(|err| step("block page read", err))?;
         programmed += buf.chunks_exact(4).filter(|word| *word != BLANK_WORD).count() as u32;
     }
-    defmt::info!("{:#x} block erase left {} non-blank words", BLOCK, programmed);
+    if programmed != 0 {
+        defmt::error!("{:#x} block erase left {} non-blank words", block, programmed);
+        return Err("block blank check");
+    }
 
     let mut want = [0u8; 64];
     for (index, byte) in want.iter_mut().enumerate() {
         *byte = 0x71u8.wrapping_add((index as u8).wrapping_mul(0x1F));
     }
-    if let Err(err) = code.blocking_write(BLOCK + 0x200, &want) {
-        fail("block write", err);
-    }
-    if let Err(err) = code.blocking_read(BLOCK + 0x200, &mut buf[..64]) {
-        fail("block read back", err);
-    }
-    if buf[..64] == want {
-        defmt::info!("{:#x} block program read back", BLOCK);
-    } else {
+    code.blocking_write(block + 0x200, &want)
+        .map_err(|err| step("block write", err))?;
+    code.blocking_read(block + 0x200, &mut buf[..64])
+        .map_err(|err| step("block read back", err))?;
+    if buf[..64] != want {
         report("block read-back", &buf[..64], &want);
+        return Err("block read-back");
     }
+    defmt::info!("{:#x} block program read back", block);
+    Ok(())
 }
 
 fn report(what: &'static str, got: &[u8], want: &[u8]) {
@@ -248,11 +284,6 @@ fn report(what: &'static str, got: &[u8], want: &[u8]) {
     defmt::error!("{}: first mismatch at {}", what, at);
     defmt::error!("{}: got  {=[u8]:02x}", what, &got[..16.min(got.len())]);
     defmt::error!("{}: want {=[u8]:02x}", what, &want[..16.min(want.len())]);
-}
-
-fn fail(what: &'static str, err: Error) -> ! {
-    defmt::error!("FAIL {}: {}", what, step(what, err));
-    halt()
 }
 
 fn step(at: &'static str, err: Error) -> &'static str {

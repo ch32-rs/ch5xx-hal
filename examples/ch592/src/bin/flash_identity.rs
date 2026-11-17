@@ -18,18 +18,31 @@ fn main() -> ! {
     let p = hal::init(Default::default());
     let mut flash = Flash::new(p.FLASHROM);
 
+    let mut ok = true;
     match flash.mac_address() {
         Ok(mac) => defmt::info!("factory mac: {=[u8]:02x}", mac),
-        Err(err) => defmt::error!("FAIL mac: {}", what(err)),
+        Err(err) => {
+            defmt::error!("FAIL mac: {}", what(err));
+            ok = false;
+        }
     }
     match flash.unique_id() {
         Ok(id) => defmt::info!("unique id: {:#018x}", id),
-        Err(err) => defmt::error!("FAIL unique id: {}", what(err)),
+        Err(err) => {
+            defmt::error!("FAIL unique id: {}", what(err));
+            ok = false;
+        }
+    }
+    if !ok {
+        halt();
     }
     defmt::info!("PASS identity");
+    halt()
+}
 
-    // Stay halted without the watchdog resetting the part; a reset would clear
-    // the RTT block and the log with it.
+/// Stay halted without the watchdog resetting the part; a reset would clear
+/// the RTT block and the log with it.
+fn halt() -> ! {
     loop {
         hal::pac::SYS.iwdg_kr().write_value(hal::pac::sys::regs::IwdgKr(0xAAAA));
     }
