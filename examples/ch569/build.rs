@@ -4,14 +4,22 @@ use std::path::PathBuf;
 fn main() {
     // `USER_MEM` splits 0x20020000 into 32/64/96K of RAMX and the ROM area.
     println!("cargo:rerun-if-env-changed=CH569_USER_MEM");
-    let ramx_kb: u32 = std::env::var("CH569_USER_MEM")
-        .ok()
+    let requested = std::env::var("CH569_USER_MEM").ok();
+    let ramx_kb: u32 = requested
+        .as_deref()
         .and_then(|v| v.trim().trim_end_matches(['k', 'K']).parse().ok())
-        .unwrap_or(64);
+        .unwrap_or(32);
     assert!(
         matches!(ramx_kb, 32 | 64 | 96),
         "CH569_USER_MEM must be 32, 64 or 96 (got {ramx_kb})"
     );
+    if requested.is_none() {
+        // The smallest option is the only one every part can honour.
+        println!(
+            "cargo:warning=CH569_USER_MEM is unset; RAMX is linked as 32K. \
+             Set CH569_USER_MEM=64 or 96 to match the part's InfoFlash option."
+        );
+    }
 
     let rom_base = 0x2002_0000 + ramx_kb * 1024;
     let rom_kb = 128 - ramx_kb;
@@ -46,6 +54,12 @@ fn main() {
     memory_x.push_str("REGION_ALIAS(\"REGION_BSS\", RAMS);\n");
     memory_x.push_str("REGION_ALIAS(\"REGION_HEAP\", RAMS);\n");
     memory_x.push_str("REGION_ALIAS(\"REGION_STACK\", RAMS);\n");
+
+    // `#[link_section = ".ramx"]` places a buffer in RAMX; it is neither copied
+    // nor cleared, so it must tolerate whatever the previous run left there.
+    memory_x.push_str(
+        "\nSECTIONS\n{\n    .ramx (NOLOAD) :\n    {\n        KEEP(*(.ramx));\n    } > RAMX\n}\n",
+    );
 
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     std::fs::write(out.join("memory.x"), memory_x).unwrap();

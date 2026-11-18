@@ -31,6 +31,11 @@ pub use embassy_hal_internal::{Peri, PeripheralType};
 #[cfg(feature = "rt")]
 pub use qingke_rt::{entry, interrupt};
 
+/// CH569's RAMX window starts here. `USER_MEM` in InfoFlash decides how much
+/// of it is writable (32/64/96K); the linker map has to match the part.
+#[cfg(ch569)]
+pub const RAMX_BASE: usize = 0x2002_0000;
+
 // Must come first: later modules use these macros.
 include!(concat!(env!("OUT_DIR"), "/_macros.rs"));
 

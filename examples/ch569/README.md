@@ -24,12 +24,17 @@ RAMX. Writes above the real end are dropped silently, and the PAC declares 96K
 regardless of the part option, so a map taken from the PAC can place data where
 it never lands.
 
-The default is 64K, the option this EVT board ships with. For a board with a
-different `USER_MEM`, build with the option your die was programmed with:
+The default is 32K, the smallest option and the one every part can honour;
+`build.rs` prints a warning when it is used. Link the size your part actually
+has:
 
 ```console
-CH569_USER_MEM=96 cargo build --release --bin blinky
+CH569_USER_MEM=64 cargo build --release --bin blinky   # this EVT board
 ```
+
+`RAMX` is also a named linker region. Place large buffers there with
+`#[link_section = ".ramx"]`; the section is `NOLOAD`, so startup neither copies
+nor clears it and the buffer must tolerate the previous contents.
 
 ## Features
 
