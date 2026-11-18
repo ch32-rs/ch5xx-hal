@@ -2,9 +2,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 fn main() {
-    // `USER_MEM` (InfoFlash [31:30]) splits the 128K window at 0x20020000 into
-    // RAMX and the zero-wait ROM code area: 32/64/96K of RAMX. This EVT board
-    // is 64K; a 96K board can leave the default and just loses the upper 32K.
+    // `USER_MEM` splits 0x20020000 into 32/64/96K of RAMX and the ROM area.
     println!("cargo:rerun-if-env-changed=CH569_USER_MEM");
     let ramx_kb: u32 = std::env::var("CH569_USER_MEM")
         .ok()
@@ -52,13 +50,9 @@ fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     std::fs::write(out.join("memory.x"), memory_x).unwrap();
 
-    // The board's RAMX/ROM split lives in the generated `memory.x`, so the
-    // linker has to see OUT_DIR before the HAL's generated one.
+    // `memory.x` comes from OUT_DIR, ahead of the HAL's generated one.
     println!("cargo:rustc-link-search={}", out.display());
-    // Order matters. `link.x` places orphan sections at `ORIGIN(FLASH)`, so
-    // `defmt.x` — which assigns `.defmt` to a range past the vector table —
-    // must be processed *after* it. Passing `-Tdefmt.x` via `rustflags` puts it
-    // first and silently lands `.defmt` at 0x0, on top of the vector table.
+    // `defmt.x` must follow `link.x`, or `.defmt` lands on the vector table.
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");
 }

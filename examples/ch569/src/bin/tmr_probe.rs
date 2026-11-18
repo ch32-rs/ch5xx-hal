@@ -1,13 +1,4 @@
 //! TMR0/TMR1/TMR2 counters on CH569, checked against embassy time.
-//!
-//! Each timer free-runs at `Fsys` over a measured interval; the tick count has
-//! to match `elapsed * Fsys` within tolerance. A 1 kHz period then has to raise
-//! `CYCLE_END`. CH569 has no RTC, so the reference is the SysTick time driver.
-//!
-//! ```console
-//! cargo build --release --bin tmr_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 16
-//! ```
 
 #![no_std]
 #![no_main]

@@ -1,7 +1,4 @@
-//! HAL clock switch with no output device: 120 MHz PLL, then a RAMX counter.
-//!
-//! `probe-rs read` after a reset shows whether `hal::init` survived the switch
-//! and whether the core still executes.
+//! HAL clock switch to 120 MHz with no output device, staged in RAMX.
 
 #![no_std]
 #![no_main]

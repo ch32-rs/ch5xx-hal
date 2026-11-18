@@ -1,14 +1,4 @@
 //! Send a line on every UART pin group and let the host say which one arrived.
-//!
-//! The CH569 EVT board's WCH-Link bridge is not documented as reaching UART0
-//! (its reference manual names UART1 for printf and UART3 for ISP), so this
-//! probe drives all three and counts the writes per port in RAMX.
-//!
-//! ```console
-//! cargo build --release --bin uart_tx_probe
-//! stty -f /dev/cu.usbmodem<probe-serial>2 115200 raw
-//! cat /dev/cu.usbmodem<probe-serial>2
-//! ```
 
 #![no_std]
 #![no_main]

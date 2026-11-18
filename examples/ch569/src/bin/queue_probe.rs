@@ -1,13 +1,4 @@
 //! Replica of embassy's run queue: `fetch_or(state)`, then CAS a linked head.
-//!
-//! Three nodes, the same instruction shapes the executor uses, 100k rounds.
-//! Records the first round whose list is short or whose plain load of the head
-//! disagrees with the atomic swap.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin queue_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 10
-//! ```
 
 #![no_std]
 #![no_main]

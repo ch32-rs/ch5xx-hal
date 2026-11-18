@@ -1,14 +1,4 @@
-//! Are GPRs preserved across a SysTick interrupt on CH569 (QingKe V3A)?
-//!
-//! qingke-rt relies on the hardware stack push and its trampoline only saves
-//! `ra`. The embassy time driver's tasks lost `a0` to the blank-flash sentinel,
-//! so this checks the claim directly: Phase A spins with interrupts masked,
-//! Phase B with a 1 kHz SysTick running.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin irq_regs
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
+//! Are GPRs preserved across a SysTick interrupt on QingKe V3A?
 
 #![no_std]
 #![no_main]

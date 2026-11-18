@@ -1,12 +1,4 @@
-//! Verify every load/store/CAS on CH569 against its own re-read.
-//!
-//! Each round flips a word with a plain store, bumps it with a CAS, and swaps
-//! a pointer; any store that does not read back is recorded with its round.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin atomic_verify
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 20
-//! ```
+//! Verify every load, store and CAS against its own re-read.
 
 #![no_std]
 #![no_main]

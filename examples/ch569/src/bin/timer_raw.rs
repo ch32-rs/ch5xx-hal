@@ -1,10 +1,4 @@
-//! Does the SysTick time driver's `schedule_wake` callback fire without the
-//! embassy executor? Busy-waits, so no executor or sleep is involved.
-//!
-//! ```console
-//! cargo build --release --bin timer_raw
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 6
-//! ```
+//! Does `schedule_wake` fire without the embassy executor?
 
 #![no_std]
 #![no_main]

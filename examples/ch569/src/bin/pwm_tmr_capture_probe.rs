@@ -1,13 +1,4 @@
-//! Cross-check PWMX against TMR2 input capture.
-//!
-//! Wire P3-37 (PB2, PWM3) to P3-20 (PA4, TMR2): PWM3 runs at Fsys/4 over a
-//! 256-clock cycle with 50% duty, and TMR2 counts the rising-edge intervals.
-//! The first captures go to UART1 (J1) so no debugger attach is needed.
-//!
-//! ```console
-//! cargo build --release --bin pwm_tmr_capture_probe
-//! wlink -d 1a86:8010:<SERIAL> flash -e target/riscv32imac-unknown-none-elf/release/pwm_tmr_capture_probe
-//! ```
+//! Cross-check PWMX against TMR2 input capture (wire PB2 to PA4).
 
 #![no_std]
 #![no_main]
@@ -60,9 +51,7 @@ fn main() -> ! {
     let mut ch = pwm.channel(p.PB2, Polarity::ActiveHigh);
     ch.set_duty(128);
 
-    // Read both pads back first: PB2 shows the driver works, PA4 shows the wire.
-    // A pull-down first: a floating PA4 would read ~0 and mimic nothing, while
-    // a real connection still reads ~50%.
+    // PB2 shows the driver works; PA4 with a pull-down shows the wire.
     hal::pac::GPIO.pa_pu().modify(|w| w.set_pa_pu(4, false));
     hal::pac::GPIO.pa_pd().modify(|w| w.set_pa_pd(4, true));
     const N: u32 = 1 << 20;
@@ -91,9 +80,7 @@ fn main() -> ! {
         PeriodTicks::new_capture(16_384).unwrap(),
         CaptureEdge::RisingToRising,
     );
-    // Re-check forever: fitting the jumper while the probe runs shows up in the
-    // next burst. A burst is eight captured periods collected before printing,
-    // so a slow UART cannot overrun the capture FIFO.
+    // Eight captures per burst keep the slow UART from overrunning the FIFO.
     let mut timeouts = 0u32;
     let mut errors = 0u32;
     // The counter restarts mid-period, so the first capture of a burst is a

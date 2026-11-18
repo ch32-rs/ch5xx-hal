@@ -1,11 +1,4 @@
-//! Parks the core with known values in a0/a1/t3, to check whether `wlink regs`
-//! reads the GPR file truthfully (`x10` was suspect on CH569).
-//!
-//! ```console
-//! cargo build --release --bin reg_probe
-//! wlink -d ... --chip CH56X flash -e target/.../reg_probe
-//! wlink -d ... regs
-//! ```
+//! Park the core with known values in a0/a1/t3 to check `wlink regs`.
 
 #![no_std]
 #![no_main]

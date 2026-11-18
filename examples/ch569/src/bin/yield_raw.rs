@@ -1,11 +1,5 @@
 //! Does the embassy executor keep polling always-ready tasks on CH569?
-//!
-//! No defmt, no timer: three tasks each bump a RAMX counter and yield.
-//!
-//! ```console
-//! cargo build --release --bin yield_raw
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 6
-//! ```
+//! Results land in RAMX; no defmt, no timer.
 
 #![no_std]
 #![no_main]

@@ -1,12 +1,4 @@
 //! Does the SysTick time driver's alarm reach an embassy task on CH569?
-//!
-//! One task busy-yields (proves the executor is alive), one awaits a `Timer`.
-//! Everything is staged in RAMX, so no RTT host is needed.
-//!
-//! ```console
-//! cargo build --release --bin timer_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
 
 #![no_std]
 #![no_main]

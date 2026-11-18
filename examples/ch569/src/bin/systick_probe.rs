@@ -1,14 +1,4 @@
-//! What does CH569's SysTick actually do?
-//!
-//! Phase A mirrors the vendor `SysTick_Config`: CNT=0, CMP=period, then one
-//! CTLR store with RELOAD|CLK|ENABLE. Phase B mirrors the HAL driver: a
-//! CTLR read-modify-write setting only STRELOAD. A trace of CNT in RAM says
-//! which direction it counts and what a reload does.
-//!
-//! ```console
-//! cargo build --release --bin systick_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 24
-//! ```
+//! What does CH569's SysTick actually do? Vendor setup versus the HAL's.
 
 #![no_std]
 #![no_main]

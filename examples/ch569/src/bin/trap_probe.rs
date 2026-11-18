@@ -1,16 +1,4 @@
-//! Trap-dump probe: a private `mtvec` handler that records the interrupted
-//! registers, so the `delay_td_link` misaligned-store fault can be inspected.
-//!
-//! Same loop as `delay_td_link`; `main` points `mtvec` at `_trap_dump`, which
-//! stores mcause/mepc/mtval and the GPRs at the fault, then spins. Results in
-//! RAMX, read back with `probe-rs read` (wlink's memory reads return fill on
-//! this part).
-//!
-//! ```console
-//! cargo build --release --bin trap_probe
-//! wlink -d 1a86:8010:7E238F0602BE --chip CH56X flash -e target/.../trap_probe
-//! probe-rs read --chip CH569 --probe 1a86:8010:7E238F0602BE b32 0x20021000 16
-//! ```
+//! Trap-dump probe: a private `mtvec` handler records the interrupted registers.
 
 #![no_std]
 #![no_main]

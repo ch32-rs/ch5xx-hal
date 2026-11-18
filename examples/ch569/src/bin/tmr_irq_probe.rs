@@ -1,13 +1,4 @@
 //! TMR0/TMR1/TMR2 interrupt path on CH569.
-//!
-//! Each timer raises `CYCLE_END` at 1 kHz; `Counter::wait` has to return once
-//! per period through PFIC and the HAL handler (mask + wake). The spacing
-//! between returns must match the period; a storm or a lost interrupt fails.
-//!
-//! ```console
-//! cargo build --release --bin tmr_irq_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 16
-//! ```
 
 #![no_std]
 #![no_main]

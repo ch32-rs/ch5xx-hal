@@ -1,7 +1,4 @@
 //! Bare-metal CH569 GPIO probe: no HAL, no output device.
-//!
-//! Writes PB_DIR/PB_OUT directly and leaves counters in RAMX so a single
-//! `probe-rs read` after the run can show whether code executed.
 
 #![no_std]
 #![no_main]

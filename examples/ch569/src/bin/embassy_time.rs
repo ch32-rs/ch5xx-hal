@@ -1,13 +1,4 @@
-//! Embassy executor on the CH569 SysTick time driver.
-//!
-//! Two tasks share the executor: the LEDs blink at 500 ms, and the second task
-//! reports how long the previous `Timer` actually took. CH569's SysTick is the
-//! V3A 64-bit down-counter, so this exercises the one-shot reload driver.
-//!
-//! ```console
-//! cargo build --release --bin embassy_time
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 7
-//! ```
+//! Embassy executor on the CH569 SysTick time driver: blink and `Timer` jitter.
 
 #![no_std]
 #![no_main]

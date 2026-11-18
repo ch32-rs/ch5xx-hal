@@ -1,12 +1,4 @@
 //! Drive the time driver's alarm with a raw waker, no executor.
-//!
-//! Arms a 100 ms wake, then watches the SysTick flag, the reload registers and
-//! a wake counter. Separates "the alarm fires" from "the executor wakes".
-//!
-//! ```console
-//! cargo build --release --bin timer_noprobe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 12
-//! ```
 
 #![no_std]
 #![no_main]

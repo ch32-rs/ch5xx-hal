@@ -1,17 +1,4 @@
-//! The `rq_strict_probe` round, run once from flash and once from RAMS.
-//!
-//! Same code, same data: the only difference is where the instructions come
-//! from. A fault in the flash phase but not the RAMS phase points at the
-//! instruction fetch path.
-//!
-//! Results: 0x20021004 flash phase (`0xa5a50001` clean, else
-//! `round << 8 | code`), 0x20021008 RAMS phase (`0xa5a50002`), 0x2002101c and
-//! 0x20021020 hold the two function addresses.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin xip_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 9
-//! ```
+//! Run the `rq_strict_probe` round from flash and from RAMS.
 
 #![no_std]
 #![no_main]

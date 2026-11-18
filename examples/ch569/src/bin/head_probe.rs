@@ -1,13 +1,4 @@
-//! Which access in the executor's dequeue faults when the popped node is bad?
-//!
-//! Replays the dequeue body with `a0 = 0xf7f9bf11` (the value the run-queue head
-//! returned in the crash) and logs every trap through a resumable handler.
-//!
-//! ```console
-//! cargo build --release --bin head_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021010 4
-//! probe-rs read --chip CH569 --probe ... b32 0x20022000 32
-//! ```
+//! Which access in the executor's dequeue faults on a bad node?
 
 #![no_std]
 #![no_main]

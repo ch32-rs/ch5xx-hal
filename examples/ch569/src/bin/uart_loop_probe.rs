@@ -1,15 +1,4 @@
 //! Register-level UART transmit self-test on CH569.
-//!
-//! UART0 is the only full block on this die, so `MCR.LOOP` is available only
-//! there: a byte that comes back proves the transmitter, its baud divider and
-//! the receiver all ran. UART1-3 are `UART_NOMODEM` blocks; for those the test
-//! is that the FIFO count drains and `LSR.TX_ALL_EMP` sets, which a stopped
-//! shift register would never do.
-//!
-//! ```console
-//! cargo build --release --bin uart_loop_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 16
-//! ```
 
 #![no_std]
 #![no_main]

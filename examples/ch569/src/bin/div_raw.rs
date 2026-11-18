@@ -1,7 +1,4 @@
 //! Bare-metal 64-bit division loop: does `__udivdi3` fault on this core?
-//!
-//! Leaves the stack pointer and the last quotient/remainder in RAMX so a
-//! halted-core read can show where it stopped.
 
 #![no_std]
 #![no_main]

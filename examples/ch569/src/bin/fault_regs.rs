@@ -1,14 +1,4 @@
 //! Is the core's saved context trustworthy for a misaligned-AMO fault?
-//!
-//! Loads every general register with a magic value, then faults inside
-//! `amoor.w` on an odd address — the same form the executor crash produces.
-//! The handler dumps a0-a7, s0-s11, sp, ra, gp and tp, so any register the
-//! core mangles (or reports stale) shows up as a missing magic.
-//!
-//! ```console
-//! cargo build --release --bin fault_regs
-//! probe-rs read --chip CH569 --probe ... b32 0x20022000 27
-//! ```
 
 #![no_std]
 #![no_main]

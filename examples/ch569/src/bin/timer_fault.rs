@@ -1,14 +1,4 @@
 //! Timer probe with a full-register dump on exceptions.
-//!
-//! Interrupts are forwarded to the vector table slot the hardware would use,
-//! so the time driver keeps running; only a real exception stops the core and
-//! writes every GPR to RAMX.
-//!
-//! ```console
-//! cargo build --release --bin timer_fault
-//! probe-rs read --chip CH569 --probe ... b32 0x20022000 32
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
 
 #![no_std]
 #![no_main]

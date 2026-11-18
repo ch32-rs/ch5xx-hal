@@ -1,15 +1,4 @@
-//! Watchdog reset on CH569.
-//!
-//! Boot A drops a counter in RAMX (which survives a core reset — a stale
-//! image's scratch is still there after a flash), arms the WDG with reset
-//! enabled and stops feeding. The next boot reads `RST_BOOT_STAT.RB_RESET_FLAG`
-//! and expects 2. The counter bounds the test to one arm, so a watchdog that
-//! does not reset cannot turn into a reset loop.
-//!
-//! ```console
-//! cargo build --release --bin wdg_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
+//! Watchdog reset on CH569: cause flag, `GLOB_RESET_KEEP`, control register.
 
 #![no_std]
 #![no_main]

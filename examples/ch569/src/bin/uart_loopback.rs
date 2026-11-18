@@ -1,16 +1,4 @@
 //! UART0 internal loopback: `MCR.LOOP` wires TXD to RXD inside the block.
-//!
-//! UART1-3 are the no-modem block on CH569 and have no loopback bit, so this
-//! uses UART0 on its default pins PB6 (TXD) / PB5 (RXD). Nothing needs to be
-//! connected: the bytes go out of the shift register and straight back in.
-//!
-//! Results go to RAMX as well as RTT: an RTT attach halts the core between
-//! reads, so the iteration count and error count are read back instead.
-//!
-//! ```console
-//! cargo build --release --bin uart_loopback
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 5
-//! ```
 
 #![no_std]
 #![no_main]

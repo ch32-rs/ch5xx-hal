@@ -1,13 +1,4 @@
-//! GPIO input path and internal pulls on CH569, no jumpers needed.
-//!
-//! Each candidate pin is read with the pull-up and then with the pull-down.
-//! A floating pin follows the pull (1 then 0); a pin tied low reads 0/0 and
-//! one tied high 1/1. The first floating pin is the one an IRQ test can use.
-//!
-//! ```console
-//! cargo build --release --bin gpio_in_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 24
-//! ```
+//! GPIO input path and internal pulls on CH569; no jumpers needed.
 
 #![no_std]
 #![no_main]

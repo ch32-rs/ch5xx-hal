@@ -1,31 +1,8 @@
-//! PWM4 to PWM11, or PWM1 to PWM5 on CH572/CH570.
+//! PWM output: PWM4-PWM11, PWM1-PWM5 on CH572, PWM0-PWM3 on CH569.
 //!
-//! One block clocks every channel from `Fsys`. `CLOCK_DIV` divides that clock,
-//! and the cycle length is shared too. The output frequency is
-//! `Fsys / divisor / cycle`. A divisor of 0 is rejected.
-//!
-//! On the CH572 layout the 16-bit period is shared by PWM1-PWM3 and by
-//! PWM4/PWM5 separately, and every channel has its own 16-bit duty register.
-//!
-//! Fixed cycles use 8-bit duty registers. On CH582/CH583, the available
-//! periods are 256, 255, 128, 127, 64, 63, 32 and 31 clocks. On CH581,
-//! CH584, CH585 and CH592, the last mode instead provides a custom 16-bit
-//! cycle for PWM4 to PWM9; PWM10 and PWM11 are unavailable in that mode.
-//!
-//! Duty 0 leaves the pin at its idle level; the largest duty is the cycle
-//! length, except for the 256-clock cycle, whose byte register stops at 255.
-//! Staggered output can alternate the channels of each pair between cycles.
-//!
-//! `PIN_PWMX` remaps PWM4, PWM5, PWM7, PWM8 and PWM9 together. Mixing a
-//! remapped pin with a default one flips the shared bit, so every channel has
-//! to agree. PWM11 on CH582/CH583 shares PB23 with external reset; that function
-//! must be disabled before using the pin for PWM. The block raises
-//! `PWMX_SPI1`, the same line as SPI1; this driver does not claim it.
-//!
-//! CH569/CH565 have their own 4-channel 8-bit block: PWM0-PWM3, a shared 256-
-//! or 255-clock cycle, per-channel polarity, and no remap or staggering.
-//! Pins are PWM0 = PB15 (external reset must be off), PWM1 = PA4, PWM2 = PB1
-//! and PWM3 = PB2.
+//! One block clocks every channel from `Fsys`; `Fsys / divisor / cycle` sets the
+//! frequency. `PIN_PWMX` remaps a group together, and PWM11 on CH582/CH583
+//! shares PB23 with external reset.
 
 use core::convert::Infallible;
 use core::marker::PhantomData;

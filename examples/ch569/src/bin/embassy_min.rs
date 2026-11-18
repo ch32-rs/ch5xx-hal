@@ -1,6 +1,4 @@
 //! Minimal executor trace over RTT: where does the CH569 executor stop?
-//!
-//! Both tasks are always ready, so the executor never reaches `wfi`.
 
 #![no_std]
 #![no_main]

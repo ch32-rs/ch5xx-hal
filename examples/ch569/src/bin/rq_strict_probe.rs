@@ -1,18 +1,4 @@
-//! Deterministic replay of the executor's run queue with a readback after
-//! every mutation.
-//!
-//! Single-threaded, no interrupts (`--no-default-features`), so any failing
-//! check is a wrong value from a primitive, not a race. The first failure
-//! records `(round, check, expected, actual)` at 0x20021004..0x20021010 and
-//! 0xdead0000 at 0x20021014.
-//!
-//! Checks: 1 head after wake, 2 `next` after wake, 3 popped pointer,
-//! 4 `next` chased during the drain.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin rq_strict_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
+//! Deterministic replay of the executor's run queue, with a readback after each mutation.
 
 #![no_std]
 #![no_main]

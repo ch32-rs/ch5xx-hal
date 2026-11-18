@@ -1,16 +1,4 @@
-//! Does a CH569 interrupt preserve the caller-saved registers?
-//!
-//! TMR0 raises a 10 kHz period interrupt handled by a plain Rust handler (the
-//! qingke trampoline saves only `ra`). The loop reloads magics into
-//! a1-a7/t1-t6, widens the window with nops, then compares. A mismatch records
-//! the register index and value at 0x20021008/0x2002100c; finishing all
-//! iterations records PASS at 0x20021010. Word 8 counts the interrupts, word 10
-//! mirrors PFIC_CFGR (bit 0 = HWSTKCTRL, 0 = hardware stack on).
-//!
-//! ```console
-//! cargo build --release --bin irq_reg_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 12
-//! ```
+//! Does an interrupt preserve the caller-saved registers?
 
 #![no_std]
 #![no_main]

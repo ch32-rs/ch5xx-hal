@@ -1,13 +1,4 @@
-//! Does the CH569 SysTick core interrupt fire under the driver's reload model?
-//!
-//! Rearms CMP + STRELOAD from the handler, exactly like
-//! `time_driver_systick_ch573`'s `arm`, and counts hits in RAMX. Build without
-//! a time driver so this handler owns the SysTick vector.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin systick_irq
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 4
-//! ```
+//! Does the SysTick interrupt fire under the driver's reload model?
 
 #![no_std]
 #![no_main]
