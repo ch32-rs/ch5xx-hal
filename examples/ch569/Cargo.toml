@@ -6,33 +6,6 @@ edition = "2021"
 [features]
 default = ["time-driver-systick"]
 time-driver-systick = ["ch5xx-hal/time-driver-systick"]
-time-driver-tmr0 = ["ch5xx-hal/time-driver-tmr0"]
-time-driver-tmr1 = ["ch5xx-hal/time-driver-tmr1"]
-time-driver-tmr2 = ["ch5xx-hal/time-driver-tmr2"]
-wfi-mie0 = []
-# Bins that own the SysTick vector themselves conflict with the time driver, so
-# they build only with `--no-default-features --features raw-systick`.
-raw-systick = []
-
-[[bin]]
-name = "amo_probe"
-required-features = ["raw-systick"]
-
-[[bin]]
-name = "irq_regs"
-required-features = ["raw-systick"]
-
-[[bin]]
-name = "systick_irq"
-required-features = ["raw-systick"]
-
-[[bin]]
-name = "wfe_probe"
-required-features = ["raw-systick"]
-
-[[bin]]
-name = "wfi_test"
-required-features = ["raw-systick"]
 
 [dependencies]
 # No `memory-x`: this crate ships its own `memory.x` because the CH569's
@@ -74,60 +47,7 @@ embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "4e2fa2e3a
 embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "4e2fa2e3ae7c9fd62a32193f47af12f68df3df7d" }
 embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "4e2fa2e3ae7c9fd62a32193f47af12f68df3df7d" }
 
-# These pull in `embassy-time`, which needs a time-driver implementation.
-
-[[bin]]
-name = "embassy_min"
-required-features = ["time-driver-systick"]
-
+# Pulls in `embassy-time`, which needs a time-driver implementation.
 [[bin]]
 name = "embassy_time"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "exec_probe"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "executor_probe"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "poll_probe"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "time_raw"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "timebase_probe"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "timer_fault"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "timer_noprobe"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "timer_probe"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "timer_raw"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "tmr_irq_probe"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "tmr_probe"
-required-features = ["time-driver-systick"]
-
-[[bin]]
-name = "yield_raw"
 required-features = ["time-driver-systick"]
