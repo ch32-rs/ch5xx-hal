@@ -1,23 +1,12 @@
 //! Window watchdog, reset cause, and battery detector.
 //!
-//! The window watchdog counts up at `Fsys / 131072` and overflows from 255. A
-//! reload of 0 is the longest interval, about 6.3 s at the 5.333 MHz reset
-//! clock and about 0.43 s at 78 MHz. Overflow can raise `WDOG_BAT` or reset the
-//! chip. That interrupt is shared with the battery detector, and this driver
-//! does not claim the handler; poll [`Watchdog::overflowed`] instead.
+//! The watchdog counts up at `Fsys / 131072` (`Fsys / 524288` on CH569) and
+//! overflows from 255. The overflow interrupt is shared with the battery
+//! detector, so poll [`Watchdog::overflowed`] rather than claim it.
 //!
-//! [`reset_cause`] reads the flag the hardware latches, on the chips whose
-//! system-control block has that register. CH573 does not, so the function is
-//! absent there. A software reset is [`software_reset`], which does not return.
-//!
-//! The battery detector compares the supply with a fixed threshold and reports
-//! low and lower. It does not measure a voltage; the ADC battery channel does
-//! that. The control registers are safe-access.
-//!
-//! `WDOG_COUNT` and `RST_WDOG_CTRL` have the same fields on every selectable
-//! chip except CH564 and CH569, which are not selectable. The battery detector
-//! fields are the CH585 ones, which CH581 and CH592 share, so [`Battery`]
-//! compiles only where those fields exist. Only CH585 has been run on a board.
+//! `WDOG_COUNT` is the same on every selectable chip. `RST_WDOG_CTRL` differs
+//! on CH569: the overflow flag sits at bit 3 and [7:6] is a write key. The
+//! battery detector fields are the CH585 ones, shared with CH581 and CH592.
 
 use core::marker::PhantomData;
 
@@ -46,7 +35,12 @@ pub enum ResetCause {
 /// Read the latched reset flag.
 #[cfg(reset_status)]
 pub fn reset_cause() -> ResetCause {
-    match pac::SYSTEM_CONTROL.reset_status().read().reset_flag() {
+    // CH569 calls the byte `RST_BOOT_STAT`; the flag encoding is the same.
+    #[cfg(ch569)]
+    let flag = pac::SYSTEM_CONTROL.rst_boot_stat().read().reset_flag();
+    #[cfg(not(ch569))]
+    let flag = pac::SYSTEM_CONTROL.reset_status().read().reset_flag();
+    match flag {
         0 => ResetCause::Software,
         1 => ResetCause::PowerOn,
         2 => ResetCause::Watchdog,
@@ -58,11 +52,16 @@ pub fn reset_cause() -> ResetCause {
 
 /// Reset the chip. Does not return.
 pub fn software_reset() -> ! {
-    // `WDOG_INT_FLAG` is write-1-to-clear, so the written flag bit stays 0.
     rcc::with_safe_access(|| {
         pac::SYSTEM_CONTROL.rst_wdog_ctrl().modify(|w| {
             w.set_software_reset(true);
+            // `WDOG_INT_FLAG` is write-1-to-clear: write 0 to leave it alone.
             w.set_wdog_int_flag(false);
+            // CH569 drops a write without the [7:6] key.
+            #[cfg(ch569)]
+            {
+                w.0 |= 0x40;
+            }
         });
     });
     loop {
@@ -103,12 +102,15 @@ impl<'d, T: Instance> Watchdog<'d, T> {
     }
 
     fn set_reset_enabled(&self, enabled: bool) {
-        // `WDOG_INT_FLAG` is write-1-to-clear. A read-modify-write that copies a
-        // set flag back would clear it, so the written flag bit stays 0.
         rcc::with_safe_access(|| {
             pac::SYSTEM_CONTROL.rst_wdog_ctrl().modify(|w| {
                 w.set_wdog_rst_en(enabled);
                 w.set_wdog_int_flag(false);
+                // CH569 drops a write without the [7:6] key.
+                #[cfg(ch569)]
+                {
+                    w.0 |= 0x40;
+                }
             });
         });
     }
@@ -125,6 +127,11 @@ impl<'d, T: Instance> Watchdog<'d, T> {
         let mut ctrl = pac::SYSTEM_CONTROL.rst_wdog_ctrl().read();
         ctrl.set_software_reset(false);
         ctrl.set_wdog_int_flag(true);
+        // CH569 drops a write without the [7:6] key.
+        #[cfg(ch569)]
+        {
+            ctrl.0 |= 0x40;
+        }
         rcc::with_safe_access(|| {
             pac::SYSTEM_CONTROL.rst_wdog_ctrl().write_value(ctrl);
         });

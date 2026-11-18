@@ -59,6 +59,8 @@ fn main() {
         "ch581" | "ch582" | "ch583" | "ch584" | "ch585" | "ch592" | "ch595" | "ch573" => &[('A', 16), ('B', 24)],
         // CH572/CH570 bond PA0-PA11 only.
         "ch572" => &[('A', 12)],
+        // CH569 has 24 PA and 25 PB pads; PB24 drives LED0 on the EVT board.
+        "ch569" => &[('A', 24), ('B', 25)],
         other => panic!("no GPIO port map for chip `{other}`"),
     };
     // The PAC's `METADATA` is empty here: a build-dependency is compiled
@@ -99,6 +101,20 @@ fn main() {
     // ISP573/ISP585 use the plain address.
     if matches!(chip_name.as_str(), "ch582" | "ch583" | "ch592") {
         println!("cargo:rustc-cfg=flashrom_data_frame_80000");
+    }
+    // CH569 splits the combined `Px_PD_DRV` byte into `Px_PD` (open-drain /
+    // input pulldown) and `Px_DRV` (drive current).
+    if gpio_items.iter().any(|item| item == "PA_PD") && gpio_items.iter().any(|item| item == "PA_DRV") {
+        println!("cargo:rustc-cfg=gpio_split_pd_drv");
+    }
+    // Some dies expose one `GPIO` vector instead of `GPIO_A`/`GPIO_B`.
+    if !interrupts_has(&chip_name, "GPIO_A") && interrupts_has(&chip_name, "GPIO") {
+        println!("cargo:rustc-cfg=gpio_single_irq");
+    }
+    // `delay` calibrates SysTick against the RTC's 32 kHz counter. A die
+    // without that block reports the nominal rate instead.
+    if register_version_opt(&chip_name, "rtc").is_none() {
+        println!("cargo:rustc-cfg=delay_no_rtc");
     }
     // The low-power driver writes the sleep and power-plan bytes of the SYS
     // block. CH592 has no HFCK_PWR_CTRL, so the set is not shared by every
@@ -158,7 +174,7 @@ fn main() {
     match register_version(&chip_name, "spi").as_str() {
         // CH573 and CH572/CH570 use the same FIFO controller; CH572 selects
         // its alternate SCK through `PIN_ALTERNATE_H` instead of `PIN_SPI0`.
-        "ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572" => {
+        "ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572" | "ch569" => {
             println!("cargo:rustc-cfg=spi_fifo")
         }
         _ => {}
@@ -225,11 +241,9 @@ fn main() {
     if register_has_field(&chip_name, "touchkey", "DRV_EN") {
         println!("cargo:rustc-cfg=touchkey_drv_en");
     }
-    // PWMx has three layouts: the CH572 block drives PWM1-PWM5 with 16-bit
-    // cycle registers, the CH573 block drives PWM4-PWM11 with byte duty
-    // registers, and the CH585/CH592 blocks add the wide mode and four stagger
-    // pairs.
+    // PWMx has four layouts; CH569 is PWM0-PWM3 with byte registers.
     match register_version_opt(&chip_name, "pwmx").as_deref() {
+        Some("ch569") => println!("cargo:rustc-cfg=pwmx_ch569"),
         Some("ch572") => println!("cargo:rustc-cfg=pwmx_ch572"),
         Some("ch573") => println!("cargo:rustc-cfg=pwmx_ch573"),
         Some("ch585") => println!("cargo:rustc-cfg=pwmx_ch585"),
@@ -249,7 +263,7 @@ fn main() {
     }
     // The reset-status register shares its byte with the ROM configuration;
     // these are the system-control versions that model it.
-    if let Some("ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572") =
+    if let Some("ch585" | "ch583" | "ch592" | "ch595" | "ch573" | "ch572" | "ch569") =
         register_version_opt(&chip_name, "system_control").as_deref()
     {
         println!("cargo:rustc-cfg=reset_status");
@@ -376,9 +390,8 @@ fn main() {
     }
     if register_has_field(&chip_name, "systick", "STRELOAD") {
         println!("cargo:rustc-cfg=systick_streload");
-        // CH573's V3A core timer is a 64-bit down-counter with a one-shot
-        // reload, not the up-counter/auto-reload model of the other dies. The
-        // HAL provides a separate time driver and delay path for it.
+        // The V3A core timer is a 64-bit down-counter, not the up-counter the
+        // shared driver assumes; it gets its own driver and delay path.
         println!("cargo:rustc-cfg=systick_downcounter");
     }
     // CH585-CH59x keep the flag in `SR`; CH572 and CH573 call it `CNTFG`.
@@ -397,6 +410,10 @@ fn main() {
     }
     if register_has_field(&chip_name, "uart", "MCR_OUT2_RB_MCR_INT_OE") {
         println!("cargo:rustc-cfg=mcr_int_oe_combined");
+    }
+    // CH564/CH569 call the OUT2/interrupt-output bit `MCR_OUT2`.
+    if register_has_field(&chip_name, "uart", "MCR_OUT2") && !register_has_field(&chip_name, "uart", "MCR_INT_OE") {
+        println!("cargo:rustc-cfg=mcr_out2");
     }
     // CH572/CH570's UART has no software-reset bit, no FIFO-clear bits and no
     // modem block, so the fields the shared setup writes do not all exist.
@@ -685,6 +702,21 @@ fn family_has_peripheral(chip: &str, name: &str) -> bool {
     let text =
         fs::read_to_string(&family_path).unwrap_or_else(|err| panic!("reading {}: {err}", family_path.display()));
     text.lines().any(|line| line.trim() == format!("- name: {name}"))
+}
+
+/// Whether the chip's interrupt YAML lists `name`.
+fn interrupts_has(chip: &str, name: &str) -> bool {
+    let chip_path = data_root().join(format!("chips/{}.yaml", chip.to_ascii_uppercase()));
+    let chip_yaml =
+        fs::read_to_string(&chip_path).unwrap_or_else(|err| panic!("reading {}: {err}", chip_path.display()));
+    let relative = chip_yaml
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("include_interrupts: "))
+        .unwrap_or_else(|| panic!("{chip} has no `include_interrupts` entry"))
+        .trim_matches('"');
+    let path = data_root().join("chips").join(relative);
+    let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
+    text.lines().any(|line| line.trim().starts_with(&format!("{name}:")))
 }
 
 /// The family file named by `include_peripherals`.

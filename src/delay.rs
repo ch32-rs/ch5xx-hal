@@ -2,10 +2,9 @@
 //!
 //! Most CH5xx dies have the WCH up-counter variant: `CTLR` (`STE` bit 0,
 //! `STCLK` bit 2, `MODE` bit 4), `SR.CNTIF`, and the 32-bit `CNTL` / `CMPLR`
-//! pair. CH573 instead has the V3A core timer: a 64-bit **down-counter** with
-//! a one-shot `STRELOAD` load and the flag in `CNTFG`. Both are started as a
-//! free-running counter here; the direction only changes how elapsed time is
-//! computed.
+//! pair. CH569/CH573 instead have a 64-bit **down-counter** loaded through
+//! `STRELOAD`, with the flag in `CNTFG`. Both are started as a free-running
+//! counter here; the direction only changes how elapsed time is computed.
 //!
 //! The counter is started **once** by `init` and left running; each delay
 //! only reads `CNT` and compares it against a target.
@@ -75,6 +74,7 @@ static TICKS_PER_US_Q16: crate::atomic::AtomicU32 =
 
 /// RTC block, whose `CNT_32K` counter is clocked by the independent 32 kHz
 /// oscillator and keeps running across anything the PLL does.
+#[cfg(not(delay_no_rtc))]
 const RTC_BASE: u32 = 0x4000_1000;
 
 /// RTC count used for the calibration window.
@@ -83,19 +83,23 @@ const RTC_BASE: u32 = 0x4000_1000;
 /// the skew between the `CNT_32K` and `CNTL` reads: at 1024 counts the
 /// same board measured anywhere from 5.33 to 7.43 MHz run to run, which then
 /// scaled every delay (and the whole embassy timebase) by up to 40%.
+#[cfg(not(delay_no_rtc))]
 const CAL_COUNTS: u16 = 4096;
 
 /// Calibration rounds; the median is used so a single disturbed window cannot
 /// skew the result.
+#[cfg(not(delay_no_rtc))]
 const CAL_ROUNDS: usize = 5;
 
 /// RTC frequency, for turning counts into seconds.
+#[cfg(not(delay_no_rtc))]
 const RTC_HZ: u32 = 32_768;
 
 /// SysTick counts elapsed between two `CNTL` reads.
 ///
 /// Up-counters (`MODE = 0`) advance above `start`; CH573's V3A down-counter
 /// falls below it, so the subtraction is reversed.
+#[cfg(not(all(delay_no_rtc, feature = "time-driver-systick", systick_downcounter)))]
 #[inline(always)]
 fn elapsed_ticks(start: u32, end: u32) -> u32 {
     #[cfg(systick_downcounter)]
@@ -108,6 +112,7 @@ fn elapsed_ticks(start: u32, end: u32) -> u32 {
     }
 }
 
+#[cfg(not(delay_no_rtc))]
 #[inline(always)]
 fn rtc_count() -> u16 {
     // `CNT_32K` is the 16-bit register at 0x38. It wraps every 2 s, but the
@@ -265,8 +270,7 @@ const GCD_US: u64 = gcd(embassy_time_driver::TICK_HZ, 1_000_000);
 /// V3C, where each poll runs software divisions (tens of µs).
 ///
 /// The two `delay_us` bodies are cfg-exclusive: the up-counter chases the raw
-/// register, the CH573 down-counter's one-shot `STRELOAD` restarts the counter
-/// at every alarm, so it always reads the timebase.
+/// register, the V3A down-counter always reads the reloaded timebase.
 #[cfg(feature = "time-driver-systick")]
 impl Delay {
     /// Busy-wait for `ms` milliseconds.
@@ -331,10 +335,10 @@ impl Delay {
         self.wait_ticks(whole + frac);
     }
 
-    /// Busy-wait for `us` microseconds (CH573 down-counter).
+    /// Busy-wait for `us` microseconds (V3A down-counter).
     ///
-    /// The one-shot `STRELOAD` restarts the counter at every alarm, so there
-    /// is no raw reference to chase; everything reads the driver's timebase.
+    /// The counter is reloaded at every alarm, so there is no raw reference to
+    /// chase; everything reads the driver's timebase.
     #[cfg(systick_downcounter)]
     pub fn delay_us(&mut self, us: u32) {
         let ticks = (us as u64 * (embassy_time_driver::TICK_HZ / GCD_US)).div_ceil(1_000_000 / GCD_US);
@@ -359,10 +363,17 @@ impl embedded_hal::delay::DelayNs for Delay {
     }
 }
 
+/// CH569 has no RTC counter to measure against, so the nominal rate stands.
+#[cfg(delay_no_rtc)]
+unsafe fn calibrate() -> u32 {
+    crate::rcc::clocks().sysclk.0
+}
+
 /// Measure SysTick against the RTC's 32 kHz counter.
 ///
 /// Returns ticks per second, or the nominal frequency if the RTC never
 /// advances (it should always be running, but a hang here would brick boot).
+#[cfg(not(delay_no_rtc))]
 unsafe fn calibrate() -> u32 {
     let mut samples = [0u32; CAL_ROUNDS];
 

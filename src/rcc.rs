@@ -89,35 +89,43 @@ use crate::time::Hertz;
 /// This is the reset default: HSI 16 MHz divided by 3 on CH585, and the 32 MHz
 /// crystal divided by 5 (6.4 MHz) on CH592 and CH58x, which have no internal
 /// high-speed oscillator.
-#[cfg(has_hsi)]
+#[cfg(ch569)]
+pub const DEFAULT_FREQUENCY: Hertz = Hertz(15_000_000);
+#[cfg(all(has_hsi, not(ch569)))]
 pub const DEFAULT_FREQUENCY: Hertz = Hertz(5_333_333);
-#[cfg(not(has_hsi))]
+#[cfg(all(not(has_hsi), not(ch569)))]
 pub const DEFAULT_FREQUENCY: Hertz = Hertz(6_400_000);
 
 static SYSCLK_HZ: AtomicU32 = AtomicU32::new(DEFAULT_FREQUENCY.0);
 
-/// PLL output before the divider. The multiplier is fixed per die.
-#[cfg(pll_600)]
-const PLL_HZ: u32 = 600_000_000;
-#[cfg(all(not(pll_600), any(xtal480, pll_480)))]
+/// PLL output before the divider; CH569 divides the USB PHY's 480 MHz instead.
+#[cfg(ch569)]
 const PLL_HZ: u32 = 480_000_000;
-#[cfg(all(not(pll_600), not(any(xtal480, pll_480))))]
+#[cfg(all(not(ch569), pll_600))]
+const PLL_HZ: u32 = 600_000_000;
+#[cfg(all(not(ch569), not(pll_600), any(xtal480, pll_480)))]
+const PLL_HZ: u32 = 480_000_000;
+#[cfg(all(not(ch569), not(pll_600), not(any(xtal480, pll_480))))]
 const PLL_HZ: u32 = 312_000_000;
 
 /// Highest `Fsys` the PLL may produce on this die.
 ///
-/// CH573 tops out at 60 MHz, CH572 at 100 MHz; the 312/480 MHz blocks used by
-/// the other parts reach 80 MHz.
+/// CH573 tops out at 60 MHz, CH572 at 100 MHz, CH569 at 120 MHz; the 312/480 MHz
+/// blocks used by the other parts reach 80 MHz.
 const fn pll_max_hz() -> u32 {
-    #[cfg(pll_600)]
+    #[cfg(ch569)]
+    {
+        120_000_000
+    }
+    #[cfg(all(not(ch569), pll_600))]
     {
         100_000_000
     }
-    #[cfg(all(not(pll_600), ch573))]
+    #[cfg(all(not(ch569), not(pll_600), ch573))]
     {
         60_000_000
     }
-    #[cfg(all(not(pll_600), not(ch573)))]
+    #[cfg(all(not(ch569), not(pll_600), not(ch573)))]
     {
         80_000_000
     }
@@ -170,7 +178,8 @@ pub enum Osc {
 /// How `Fsys` is derived from the oscillator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sys {
-    /// Undivided oscillator: 16 MHz on HSI, 32 MHz on HSE (`CLK_SYS_MOD = 10`).
+    /// Undivided oscillator: 16 MHz on HSI, 32 MHz on HSE (`CLK_SYS_MOD = 10`);
+    /// on CH569 it is the vendor's 30 MHz setting (`SEL_PLL = 1`, `DIV = 0`).
     ///
     /// CH592 has no undivided mode; it rejects this variant.
     Direct,
@@ -182,7 +191,8 @@ pub enum Sys {
     /// PLL divided by `div` (`CLK_SYS_MOD = 01`).
     ///
     /// CH585's PLL is 312 MHz: `div` in `4..=32`, or 9.75–78 MHz. CH592's PLL
-    /// is 480 MHz: `div` in `6..=32`, or 15–80 MHz.
+    /// is 480 MHz: `div` in `6..=32`, or 15–80 MHz. CH569's divider is 4 bits:
+    /// `div` in `4..=15`, or 32–120 MHz.
     Pll(u8),
 }
 
@@ -238,8 +248,18 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// CH569's reset value: the 30 MHz oscillator divided by 2 (15 MHz).
+    #[cfg(ch569)]
+    fn default() -> Self {
+        Self {
+            osc: Osc::Hse32,
+            sys: Sys::Divided(2),
+            hse_cap: HseCap::P18,
+        }
+    }
+
     /// The datasheet reset value.
-    #[cfg(has_hsi)]
+    #[cfg(all(has_hsi, not(ch569)))]
     fn default() -> Self {
         Self {
             osc: Osc::Hsi16,
@@ -250,7 +270,7 @@ impl Default for Config {
 
     /// The CH57x, CH592 and CH58x reset value: 32 MHz crystal divided by 5
     /// (6.4 MHz). These dies have no internal high-speed oscillator.
-    #[cfg(not(has_hsi))]
+    #[cfg(all(not(has_hsi), not(ch569)))]
     fn default() -> Self {
         Self {
             osc: Osc::Hse32,
@@ -296,14 +316,27 @@ impl Config {
     /// read any register. The value is only meaningful for a configuration
     /// whose divisors are in range (see [`set_config`]).
     pub const fn sysclk(&self) -> Hertz {
-        let base = match self.osc {
-            Osc::Hsi16 => 16_000_000,
-            Osc::Hse32 => 32_000_000,
-        };
-        match self.sys {
-            Sys::Direct => Hertz(base),
-            Sys::Divided(div) => Hertz(base / div as u32),
-            Sys::Pll(div) => Hertz(PLL_HZ / div as u32),
+        // CH569 sources `Fsys` from either the 30 MHz oscillator or the USB
+        // PHY's 480 MHz, selected by `CLK_CFG_CTRL.CLK_SEL_PLL`.
+        #[cfg(ch569)]
+        {
+            match self.sys {
+                Sys::Direct => Hertz(30_000_000),
+                Sys::Divided(div) => Hertz(30_000_000 / div as u32),
+                Sys::Pll(div) => Hertz(PLL_HZ / div as u32),
+            }
+        }
+        #[cfg(not(ch569))]
+        {
+            let base = match self.osc {
+                Osc::Hsi16 => 16_000_000,
+                Osc::Hse32 => 32_000_000,
+            };
+            match self.sys {
+                Sys::Direct => Hertz(base),
+                Sys::Divided(div) => Hertz(base / div as u32),
+                Sys::Pll(div) => Hertz(PLL_HZ / div as u32),
+            }
         }
     }
 
@@ -353,11 +386,46 @@ impl Config {
         }
     }
 
+    /// Closest achievable clock on CH569: the 30 MHz oscillator divided, or
+    /// the 480 MHz USB PHY clock divided. Ties go to the lower frequency.
+    #[cfg(ch569)]
+    pub const fn hse_nearest(hz: Hertz) -> Self {
+        let mut best = 30_000_000;
+        let mut sys = Sys::Direct;
+
+        let mut div = 2u8;
+        while div <= 15 {
+            let freq = 30_000_000 / div as u32;
+            if closer(hz.0, freq, best) {
+                best = freq;
+                sys = Sys::Divided(div);
+            }
+            div += 1;
+        }
+
+        let mut div = pll_first_div();
+        while div <= 15 {
+            let freq = PLL_HZ / div as u32;
+            if freq <= pll_max_hz() && closer(hz.0, freq, best) {
+                best = freq;
+                sys = Sys::Pll(div);
+            }
+            div += 1;
+        }
+
+        Self {
+            osc: Osc::Hse32,
+            sys,
+            hse_cap: HseCap::P18,
+        }
+    }
+
     /// Closest achievable clock driven by the 32 MHz crystal.
     ///
     /// Same selection rules as [`Config::hsi_nearest`], but divided and
     /// divided branches use HSE, which reaches 32 MHz on CH585 and 16 MHz on
     /// CH592 and CH58x (whose divided branch needs a minimum divisor of 2).
+    #[cfg(not(ch569))]
     pub const fn hse_nearest(hz: Hertz) -> Self {
         // CH581/CH584/CH585/CH595 can run the crystal undivided.
         #[cfg(all(not(xtal480), not(any(ch572, ch573))))]
@@ -429,23 +497,29 @@ impl Config {
         HSI_1MHZ = Hsi16, Sys::Divided(16);
 
         /// 32 MHz, HSE undivided (`CLK_SOURCE_HSE_32MHz`). Needs the crystal.
-        /// CH572/CH573 have no undivided mode.
-        #[cfg(not(any(xtal480, ch572, ch573)))]
+        /// CH572/CH573 have no undivided mode; CH569's crystal is 30 MHz and
+        /// uses the `PLL_*` presets below.
+        #[cfg(not(any(xtal480, ch569, ch572, ch573)))]
         HSE_32MHZ = Hse32, Sys::Direct;
 
         /// 16 MHz, HSE / 2 (`CLK_SOURCE_HSE_16MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_16MHZ = Hse32, Sys::Divided(2);
 
         /// 8 MHz, HSE / 4 (`CLK_SOURCE_HSE_8MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_8MHZ = Hse32, Sys::Divided(4);
 
         /// 6.4 MHz, HSE / 5 (`CLK_SOURCE_HSE_6_4MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_6_4MHZ = Hse32, Sys::Divided(5);
 
         /// 4 MHz, HSE / 8 (`CLK_SOURCE_HSE_4MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_4MHZ = Hse32, Sys::Divided(8);
 
         /// 2 MHz, HSE / 16 (`CLK_SOURCE_HSE_2MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_2MHZ = Hse32, Sys::Divided(16);
 
         /// 78 MHz, PLL / 4 (`CLK_SOURCE_HSI_PLL_78MHz`).
@@ -595,6 +669,33 @@ impl Config {
         #[cfg(ch573)]
         PLL_15MHZ = Hse32, Sys::Pll(32);
 
+        // CH569 divides the 30 MHz oscillator (`SEL_PLL = 0`) or the 480 MHz
+        // USB PHY clock (`SEL_PLL = 1`).
+
+        /// 120 MHz, USB PHY / 4. The highest CH569 clock.
+        #[cfg(ch569)]
+        PLL_120MHZ = Hse32, Sys::Pll(4);
+
+        /// 96 MHz, USB PHY / 5.
+        #[cfg(ch569)]
+        PLL_96MHZ = Hse32, Sys::Pll(5);
+
+        /// 80 MHz, USB PHY / 6.
+        #[cfg(ch569)]
+        PLL_80MHZ = Hse32, Sys::Pll(6);
+
+        /// 60 MHz, USB PHY / 8.
+        #[cfg(ch569)]
+        PLL_60MHZ = Hse32, Sys::Pll(8);
+
+        /// 30 MHz, the vendor's `CLK_SOURCE_PLL_30MHz`.
+        #[cfg(ch569)]
+        PLL_30MHZ = Hse32, Sys::Direct;
+
+        /// 15 MHz, 30 MHz oscillator / 2. The reset default.
+        #[cfg(ch569)]
+        PLL_15MHZ = Hse32, Sys::Divided(2);
+
         // The CH592/CH58x PLL is 480 MHz and always runs from the 32 MHz
         // crystal, so its dividers differ from the CH585 table above
         // (`CH59x_clk.h`, `CH58x_clk.h`).
@@ -664,6 +765,51 @@ pub fn clocks() -> Clocks {
     }
 }
 
+/// CH569 clock tree: the 30 MHz oscillator or the USB PHY's 480 MHz, divided;
+/// both config bytes carry a reserved-bit key, so they are written whole.
+#[cfg(ch569)]
+pub unsafe fn set_config(config: Config) -> Clocks {
+    validate(&config);
+    let sysclk = config.sysclk();
+    let (use_pll, div) = match config.sys {
+        Sys::Direct => (true, 0u8),
+        Sys::Divided(div) => (false, div),
+        Sys::Pll(div) => (true, div),
+    };
+
+    with_safe_access(|| {
+        // Datasheet 3.4 orders the divider before the 480 MHz source; going
+        // the other way the source drops first, so no write runs the core at 240 MHz.
+        if use_pll {
+            pac::SYS.clk_pll_div().write(|w| w.0 = 0x40 | div);
+            pac::SYS.clk_cfg_ctrl().write(|w| w.0 = 0x80 | 0x02);
+        } else {
+            pac::SYS.clk_cfg_ctrl().write(|w| w.0 = 0x80);
+            pac::SYS.clk_pll_div().write(|w| w.0 = 0x40 | div);
+        }
+    });
+
+    // Let the new divider settle before SysTick and the flash prefetch see it.
+    for _ in 0..64 {
+        core::hint::spin_loop();
+    }
+
+    // A SAM window that expired early drops the write silently, so prove it.
+    assert_eq!(
+        pac::SYS.clk_pll_div().read().0 & 0x0f,
+        div,
+        "rcc: CLK_PLL_DIV did not stick"
+    );
+    assert_eq!(
+        pac::SYS.clk_cfg_ctrl().read().0 & 0x02 != 0,
+        use_pll,
+        "rcc: CLK_SEL_PLL did not stick"
+    );
+
+    SYSCLK_HZ.store(sysclk.0, Ordering::Relaxed);
+    Clocks { sysclk }
+}
+
 /// Apply `config` to the hardware and update [`clocks`].
 ///
 /// `ch5xx_hal::init` calls this before the delay calibration and the time
@@ -707,7 +853,7 @@ mod xrom_raw {
 #[cfg(any(pll_312, ch572))]
 const FLASH_SCK_BIT: u8 = 1 << 4;
 
-#[cfg(not(any(ch592, power_plan_ch58x)))]
+#[cfg(not(any(ch569, ch592, power_plan_ch58x)))]
 pub unsafe fn set_config(config: Config) -> Clocks {
     validate(&config);
 
@@ -1125,6 +1271,9 @@ fn validate(config: &Config) {
                     Osc::Hse32 => 32_000_000,
                 };
                 assert!(base / div as u32 >= 1_000_000, "rcc: Fsys below the 1 MHz minimum");
+                // CH569 divides 30 MHz; 16 would be below the 2 MHz minimum.
+                #[cfg(ch569)]
+                assert!((2..=15).contains(&div), "rcc: 30 MHz divider must be 2..=15");
                 #[cfg(ch573)]
                 assert!(
                     fsys_allowed_ble(base / div as u32),
@@ -1134,6 +1283,8 @@ fn validate(config: &Config) {
             Sys::Pll(div) => {
                 assert!((pll_first_div()..=32).contains(&div), "rcc: PLL divider out of range");
                 let freq = PLL_HZ / div as u32;
+                #[cfg(ch569)]
+                assert!((4..=15).contains(&div), "rcc: PLL divider must be 4..=15");
                 assert!(freq <= pll_max_hz(), "rcc: Fsys above the PLL maximum");
                 #[cfg(ch573)]
                 assert!(
@@ -1162,13 +1313,23 @@ pub(crate) fn with_safe_access<R>(f: impl FnOnce() -> R) -> R {
         unsafe {
             core::arch::asm!("fence.i");
         }
+        // CH569 models the signature byte as two fields, not one write.
+        #[cfg(ch569)]
+        sig.write(|w| w.0 = SAFE_ACCESS_SIG1);
+        #[cfg(not(ch569))]
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG1));
+        #[cfg(ch569)]
+        sig.write(|w| w.0 = SAFE_ACCESS_SIG2);
+        #[cfg(not(ch569))]
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG2));
         #[cfg(any(ch572, ch573, ch592, power_plan_ch58x))]
         unsafe {
             core::arch::asm!("fence.i");
         }
         let result = f();
+        #[cfg(ch569)]
+        sig.write(|w| w.0 = SAFE_ACCESS_SIG0);
+        #[cfg(not(ch569))]
         sig.write(|w| w.set_safe_access_sig(SAFE_ACCESS_SIG0));
         #[cfg(any(ch572, ch573, ch592, power_plan_ch58x))]
         unsafe {

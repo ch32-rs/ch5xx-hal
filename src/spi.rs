@@ -1,33 +1,8 @@
-//! SPI master.
+//! SPI master for the FIFO-layout controllers (CH569, CH581-CH585, CH592).
 //!
-//! CH585 has two controllers, both clocked from `Fsys`. `SPI0` is a full
-//! controller with a peripheral-local DMA engine; `SPI1` is master-only and has
-//! no DMA block at all.
-//!
-//! Three paths share the block. [`Spi::new_blocking`] polls and moves one byte at
-//! a time. [`Spi::new_async`] does the same under `CNT_END`/`FIFO_HF` interrupts,
-//! which is the only way to do a full-duplex transfer because the FIFO can be
-//! queued in one direction only. [`Spi::write_dma`] and [`Spi::read_dma`] use
-//! `SPI0`'s local engine, which is also half-duplex: `FIFO_DIR` selects whether
-//! the engine fills the transmit FIFO or drains the receive FIFO. There is no
-//! channel controller and no request routing to configure.
-//!
-//! `CLOCK_DIV` divides `Fsys` by a whole number. A divisor of 2 turns on the
-//! master's input delay, which is what the vendor clock setup does; every other
-//! divisor leaves it off. The controller only has mode 0 and mode 3, so a
-//! request for mode 1 or mode 2 is rejected.
-//!
-//! `SPI0` defaults to PA13 (SCK), PA14 (MOSI) and PA15 (MISO). `PIN_SPI0` moves
-//! that set to PB13, PB14 and PB15. `SPI1` has no remap: SCK is PA0, MOSI is PA1
-//! and MISO is PA2. Chip select is not part of the controller. The vendor
-//! examples drive it from GPIO, and so does [`chip_select`].
-//!
-//! The register block is not shared by every CH5xx. The driver compiles on the
-//! dies that use the FIFO layout (CH581, CH582, CH583, CH584, CH585, CH592) and
-//! is absent on the rest. CH592 has one controller and 16-bit DMA address
-//! registers. Only CH585 has been run on a board. `SPI1` raises
-//! `PWMX_SPI1`, the same line as the PWM block, so a later async driver has to
-//! share that handler rather than own it.
+//! `SPI0` defaults to PA13/PA14/PA15 (SCK/MOSI/MISO); `SPI1` is master-only and
+//! has no DMA where the `SPI_NODMA` block is used. Chip select is driven from
+//! GPIO through [`chip_select`]. Only modes 0 and 3 are supported.
 
 #[cfg(feature = "embassy")]
 use core::future::poll_fn;
@@ -686,11 +661,7 @@ mod dma_sealed {
     pub trait Instance {}
 }
 
-/// An SPI controller with a local DMA engine.
-///
-/// Only `SPI0` has one. `SPI1` is the `SPI_NODMA` register block: it has no
-/// `DMA_BEG`, `DMA_END` or `DMA_ENABLE` bits at all, so this is a property of
-/// the instance rather than of the driver.
+/// An SPI controller with a local DMA engine: only `SPI0` here.
 #[allow(private_bounds)]
 pub trait DmaInstance: Instance + dma_sealed::Instance {}
 
@@ -1091,6 +1062,11 @@ fn apply<T: Instance>(timing: &Timing, mode3: bool, bit_order: BitOrder) {
     regs.ctrl_mod().write(|w| w.set_all_clear(true));
     regs.ctrl_mod().write(|w| {
         w.set_mode_slave(false);
+        // Bit 3 is a clock-idle bit in master mode and a command-mode bit in
+        // slave mode; the CH569 PAC names it for both.
+        #[cfg(ch569)]
+        w.set_mst_sck_mod_rb_slv_cmd_mod(mode3);
+        #[cfg(not(ch569))]
         w.set_mst_sck_mod(mode3);
         w.set_sck_oe(true);
         w.set_mosi_oe(true);
@@ -1098,7 +1074,11 @@ fn apply<T: Instance>(timing: &Timing, mode3: bool, bit_order: BitOrder) {
     regs.ctrl_cfg().write(|w| {
         w.set_auto_if(true);
         w.set_bit_order(bit_order == BitOrder::LsbFirst);
+        // CH569 has no master input-delay bit (CTRL_CFG [7:6] is reserved).
+        #[cfg(not(ch569))]
         w.set_mst_dly_en(timing.input_delay);
+        #[cfg(ch569)]
+        let _ = timing.input_delay;
     });
     regs.clock_div().write(|w| w.set_clock_div(timing.divisor));
 }
@@ -1234,13 +1214,12 @@ impl Instance for peripherals::SPI0 {
 }
 
 // CH583 has the second controller too, but its family file lists no pins for
-// it, so only CH585 exposes it.
-#[cfg(ch585)]
+// it, so only CH585 and CH569 expose it.
+#[cfg(any(ch585, ch569))]
 impl sealed::Instance for peripherals::SPI1 {
     fn regs() -> pac::spi::SpiFull {
-        // SPI1 is the same register block as SPI0 minus the DMA words, which
-        // this driver never touches. Reading it through the full block keeps one
-        // code path for both controllers.
+        // SPI1 shares SPI0's block; CH58x drops the DMA words, CH569 keeps
+        // them. This driver never touches either, so one code path covers both.
         unsafe { pac::spi::SpiFull::from_ptr(pac::SPI1.as_ptr()) }
     }
 
@@ -1253,9 +1232,13 @@ impl sealed::Instance for peripherals::SPI1 {
     }
 }
 
-#[cfg(ch585)]
+#[cfg(any(ch585, ch569))]
 impl Instance for peripherals::SPI1 {
+    // CH585 shares the line with the PWM block; CH569 has a dedicated one.
+    #[cfg(ch585)]
     type Interrupt = interrupt::typelevel::PWMX_SPI1;
+    #[cfg(ch569)]
+    type Interrupt = interrupt::typelevel::SPI1;
 }
 
 mod pin_sealed {
@@ -1289,7 +1272,7 @@ macro_rules! impl_pins {
 // `PIN_SPI0` clear is PA13/PA14/PA15, set is PB13/PB14/PB15.
 // CH582/CH583 routing is documented in the CH583/CH582 datasheet pin table
 // and the CH583 EVT register header, despite missing family pin metadata.
-#[cfg(any(ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
+#[cfg(any(ch569, ch573, ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pins!(SPI0, 0, sck: PA13, mosi: PA14, miso: PA15);
 #[cfg(any(ch581, ch582, ch583, ch584, ch585, ch592, ch595))]
 impl_pins!(SPI0, 1, sck: PB13, mosi: PB14, miso: PB15);
@@ -1297,10 +1280,12 @@ impl_pins!(SPI0, 1, sck: PB13, mosi: PB14, miso: PB15);
 // routing). Chip select is PA4, driven from GPIO like the other dies.
 #[cfg(ch572)]
 impl_pins!(SPI0, 0, sck: PA5, mosi: PA7, miso: PA6);
-// SPI1 has no remap field. PA0 is SCK, PA1 is MOSI, PA2 is MISO. CH583 has the
-// controller too, but no pins are recorded for it.
+// SPI1 has no remap field. PA0 is SCK, MOSI PA1, MISO PA2 on CH585; CH569
+// routes it to PB12/PB13/PB14 (CH569DS1 V1.3 pin table, pins 48-51).
 #[cfg(ch585)]
 impl_pins!(SPI1, 0, sck: PA0, mosi: PA1, miso: PA2);
+#[cfg(ch569)]
+impl_pins!(SPI1, 0, sck: PB12, mosi: PB13, miso: PB14);
 
 // --- embedded-hal ----------------------------------------------------------
 

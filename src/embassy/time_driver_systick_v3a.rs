@@ -1,20 +1,15 @@
-//! Embassy time driver on the CH573 SysTick counter.
+//! Embassy time driver on the V3A SysTick counter.
 //!
-//! # Why CH573 needs its own driver
+//! # Why V3A needs its own driver
 //!
-//! CH573's SysTick is the V3A core timer, and it does not behave like the
-//! SysTick on the other CH5xx dies. The datasheet (CH573/CH571, section 3.4.2)
-//! and the vendor `core_riscv.h` agree on this model:
+//! The V3A core timer (CH569/CH573) is a **64-bit descending** counter
+//! (`CNTL`/`CNTH`) whose flag (`CNTFG.CNTIF`) is set at zero, with `CMP` as the
+//! reload value rather than a compare value.
 //!
-//! - `CNT` is a **64-bit descending** counter (`CNTL`/`CNTH`).
-//! - The interrupt flag (`CNTFG.CNTIF`) is set when `CNT` reaches 0.
-//! - `CMP` is a *reload* value, not a compare value.
-//! - `CTLR.STRELOAD` is a write-1 **one-shot** load of `CMP` into `CNT`, not an
-//!   automatic reload. `CTLR` has no `MODE` or `STRE` bit.
-//!
-//! The shared [`super::time_driver_systick`] driver assumes an up-counter that
-//! reloads at `CMPLR` in hardware. That model is wrong here, so this module
-//! implements the down-counter/one-shot-load model instead.
+//! The datasheet (CH573/CH571, section 3.4.2) calls `CTLR.STRELOAD` a one-shot
+//! load, but board records on CH569 and CH573 both show hardware reloading from
+//! `CMP` at every crossing. The shared [`super::time_driver_systick`] driver
+//! assumes an up-counter, so this module handles the down-counter instead.
 //!
 //! # Timebase
 //!
@@ -26,9 +21,10 @@
 //! now = base + period - CNT   (wrapping, 64-bit)
 //! ```
 //!
-//! which stays correct before *and* after the counter crosses zero: after the
-//! crossing the hardware wraps `CNT` to `2^64 - 1`, and the wrapping
-//! subtraction turns into `period + ticks_since_zero`.
+//! while the counter runs down. A crossing reloads `CNT` from `CMP`, so the
+//! counter no longer says when it happened: a set `CNTIF` pins the answer to
+//! `base + period + 1`. Each crossing the interrupt misses therefore loses a
+//! period rather than rewinding the clock.
 //!
 //! The zero-crossing interrupt advances the anchor to the observed `now` and
 //! reloads the counter for the next deadline, mirroring
@@ -54,9 +50,9 @@ use crate::pac::SYSTICK;
 
 /// Longest span programmed into one reload period.
 ///
-/// At the 60 MHz CH573 maximum this is about 5.8 hours. It only bounds how far
-/// the software anchor can drift from the hardware counter, and with an idle
-/// queue it sets the re-arm interrupt rate.
+/// About 5.1 hours at the 60 MHz CH573 maximum, 2.5 hours at CH569's 120 MHz.
+/// It only bounds how far the software anchor can drift from the hardware
+/// counter, and with an idle queue it sets the re-arm interrupt rate.
 const MAX_PERIOD: u64 = 1 << 40;
 
 /// Shortest period, in clocks. Covers the register writes between arming and
@@ -124,7 +120,15 @@ impl State {
     fn ticks_locked(&self, cs: CriticalSection) -> u64 {
         let period = self.period.borrow(cs).get();
         let base = self.base.borrow(cs).get();
-        base.wrapping_add(period.wrapping_sub(read_count()))
+
+        // Read `CNT` first, then the flag, so a crossing in between is caught.
+        let count = read_count();
+        if SYSTICK.cntfg().read().cntif() {
+            // A reloaded counter no longer says when it crossed: pin the
+            // answer to one period plus the crossing clock past the anchor.
+            return base.wrapping_add(period).wrapping_add(1);
+        }
+        base.wrapping_add(period.wrapping_sub(count))
     }
 
     #[inline]
@@ -216,13 +220,10 @@ fn SysTick() {
         // Not ours. Leave the flag alone; nothing else uses this counter.
         return;
     }
-    clear_count_flag();
 
     critical_section::with(|cs| {
-        // The counter has crossed zero. Sample the true time once, then run
-        // the queue and load the next deadline. `arm` moves the anchor to
-        // this value, so the interrupt latency is preserved instead of
-        // discarded.
+        // Sample the time while the flag still says a crossing happened:
+        // `ticks_locked` needs it to place the anchor. `arm` clears the flag.
         let now = DRIVER.state.ticks_locked(cs);
         DRIVER.state.trigger_alarm_at(cs, now);
     });

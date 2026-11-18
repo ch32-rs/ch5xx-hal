@@ -46,76 +46,28 @@ use crate::pac;
 // too so that build reports that one message rather than a duplicate-definition
 // wall from `tmr()`/`IRQ`.
 
-// Some dies omit the timer-local DMA registers on TMR0/TMR3 (CH592, CH595).
-// The timebase only touches the counter, end value, flags and interrupt
-// enable, which the no-DMA block also has, so select the instance's type.
-#[cfg(all(feature = "time-driver-tmr0", tmr0_nodma))]
-type Timebase = crate::pac::tmr::TmrNodma;
-#[cfg(all(feature = "time-driver-tmr0", not(tmr0_nodma)))]
-type Timebase = crate::pac::tmr::TmrFull;
-#[cfg(all(not(feature = "time-driver-tmr0"), feature = "time-driver-tmr1", tmr1_nodma))]
-type Timebase = crate::pac::tmr::TmrNodma;
-#[cfg(all(not(feature = "time-driver-tmr0"), feature = "time-driver-tmr1", not(tmr1_nodma)))]
-type Timebase = crate::pac::tmr::TmrFull;
-#[cfg(all(
-    not(feature = "time-driver-tmr0"),
-    not(feature = "time-driver-tmr1"),
-    feature = "time-driver-tmr2",
-    tmr2_nodma
-))]
-type Timebase = crate::pac::tmr::TmrNodma;
-#[cfg(all(
-    not(feature = "time-driver-tmr0"),
-    not(feature = "time-driver-tmr1"),
-    feature = "time-driver-tmr2",
-    not(tmr2_nodma)
-))]
-type Timebase = crate::pac::tmr::TmrFull;
-#[cfg(all(
-    not(feature = "time-driver-tmr0"),
-    not(feature = "time-driver-tmr1"),
-    not(feature = "time-driver-tmr2"),
-    feature = "time-driver-tmr3",
-    tmr3_nodma
-))]
-type Timebase = crate::pac::tmr::TmrNodma;
-#[cfg(all(
-    not(feature = "time-driver-tmr0"),
-    not(feature = "time-driver-tmr1"),
-    not(feature = "time-driver-tmr2"),
-    feature = "time-driver-tmr3",
-    not(tmr3_nodma)
-))]
-type Timebase = crate::pac::tmr::TmrFull;
-
-/// The TMR instance this build drives.
+/// The TMR instance this build drives, seen through the full block: the
+/// no-DMA block spells the end field `COUNT`.
 #[inline(always)]
-fn tmr() -> &'static Timebase {
+fn tmr() -> pac::tmr::TmrFull {
     #[cfg(feature = "time-driver-tmr0")]
-    {
-        &crate::pac::TMR0
-    }
+    let ptr = pac::TMR0.as_ptr();
     #[cfg(all(not(feature = "time-driver-tmr0"), feature = "time-driver-tmr1"))]
-    {
-        &crate::pac::TMR1
-    }
+    let ptr = pac::TMR1.as_ptr();
     #[cfg(all(
         not(feature = "time-driver-tmr0"),
         not(feature = "time-driver-tmr1"),
         feature = "time-driver-tmr2"
     ))]
-    {
-        &crate::pac::TMR2
-    }
+    let ptr = pac::TMR2.as_ptr();
     #[cfg(all(
         not(feature = "time-driver-tmr0"),
         not(feature = "time-driver-tmr1"),
         not(feature = "time-driver-tmr2"),
         feature = "time-driver-tmr3"
     ))]
-    {
-        &crate::pac::TMR3
-    }
+    let ptr = pac::TMR3.as_ptr();
+    unsafe { pac::tmr::TmrFull::from_ptr(ptr) }
 }
 
 /// The interrupt vector matching the selected instance.
