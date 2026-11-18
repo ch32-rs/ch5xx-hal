@@ -20,9 +20,9 @@ board.
 This crate generates `memory.x` in `build.rs` instead of using the PAC's
 `memory-x` output. The 128K window at `0x20020000` is split between writable
 RAMX and the zero-wait ROM code area by `USER_MEM` in InfoFlash: 32K/64K/96K of
-RAMX. Writes above the real end are dropped silently, and the PAC declares 96K
-regardless of the part option, so a map taken from the PAC can place data where
-it never lands.
+RAMX. Writes above the real end are dropped silently. The PAC's generated map
+declares the 32K minimum, so a part with a larger option has to link its own map
+to use the rest.
 
 The default is 32K, the smallest option and the one every part can honour;
 `build.rs` prints a warning when it is used. Link the size your part actually
