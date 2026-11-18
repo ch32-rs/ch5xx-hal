@@ -9,7 +9,7 @@ use panic_halt as _;
 use qingke_rt::entry;
 
 const SCRATCH: *mut u32 = 0x2002_1000 as *mut u32;
-// Writable RAMX on this board ends at 0x20030000 (see ramx_map_probe).
+// Writable RAMX on this board ends at 0x20030000.
 const BOOT_MAGIC: *mut u32 = 0x2002_7000 as *mut u32;
 const MAGIC: u32 = 0x5744_474f; // "WDGO"
 
