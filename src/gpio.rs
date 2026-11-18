@@ -300,6 +300,19 @@ pub(crate) trait SealedPin {
         }
     }
 
+    /// Clear `Px_PD`, which selects open-drain in output mode on CH569.
+    #[cfg(gpio_split_pd_drv)]
+    #[inline]
+    fn set_push_pull(&self) {
+        let n = self._pin() as usize;
+        let gpio = self.block();
+        match self._port() {
+            Port::A => gpio.pa_pd().modify(|w| w.set_pa_pd(n, false)),
+            #[cfg(gpio_port_b)]
+            Port::B => gpio.pb_pd().modify(|w| w.set_pb_pd(n, false)),
+        }
+    }
+
     /// Latch the interrupt polarity into `Px_OUT`.
     ///
     /// While the pin is an input that register does not drive the pad. A set bit
@@ -408,6 +421,8 @@ impl<'d> Flex<'d> {
     pub fn set_as_output(&mut self, speed: Speed) {
         critical_section::with(|_| {
             self.pin.set_speed(speed);
+            #[cfg(gpio_split_pd_drv)]
+            self.pin.set_push_pull();
             self.pin.set_direction(true);
         });
     }

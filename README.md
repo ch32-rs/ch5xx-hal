@@ -3,11 +3,11 @@
 Rust HAL for WCH CH5xx BLE microcontrollers, with blocking APIs and optional
 Embassy support.
 
-[API docs](https://docs.rs/ch5xx-hal) · [CH585 examples](examples/ch585) · [CH592 examples](examples/ch592) · [CH582 examples](examples/ch582) · [register metadata](https://github.com/ch32-rs/ch5xx-data)
+[API docs](https://docs.rs/ch5xx-hal) · [CH585 examples](examples/ch585) · [CH592 examples](examples/ch592) · [CH582 examples](examples/ch582) · [CH569 examples](examples/ch569) · [register metadata](https://github.com/ch32-rs/ch5xx-data)
 
 > **Note**
-> Under development; the API may change. CH585, CH592 and CH582 are the chips
-> exercised on hardware so far.
+> Under development; the API may change. CH585, CH592, CH582 and CH569 are the
+> chips exercised on hardware so far.
 
 ## Supported devices
 
@@ -39,7 +39,7 @@ this HAL.
 | `spi` | SPI0/SPI1 master, blocking and async, SPI0 local DMA |
 | `adc` | Single conversion, temperature, battery, DMA scan, timed auto-DMA |
 | `touchkey` | Polled charge-transfer touch keys |
-| `pwm` | PWM4–PWM11; PWM1–PWM5 on CH572/CH570 |
+| `pwm` | PWM4–PWM11; PWM1–PWM5 on CH572/CH570, PWM0–PWM3 on CH569 |
 | `rtc` | Calendar, one-shot alarm, interval timer |
 | `watchdog` | Window watchdog, reset cause, battery detector |
 | `delay` | SysTick or the Embassy timebase |

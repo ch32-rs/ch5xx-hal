@@ -4,10 +4,9 @@
 //! overflows from 255. The overflow interrupt is shared with the battery
 //! detector, so poll [`Watchdog::overflowed`] rather than claim it.
 //!
-//! `WDOG_COUNT` and `RST_WDOG_CTRL` have the same fields on every selectable
-//! chip except CH564 and CH569, which are not selectable. The battery detector
-//! fields are the CH585 ones, which CH581 and CH592 share, so [`Battery`]
-//! compiles only where those fields exist. Only CH585 has been run on a board.
+//! `WDOG_COUNT` is the same on every selectable chip. `RST_WDOG_CTRL` differs
+//! on CH569: the overflow flag sits at bit 3 and [7:6] is a write key. The
+//! battery detector fields are the CH585 ones, shared with CH581 and CH592.
 
 use core::marker::PhantomData;
 
@@ -128,6 +127,11 @@ impl<'d, T: Instance> Watchdog<'d, T> {
         let mut ctrl = pac::SYSTEM_CONTROL.rst_wdog_ctrl().read();
         ctrl.set_software_reset(false);
         ctrl.set_wdog_int_flag(true);
+        // CH569 drops a write without the [7:6] key.
+        #[cfg(ch569)]
+        {
+            ctrl.0 |= 0x40;
+        }
         rcc::with_safe_access(|| {
             pac::SYSTEM_CONTROL.rst_wdog_ctrl().write_value(ctrl);
         });
