@@ -1,13 +1,4 @@
-//! Read the board's W25Q32JV over SPI0.
-//!
-//! The EVT board wires the flash to SPI0: PA12 = SCS (GPIO), PA13 = SCK,
-//! PA14 = MOSI, PA15 = MISO. The probe reads the JEDEC ID, the status register
-//! and the first bytes of address 0, and prints them on UART1 (J1).
-//!
-//! ```console
-//! cargo build --release --bin spi_flash_probe
-//! wlink -d 1a86:8010:<SERIAL> flash -e target/riscv32imac-unknown-none-elf/release/spi_flash_probe
-//! ```
+//! Read the board's W25Q32JV over SPI0: JEDEC ID, status and SFDP.
 
 #![no_std]
 #![no_main]
@@ -50,9 +41,7 @@ fn main() -> ! {
     let mut spi = Spi::new_blocking(p.SPI0, p.PA13, p.PA14, p.PA15, Config::new(Hertz(3_750_000))).unwrap();
     let mut cs = chip_select(p.PA12, Level::High);
 
-    // JEDEC ID, command 0x9F. The transfer is full duplex, so the first read
-    // byte is the MISO level during the command (0xFF from the pull-up) and
-    // the three real bytes follow. W25Q32JV answers EF 40 16.
+    // JEDEC ID (0x9F); full duplex puts the command phase in read slot 0.
     let mut frame = [0u8; 4];
     cs.select(|| {
         let _ = spi.blocking_transfer(&mut frame, &[0x9F]);

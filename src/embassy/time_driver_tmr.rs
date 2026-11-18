@@ -46,12 +46,8 @@ use crate::pac;
 // too so that build reports that one message rather than a duplicate-definition
 // wall from `tmr()`/`IRQ`.
 
-/// The TMR instance this build drives, seen through the full block.
-///
-/// The timebase only touches the counter, the end value, the flags and the
-/// interrupt enable, and those sit at the same offsets in `TMR_NODMA`; the
-/// cast keeps one code path. It also avoids naming the end field by block,
-/// which CH569 spells `COUNT` in the no-DMA block.
+/// The TMR instance this build drives, seen through the full block: the
+/// no-DMA block spells the end field `COUNT`.
 #[inline(always)]
 fn tmr() -> pac::tmr::TmrFull {
     #[cfg(feature = "time-driver-tmr0")]

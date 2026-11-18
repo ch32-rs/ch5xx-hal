@@ -241,10 +241,7 @@ fn main() {
     if register_has_field(&chip_name, "touchkey", "DRV_EN") {
         println!("cargo:rustc-cfg=touchkey_drv_en");
     }
-    // PWMx has four layouts: CH569 drives PWM0-PWM3 with byte registers and a
-    // 256/255 cycle, CH572 drives PWM1-PWM5 with 16-bit cycle registers, CH573
-    // drives PWM4-PWM11 with byte duty registers, and CH585/CH592 add the wide
-    // mode and four stagger pairs.
+    // PWMx has four layouts; CH569 is PWM0-PWM3 with byte registers.
     match register_version_opt(&chip_name, "pwmx").as_deref() {
         Some("ch569") => println!("cargo:rustc-cfg=pwmx_ch569"),
         Some("ch572") => println!("cargo:rustc-cfg=pwmx_ch572"),

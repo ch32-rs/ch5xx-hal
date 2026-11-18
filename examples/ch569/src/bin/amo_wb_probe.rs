@@ -1,15 +1,4 @@
-//! AMO write-back check, including the `rd == rs1` form the executor's
-//! `fetch_or` compiles to (`amoor.w.aqrl a1, a2, (a1)`).
-//!
-//! Every AMO's returned old value and the resulting memory word are compared
-//! against a model kept in `s1`. The first disagreement records
-//! `(form, iteration, expected, actual)` at 0x20021008..0x20021014 and
-//! `0xdead0000 | form` at 0x20021004.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin amo_wb_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
+//! AMO write-back check, including the `rd == rs1` form the executor uses.
 
 #![no_std]
 #![no_main]

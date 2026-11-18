@@ -1,15 +1,4 @@
 //! `rq_strict_probe` under a resumable trap handler.
-//!
-//! Every fault is logged to a 16-slot ring (ten words each) at 0x20023000 and
-//! the faulting instruction is skipped, so a run collects statistics instead of
-//! stopping at the first event. The count is kept in the ring's first word.
-//!
-//! Slot layout: mcause, mepc, mtval, sp, a0, a1, a2, a3, a6, t6.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin fault_log_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20023000 40
-//! ```
 
 #![no_std]
 #![no_main]

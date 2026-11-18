@@ -1,13 +1,4 @@
-//! Executor + full-register trap dump.
-//!
-//! Three always-ready tasks and every GPR saved on a fault, so the bogus
-//! pointer the executor trips over can be traced back to its source register.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin exec_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20022000 32
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 6
-//! ```
+//! Executor plus a full-register trap dump.
 
 #![no_std]
 #![no_main]

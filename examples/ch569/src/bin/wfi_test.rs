@@ -1,14 +1,4 @@
 //! Does `wfi` wake with `mstatus.MIE = 0` (the executor's idle shape)?
-//!
-//! Phase A runs with MIE set, phase B with MIE clear and a SysTick pending.
-//! Each phase marks RAMX after the `wfi` returns, so a silent hang shows up as
-//! a missing marker. Phase B can wedge the WCH-Link: recover with
-//! `wlink set-power disable3v3` / `enable3v3`.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin wfi_test
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
 
 #![no_std]
 #![no_main]

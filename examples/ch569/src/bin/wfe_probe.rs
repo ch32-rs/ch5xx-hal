@@ -1,13 +1,4 @@
-//! Does a sleeping (`wfi`/`wfe`) core on CH569 wake on a SysTick interrupt?
-//!
-//! The embassy executor idles in `wfi`; with `time-driver-systick` the alarm
-//! was pending but never serviced. This arms a 1 ms SysTick and sleeps, with
-//! the same SCTLR `SEVONPEND` write the HAL's `enable_interrupts` does.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin wfe_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 3
-//! ```
+//! Does a sleeping (`wfi`/`wfe`) core wake on a SysTick interrupt?
 
 #![no_std]
 #![no_main]

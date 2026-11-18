@@ -1,14 +1,4 @@
-//! Does `lr.w.aq` + `sc.w.rl` (the `AcqRel` CAS) actually store on CH569?
-//!
-//! embassy-executor's run-queue push is `compare_exchange(_, _, AcqRel, _)`,
-//! which LLVM lowers to `lr.w.aq` + `sc.w.rl`. `atomic_probe` only exercised
-//! `SeqCst` (`lr.w.aqrl` + `sc.w.aqrl`). A silently dropped SC would lose
-//! run-queue entries, which is what the executor shows.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin cas_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
+//! Does the `lr.w.aq` + `sc.w.rl` CAS actually store on CH569?
 
 #![no_std]
 #![no_main]

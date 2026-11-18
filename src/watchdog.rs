@@ -1,19 +1,8 @@
 //! Window watchdog, reset cause, and battery detector.
 //!
-//! The window watchdog counts up at `Fsys / 131072` and overflows from 255. A
-//! reload of 0 is the longest interval, about 6.3 s at the 5.333 MHz reset
-//! clock and about 0.43 s at 78 MHz. CH569 counts four times slower
-//! (`Fsys / 524288`). Overflow can raise `WDOG_BAT` or reset the chip. That
-//! interrupt is shared with the battery detector, and this driver does not
-//! claim the handler; poll [`Watchdog::overflowed`] instead.
-//!
-//! [`reset_cause`] reads the flag the hardware latches, on the chips whose
-//! system-control block has that register. CH573 does not, so the function is
-//! absent there. A software reset is [`software_reset`], which does not return.
-//!
-//! The battery detector compares the supply with a fixed threshold and reports
-//! low and lower. It does not measure a voltage; the ADC battery channel does
-//! that. The control registers are safe-access.
+//! The watchdog counts up at `Fsys / 131072` (`Fsys / 524288` on CH569) and
+//! overflows from 255. The overflow interrupt is shared with the battery
+//! detector, so poll [`Watchdog::overflowed`] rather than claim it.
 //!
 //! `WDOG_COUNT` and `RST_WDOG_CTRL` have the same fields on every selectable
 //! chip except CH564 and CH569, which are not selectable. The battery detector

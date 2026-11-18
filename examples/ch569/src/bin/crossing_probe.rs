@@ -1,13 +1,4 @@
-//! Watch CH569 SysTick across the zero crossing with no ISR and no writes.
-//!
-//! CMP is loaded once, STIE stays off, and CNT plus CNTIF are sampled with a
-//! gap that fits 12 samples into one period. A reload shows up as CNT jumping
-//! back to ~CMP; a free-running counter shows up as a huge value.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin crossing_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 30
-//! ```
+//! Watch SysTick across the zero crossing with no ISR and no writes.
 
 #![no_std]
 #![no_main]

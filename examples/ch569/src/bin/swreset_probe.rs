@@ -1,14 +1,4 @@
-//! `watchdog::software_reset()` on CH569.
-//!
-//! Boot A drops a magic in RAMX and calls it. Boot B expects
-//! `RST_BOOT_STAT` flag `00b` (software) and a surviving `GLOB_RESET_KEEP`.
-//! A boot that finds the magic but a power-on flag is a stale magic from an
-//! earlier run, so it arms again instead of reporting.
-//!
-//! ```console
-//! cargo build --release --bin swreset_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
+//! `watchdog::software_reset()` on CH569: the cause flag and the reset keep.
 
 #![no_std]
 #![no_main]

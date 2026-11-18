@@ -1,13 +1,4 @@
 //! CH569 delay accuracy, measured into RAMX.
-//!
-//! One second of `Delay` must cover `Fsys` SysTick counts. CH569 has no RTC
-//! counter, so the delay budget is the nominal `Fsys`; the SysTick delta
-//! proves the arithmetic. Results are left in RAMX because `probe-rs read`
-//! halts the core, and RTT attach is unreliable on this part.
-//!
-//! ```console
-//! cargo run --release --bin clk_delay
-//! ```
 
 #![no_std]
 #![no_main]

@@ -98,10 +98,7 @@ pub const DEFAULT_FREQUENCY: Hertz = Hertz(6_400_000);
 
 static SYSCLK_HZ: AtomicU32 = AtomicU32::new(DEFAULT_FREQUENCY.0);
 
-/// PLL output before the divider. The multiplier is fixed per die.
-///
-/// CH569 has no PLL of its own: its clock tree divides the 480 MHz the USB PHY
-/// provides.
+/// PLL output before the divider; CH569 divides the USB PHY's 480 MHz instead.
 #[cfg(ch569)]
 const PLL_HZ: u32 = 480_000_000;
 #[cfg(all(not(ch569), pll_600))]
@@ -664,9 +661,8 @@ impl Config {
         #[cfg(ch573)]
         PLL_15MHZ = Hse32, Sys::Pll(32);
 
-        // CH569 divides either the 30 MHz oscillator (`SEL_PLL = 0`) or the
-        // 480 MHz USB PHY clock (`SEL_PLL = 1`); these are the vendor's
-        // `CLK_SOURCE_PLL_*` presets from `CH56x_clk.c`.
+        // CH569 divides the 30 MHz oscillator (`SEL_PLL = 0`) or the 480 MHz
+        // USB PHY clock (`SEL_PLL = 1`).
 
         /// 120 MHz, USB PHY / 4. The highest CH569 clock.
         #[cfg(ch569)]
@@ -761,10 +757,8 @@ pub fn clocks() -> Clocks {
     }
 }
 
-/// CH569 clock tree: the 30 MHz oscillator or the USB PHY's 480 MHz, divided.
-///
-/// `CLK_PLL_DIV[7:6]` must read `01` and `CLK_CFG_CTRL[7:6]` `10`, so both
-/// bytes are written whole; the PAC does not model the reserved bits.
+/// CH569 clock tree: the 30 MHz oscillator or the USB PHY's 480 MHz, divided;
+/// both config bytes carry a reserved-bit key, so they are written whole.
 #[cfg(ch569)]
 pub unsafe fn set_config(config: Config) -> Clocks {
     let sysclk = config.sysclk();

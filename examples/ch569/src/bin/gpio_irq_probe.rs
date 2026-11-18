@@ -1,13 +1,4 @@
-//! Pin interrupt through the CH569 single-vector GPIO block.
-//!
-//! Wire P3-36 (PB1) to P3-20 (PA4): PB1 toggles every 2 ms, PA4 counts the
-//! edges on INT line bit 2. Every 100 rising edges a line goes out on UART1
-//! (J1), so the result needs no debugger attach.
-//!
-//! ```console
-//! cargo build --release --bin gpio_irq_probe
-//! wlink -d 1a86:8010:<SERIAL> flash -e target/riscv32imac-unknown-none-elf/release/gpio_irq_probe
-//! ```
+//! Pin interrupt through the single-vector GPIO block (wire PB1 to PA4).
 
 #![no_std]
 #![no_main]

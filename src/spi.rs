@@ -1,34 +1,8 @@
-//! SPI master.
+//! SPI master for the FIFO-layout controllers (CH569, CH581-CH585, CH592).
 //!
-//! CH585 has two controllers, both clocked from `Fsys`. `SPI0` is a full
-//! controller with a peripheral-local DMA engine; `SPI1` is master-only and has
-//! no DMA block at all.
-//!
-//! Three paths share the block. [`Spi::new_blocking`] polls and moves one byte at
-//! a time. [`Spi::new_async`] does the same under `CNT_END`/`FIFO_HF` interrupts,
-//! which is the only way to do a full-duplex transfer because the FIFO can be
-//! queued in one direction only. [`Spi::write_dma`] and [`Spi::read_dma`] use
-//! `SPI0`'s local engine, which is also half-duplex: `FIFO_DIR` selects whether
-//! the engine fills the transmit FIFO or drains the receive FIFO. There is no
-//! channel controller and no request routing to configure.
-//!
-//! `CLOCK_DIV` divides `Fsys` by a whole number. A divisor of 2 turns on the
-//! master's input delay, which is what the vendor clock setup does; every other
-//! divisor leaves it off. The controller only has mode 0 and mode 3, so a
-//! request for mode 1 or mode 2 is rejected.
-//!
-//! `SPI0` defaults to PA13 (SCK), PA14 (MOSI) and PA15 (MISO). `PIN_SPI0` moves
-//! that set to PB13, PB14 and PB15. `SPI1` has no remap: SCK is PA0, MOSI is PA1
-//! and MISO is PA2. Chip select is not part of the controller. The vendor
-//! examples drive it from GPIO, and so does [`chip_select`].
-//!
-//! The register block is not shared by every CH5xx. The driver compiles on the
-//! dies that use the FIFO layout (CH569, CH581, CH582, CH583, CH584, CH585,
-//! CH592) and is absent on the rest. CH592 has one controller and 16-bit DMA
-//! address registers. CH569 runs both controllers from the same `SPI_FULL`
-//! block: SPI0 is PA13/PA14/PA15 with SPI1 on PB12/PB13/PB14. `SPI1` raises
-//! `PWMX_SPI1`, the same line as the PWM block, on CH585 and a dedicated line
-//! on CH569.
+//! `SPI0` defaults to PA13/PA14/PA15 (SCK/MOSI/MISO); `SPI1` is master-only and
+//! has no DMA where the `SPI_NODMA` block is used. Chip select is driven from
+//! GPIO through [`chip_select`]. Only modes 0 and 3 are supported.
 
 #[cfg(feature = "embassy")]
 use core::future::poll_fn;
@@ -687,11 +661,7 @@ mod dma_sealed {
     pub trait Instance {}
 }
 
-/// An SPI controller with a local DMA engine.
-///
-/// Only `SPI0` exposes one here. On CH58x `SPI1` is the `SPI_NODMA` block with
-/// no DMA words at all; CH569's SPI1 has them but stays out of this driver, so
-/// the capability is a property of the instance rather than of the layout.
+/// An SPI controller with a local DMA engine: only `SPI0` here.
 #[allow(private_bounds)]
 pub trait DmaInstance: Instance + dma_sealed::Instance {}
 

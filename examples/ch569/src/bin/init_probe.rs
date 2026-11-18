@@ -1,14 +1,4 @@
-//! Does the CH569 start-up clear `.bss` and copy `.data`?
-//!
-//! RAM on this die powers up with random content and survives a debugger
-//! reset, so a mis-sized range in the linker script / start-up would leave
-//! statics holding stale bytes. Reads every buffer before `hal::init` touches
-//! anything.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin init_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 32
-//! ```
+//! Does start-up clear `.bss` and copy `.data`?
 
 #![no_std]
 #![no_main]

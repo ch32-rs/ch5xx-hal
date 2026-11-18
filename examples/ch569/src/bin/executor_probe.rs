@@ -1,14 +1,4 @@
 //! Scheduling probe: four spinner tasks plus a trap dump.
-//!
-//! Checks whether the thread-mode executor polls spawned tasks on CH569. A
-//! private `mtvec` handler records any exception at 0x2002_2000, away from the
-//! task counters at 0x2002_1000.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin executor_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 6
-//! probe-rs read --chip CH569 --probe ... b32 0x20022000 4
-//! ```
 
 #![no_std]
 #![no_main]

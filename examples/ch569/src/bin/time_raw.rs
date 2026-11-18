@@ -1,6 +1,4 @@
 //! Embassy time driver in a bare loop: `Instant::now()` is a 64-bit division.
-//!
-//! Stores the stack pointer, the reading and an iteration count in RAMX.
 
 #![no_std]
 #![no_main]

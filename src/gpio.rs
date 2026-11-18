@@ -737,10 +737,8 @@ fn interrupt_line(port: Port, pin: u8) -> Option<InterruptLine> {
     Some(InterruptLine { port, bit, remap })
 }
 
-/// Where a single-vector die's pin interrupt is programmed.
-///
-/// CH565/CH569 route a fixed eight-pin set through shared `INT_*` bytes, so the
-/// bit is the flag-bit index, not the pad number.
+/// Where a single-vector die's pin interrupt is programmed: the flag-bit
+/// index, not the pad number.
 #[cfg(gpio_single_irq)]
 struct InterruptLine {
     bit: u8,
@@ -937,10 +935,8 @@ fn on_port(port: Port) {
 #[cfg(all(feature = "embassy", gpio_single_irq))]
 static LINE_WAKERS: [AtomicWaker; 8] = [const { AtomicWaker::new() }; 8];
 
-/// One `GPIO` vector for both ports on CH565/CH569.
-///
-/// Same handshake as [`on_port`]: mask what fired and leave the flag for the
-/// waiting future to acknowledge.
+/// One `GPIO` vector for both ports on CH565/CH569; same handshake as
+/// [`on_port`].
 #[cfg(all(feature = "embassy", gpio_single_irq))]
 fn on_gpio_irq() {
     let gpio = pac::GPIO;

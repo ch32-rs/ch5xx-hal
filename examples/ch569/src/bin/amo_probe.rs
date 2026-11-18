@@ -1,13 +1,4 @@
-//! Do the RISC-V AMO instructions work on the CH569's QingKe V3A?
-//!
-//! `atomic_probe` covered `lr.w`/`sc.w` (loads, CAS) but not `amoor.w`, which
-//! is what `AtomicU32::fetch_or` compiles to. embassy-executor's task state
-//! machine is built on `fetch_or`/`fetch_and`.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin amo_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
+//! Do RISC-V AMO instructions (`amoor.w`) work on the CH569's QingKe V3A core?
 
 #![no_std]
 #![no_main]

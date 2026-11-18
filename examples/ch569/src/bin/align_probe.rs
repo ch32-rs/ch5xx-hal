@@ -1,15 +1,4 @@
-//! Characterises the core's misaligned and unmapped accesses.
-//!
-//! A resumable trap handler logs `(mcause, mepc, mtval)` and steps `mepc` past
-//! the faulting instruction, so one boot runs the whole matrix: `lw`/`sw`/AMO at
-//! an odd address in RAMX, then the same at an unmapped address, then an
-//! aligned unmapped read. Progress markers at 0x20021010 show how far it got.
-//!
-//! ```console
-//! cargo build --release --bin align_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021010 8
-//! probe-rs read --chip CH569 --probe ... b32 0x20022000 16
-//! ```
+//! Characterise misaligned and unmapped accesses through a resumable trap handler.
 
 #![no_std]
 #![no_main]

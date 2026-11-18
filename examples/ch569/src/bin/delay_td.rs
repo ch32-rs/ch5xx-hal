@@ -1,7 +1,4 @@
 //! `Delay` under the SysTick time driver, results in RAMX, no defmt.
-//!
-//! Same loop as `clk_delay`, without the RTT writes, to tell a driver problem
-//! from a defmt/attach artefact.
 
 #![no_std]
 #![no_main]

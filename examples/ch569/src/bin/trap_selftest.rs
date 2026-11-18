@@ -1,11 +1,4 @@
-//! Validates the `trap_probe` dump path: performs a deliberate misaligned
-//! store and records mcause/mepc/mtval to RAMX.
-//!
-//! ```console
-//! cargo build --release --bin trap_selftest
-//! wlink -d ... --chip CH56X flash -e target/.../trap_selftest
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 16
-//! ```
+//! Validate the `trap_probe` dump path with a deliberate misaligned store.
 
 #![no_std]
 #![no_main]

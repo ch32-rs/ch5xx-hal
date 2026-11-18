@@ -1,23 +1,4 @@
-//! PWMX self-check with no jumpers: drive a channel and read the pad back
-//! through the GPIO input path, so the high-time ratio is measured directly.
-//!
-//! PA4/PWM1, PB1/PWM2 and PB2/PWM3 are plain pins; PB15/PWM0 is skipped because
-//! it is the external-reset pad. Results at 0x20021000, 20 words:
-//!
-//! ```text
-//! [0]      "PWMX"
-//! [1..3]   256-cycle, active high, duty 64  (duty, high, total)
-//! [4..6]   ... duty 128
-//! [7..9]   ... duty 192
-//! [10..12] 256-cycle, active low, duty 64 (PB1; expect ~75% high)
-//! [13..15] 255-cycle, active high, duty 64 (PB2)
-//! [16] CTRL_MOD, [17] CTRL_CFG, [18] CLOCK_DIV, [19] Fsys Hz
-//! ```
-//!
-//! ```console
-//! cargo build --release --bin pwmx_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 20
-//! ```
+//! PWMX self-check with no jumpers: drive a channel and read the pad back.
 
 #![no_std]
 #![no_main]

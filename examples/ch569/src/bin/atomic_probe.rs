@@ -1,15 +1,4 @@
 //! Do real `lr.w`/`sc.w` atomics work on the CH569's QingKe V3A core?
-//!
-//! The HAL enables `unsafe-trust-wch-atomics`, so `core::sync::atomic` compiles
-//! to LR/SC loops. embassy-executor's run queue is a lock-free CAS stack, and
-//! tasks silently failed to run, which is what this checks.
-//!
-//! Progress is staged into RAMX so a hang points at the operation that stuck.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin atomic_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
 
 #![no_std]
 #![no_main]

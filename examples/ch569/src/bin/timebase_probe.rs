@@ -1,12 +1,4 @@
 //! Is the embassy timebase sane on CH569, without any executor?
-//!
-//! Reads the configured clock, two timestamps around a busy loop, and the
-//! SysTick registers. `now()` is the driver's raw tick count.
-//!
-//! ```console
-//! cargo build --release --bin timebase_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 12
-//! ```
 
 #![no_std]
 #![no_main]

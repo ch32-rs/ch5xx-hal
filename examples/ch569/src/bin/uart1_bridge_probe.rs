@@ -1,8 +1,4 @@
-//! UART1 host bridge on the board's J1 header: announce itself, echo every
-//! received byte, and send a heartbeat when the line is idle.
-//!
-//! J1: 1 = GND, 2 = RXD (PA7), 3 = TXD (PA8), 4 = 3V3 (leave open).
-//! The probe keeps counters in RAMX, but the serial line is the result path.
+//! UART1 host bridge on J1: echo received bytes, heartbeat when idle.
 
 #![no_std]
 #![no_main]

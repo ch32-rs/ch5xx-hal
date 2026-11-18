@@ -1,16 +1,4 @@
-//! Map the usable RAMX window and read the USER_MEM option word on this die.
-//!
-//! For each candidate word: read it, write a tagged pattern, read it back. The
-//! CPU's own view is what is recorded, so a debugger read path that returns
-//! stale data for unmapped words cannot affect the answer. Results stay in RAMS.
-//!
-//! 0x20021000..: three words per address (`before`, `pattern`, `after`), then
-//! the four InfoFlash words 0x8010..0x801c.
-//!
-//! ```console
-//! cargo build --release --bin ramx_map_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 44
-//! ```
+//! Map the usable RAMX window and read the `USER_MEM` option word.
 
 #![no_std]
 #![no_main]

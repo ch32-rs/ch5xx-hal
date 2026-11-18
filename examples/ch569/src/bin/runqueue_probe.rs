@@ -1,13 +1,4 @@
-//! Replay the executor's run queue: `fetch_or(state)` + CAS push, `swap(0)`
-//! dequeue, and a self-wake for every node polled.
-//!
-//! Any round whose popped list misses a node, or leaves a node marked queued
-//! but unreachable, is recorded.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin runqueue_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 10
-//! ```
+//! Replay the executor's run queue: `fetch_or` + CAS push, swap dequeue, self-wake.
 
 #![no_std]
 #![no_main]

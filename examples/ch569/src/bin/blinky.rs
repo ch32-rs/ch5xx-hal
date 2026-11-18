@@ -1,8 +1,4 @@
-//! Blink the three LEDs on the CH569 EVT board.
-//!
-//! LED0 is PB24, LED1 is PB22, LED2 is PB23; each is 3V3 -> 1K -> LED -> pin,
-//! so the pin is active low. The three toggle at different rates so a single
-//! dead pin is visible.
+//! Blink the three LEDs on the CH569 EVT board (PB24/PB22/PB23, active low).
 
 #![no_std]
 #![no_main]

@@ -1,13 +1,4 @@
 //! GPIO pull, drive and readback on the CH569's split registers.
-//!
-//! CH569 splits the combined `Px_PD_DRV` of the other dies into `Px_PU`,
-//! `Px_PD`, `Px_DRV` and `Px_SMT`. This walks one LED pin through input with
-//! each pull, then output at each drive strength, and prints the raw bytes so
-//! the split-register code path is visible without a jumper.
-//!
-//! ```console
-//! cargo run --release --bin gpio_pull
-//! ```
 
 #![no_std]
 #![no_main]

@@ -16,8 +16,7 @@
 //! reloads at `CMPLR` in hardware. That model is wrong here, so this module
 //! implements the down-counter/one-shot-load model instead.
 //!
-//! CH569 shares the register layout but not the reload: its counter reloads
-//! itself from `CMP` at the crossing (`systick_autoreload`), while CH573's
+//! CH569 reloads from `CMP` in hardware (`systick_autoreload`); CH573's counter
 //! runs on past zero to `2^64 - 1`.
 //!
 //! # Timebase
@@ -131,10 +130,8 @@ impl State {
         let period = self.period.borrow(cs).get();
         let base = self.base.borrow(cs).get();
 
-        // CH569 reloads `CNT` from `CMP` by itself at the crossing, so the
-        // counter no longer says how far past the boundary it is; the flag
-        // does. Read `CNT` first: a crossing in between then only moves the
-        // answer forward by the few ticks that were left of the period.
+        // On CH569 the flag marks the crossing; read `CNT` first so a crossing
+        // in between only moves the answer forward.
         #[cfg(systick_autoreload)]
         {
             let count = read_count();

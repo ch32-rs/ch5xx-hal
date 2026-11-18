@@ -1,15 +1,4 @@
-//! Store-and-read-back integrity for RAMS (stack and a buffer), with and
-//! without interleaved RAMX writes and AMOs.
-//!
-//! Every word written is read back immediately. The first disagreement records
-//! `(phase, round, address, expected, actual)` at 0x20021004..0x20021014,
-//! 0xdead0000 | phase at 0x20021018, and the TMR0 count at 0x2002101c.
-//! Phase results are 0xa5a5_0000 | phase when a phase finishes clean.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin mem_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
+//! Store-and-read-back integrity for RAMS, with interleaved RAMX writes.
 
 #![no_std]
 #![no_main]

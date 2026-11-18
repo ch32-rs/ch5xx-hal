@@ -1,8 +1,4 @@
-//! Bare-metal clock switch, no HAL: the vendor `SystemInit(120MHz)` sequence.
-//!
-//! Leaves the two clock registers and a running counter in RAMX so a single
-//! `probe-rs read` after a reset shows whether the switch stuck and whether
-//! the core still executes.
+//! Bare-metal vendor `SystemInit(120MHz)` clock switch, staged in RAMX.
 
 #![no_std]
 #![no_main]

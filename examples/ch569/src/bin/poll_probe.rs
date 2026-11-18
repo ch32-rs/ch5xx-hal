@@ -1,13 +1,4 @@
 //! Drive the raw executor's `poll()` by hand, 1000 times.
-//!
-//! Isolates the run queue from the platform's `SIGNAL_WORK` / `wfi` loop: if
-//! the task counters climb here, the queue and waker work and the thread-mode
-//! idle path is what stalls the normal `Executor::run`.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin poll_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 8
-//! ```
 
 #![no_std]
 #![no_main]

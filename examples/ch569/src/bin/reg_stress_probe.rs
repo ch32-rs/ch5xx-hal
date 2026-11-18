@@ -1,14 +1,4 @@
-//! Register-file stress: every callee- and caller-saved register is reloaded
-//! with a magic, then compared, in a loop that also writes RAMX each round.
-//!
-//! a0 and t0 are the only scratch registers. Progress is counted at
-//! 0x20021004; the first mismatch stores the register index at 0x20021008, the
-//! observed value at 0x2002100c and a stopped flag at 0x20021014.
-//!
-//! ```console
-//! cargo build --release --no-default-features --bin reg_stress_probe
-//! probe-rs read --chip CH569 --probe ... b32 0x20021000 6
-//! ```
+//! Register-file stress: reload every register with a magic and compare.
 
 #![no_std]
 #![no_main]
