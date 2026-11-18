@@ -1,13 +1,13 @@
-//! Embassy time driver on the CH573 SysTick counter.
+//! Embassy time driver on the V3A SysTick counter.
 //!
-//! # Why CH573 needs its own driver
+//! # Why V3A needs its own driver
 //!
-//! CH573's SysTick is the V3A core timer: a **64-bit descending** counter
-//! (`CNTL`/`CNTH`) whose flag (`CNTFG.CNTIF`) is set at zero, with `CMP` as a
+//! The V3A core timer (CH569/CH573) is a **64-bit descending** counter
+//! (`CNTL`/`CNTH`) whose flag (`CNTFG.CNTIF`) is set at zero, with `CMP` as the
 //! reload value rather than a compare value.
 //!
 //! The datasheet (CH573/CH571, section 3.4.2) calls `CTLR.STRELOAD` a one-shot
-//! load, but CH569 and CH573 board records both show hardware reloading from
+//! load, but board records on CH569 and CH573 both show hardware reloading from
 //! `CMP` at every crossing. The shared [`super::time_driver_systick`] driver
 //! assumes an up-counter, so this module handles the down-counter instead.
 //!
@@ -21,10 +21,10 @@
 //! now = base + period - CNT   (wrapping, 64-bit)
 //! ```
 //!
-//! which stays correct while the counter runs down. A crossing reloads `CNT`
-//! from `CMP`, so a set `CNTIF` means one more whole period has elapsed; add
-//! it. Each crossing the interrupt misses therefore loses a period rather than
-//! rewinding the clock.
+//! while the counter runs down. A crossing reloads `CNT` from `CMP`, so the
+//! counter no longer says when it happened: a set `CNTIF` pins the answer to
+//! `base + period + 1`. Each crossing the interrupt misses therefore loses a
+//! period rather than rewinding the clock.
 //!
 //! The zero-crossing interrupt advances the anchor to the observed `now` and
 //! reloads the counter for the next deadline, mirroring
@@ -50,9 +50,9 @@ use crate::pac::SYSTICK;
 
 /// Longest span programmed into one reload period.
 ///
-/// At the 60 MHz CH573 maximum this is about 5.8 hours. It only bounds how far
-/// the software anchor can drift from the hardware counter, and with an idle
-/// queue it sets the re-arm interrupt rate.
+/// About 5.1 hours at the 60 MHz CH573 maximum, 2.5 hours at CH569's 120 MHz.
+/// It only bounds how far the software anchor can drift from the hardware
+/// counter, and with an idle queue it sets the re-arm interrupt rate.
 const MAX_PERIOD: u64 = 1 << 40;
 
 /// Shortest period, in clocks. Covers the register writes between arming and
@@ -121,13 +121,14 @@ impl State {
         let period = self.period.borrow(cs).get();
         let base = self.base.borrow(cs).get();
 
-        // Read `CNT` first: a crossing in between then only moves the answer
-        // forward. With the flag set the counter already holds the next period.
-        let ticks = base.wrapping_add(period.wrapping_sub(read_count()));
+        // Read `CNT` first, then the flag, so a crossing in between is caught.
+        let count = read_count();
         if SYSTICK.cntfg().read().cntif() {
-            return ticks.wrapping_add(period).wrapping_add(1);
+            // A reloaded counter no longer says when it crossed: pin the
+            // answer to one period plus the crossing clock past the anchor.
+            return base.wrapping_add(period).wrapping_add(1);
         }
-        ticks
+        base.wrapping_add(period.wrapping_sub(count))
     }
 
     #[inline]
