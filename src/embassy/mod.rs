@@ -94,6 +94,15 @@ compile_error!("enable only one time driver: `time-driver-systick` or a single `
 ))]
 compile_error!("enable only one `time-driver-tmr*` feature");
 
+// `build.rs` emits one cfg per TMR the die has; naming a missing one would
+// otherwise fail with a bare `cannot find value TMRn`.
+#[cfg(all(feature = "time-driver-tmr1", not(tmr1)))]
+compile_error!("time-driver-tmr1: this chip has no TMR1");
+#[cfg(all(feature = "time-driver-tmr2", not(tmr2)))]
+compile_error!("time-driver-tmr2: this chip has no TMR2");
+#[cfg(all(feature = "time-driver-tmr3", not(tmr3)))]
+compile_error!("time-driver-tmr3: this chip has no TMR3");
+
 // CH573's V3A SysTick counts down and reloads from `CMP` only when software
 // pulses `STRELOAD`; the shared driver's up-counter/auto-reload model is wrong
 // there. Select the down-counter implementation from the capability cfg so a
@@ -113,9 +122,9 @@ pub mod time_driver_impl;
     not(feature = "time-driver-systick"),
     any(
         feature = "time-driver-tmr0",
-        feature = "time-driver-tmr1",
-        feature = "time-driver-tmr2",
-        feature = "time-driver-tmr3"
+        all(feature = "time-driver-tmr1", tmr1),
+        all(feature = "time-driver-tmr2", tmr2),
+        all(feature = "time-driver-tmr3", tmr3)
     )
 ))]
 #[path = "time_driver_tmr.rs"]

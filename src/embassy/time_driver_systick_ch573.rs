@@ -16,8 +16,8 @@
 //! reloads at `CMPLR` in hardware. That model is wrong here, so this module
 //! implements the down-counter/one-shot-load model instead.
 //!
-//! CH569 reloads from `CMP` in hardware (`systick_autoreload`); CH573's counter
-//! runs on past zero to `2^64 - 1`.
+//! The CH573 board record shows a reload at every crossing; CH569 pins the tick
+//! count on `CNTIF` (`systick_autoreload`).
 //!
 //! # Timebase
 //!

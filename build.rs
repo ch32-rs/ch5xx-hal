@@ -399,8 +399,8 @@ fn main() {
         // HAL provides a separate time driver and delay path for it.
         println!("cargo:rustc-cfg=systick_downcounter");
     }
-    // CH569's down-counter reloads itself from `CMP` at the zero crossing;
-    // CH573's one-shot model leaves it running past zero.
+    // CH569 pins the tick count on `CNTIF`; CH573's driver advances the anchor
+    // instead (its board record shows a reload at every crossing too).
     if chip_name == "ch569" {
         println!("cargo:rustc-cfg=systick_autoreload");
     }
