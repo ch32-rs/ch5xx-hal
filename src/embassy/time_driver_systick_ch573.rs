@@ -2,22 +2,14 @@
 //!
 //! # Why CH573 needs its own driver
 //!
-//! CH573's SysTick is the V3A core timer, and it does not behave like the
-//! SysTick on the other CH5xx dies. The datasheet (CH573/CH571, section 3.4.2)
-//! and the vendor `core_riscv.h` agree on this model:
+//! CH573's SysTick is the V3A core timer: a **64-bit descending** counter
+//! (`CNTL`/`CNTH`) whose flag (`CNTFG.CNTIF`) is set at zero, with `CMP` as a
+//! reload value rather than a compare value.
 //!
-//! - `CNT` is a **64-bit descending** counter (`CNTL`/`CNTH`).
-//! - The interrupt flag (`CNTFG.CNTIF`) is set when `CNT` reaches 0.
-//! - `CMP` is a *reload* value, not a compare value.
-//! - `CTLR.STRELOAD` is a write-1 **one-shot** load of `CMP` into `CNT`, not an
-//!   automatic reload. `CTLR` has no `MODE` or `STRE` bit.
-//!
-//! The shared [`super::time_driver_systick`] driver assumes an up-counter that
-//! reloads at `CMPLR` in hardware. That model is wrong here, so this module
-//! implements the down-counter/one-shot-load model instead.
-//!
-//! The CH573 board record shows a reload at every crossing; CH569 pins the tick
-//! count on `CNTIF` (`systick_autoreload`).
+//! The datasheet (CH573/CH571, section 3.4.2) calls `CTLR.STRELOAD` a one-shot
+//! load, but CH569 and CH573 board records both show hardware reloading from
+//! `CMP` at every crossing. The shared [`super::time_driver_systick`] driver
+//! assumes an up-counter, so this module handles the down-counter instead.
 //!
 //! # Timebase
 //!
@@ -29,11 +21,10 @@
 //! now = base + period - CNT   (wrapping, 64-bit)
 //! ```
 //!
-//! which stays correct before *and* after the counter crosses zero: after the
-//! crossing the hardware wraps `CNT` to `2^64 - 1`, and the wrapping
-//! subtraction turns into `period + ticks_since_zero`. Where the counter
-//! reloads itself instead, the reloaded `CNT` would rewind that expression by
-//! almost a whole period, so a set `CNTIF` pins the answer to `base + period`.
+//! which stays correct while the counter runs down. A crossing reloads `CNT`
+//! from `CMP`, so a set `CNTIF` means one more whole period has elapsed; add
+//! it. Each crossing the interrupt misses therefore loses a period rather than
+//! rewinding the clock.
 //!
 //! The zero-crossing interrupt advances the anchor to the observed `now` and
 //! reloads the counter for the next deadline, mirroring
@@ -130,18 +121,13 @@ impl State {
         let period = self.period.borrow(cs).get();
         let base = self.base.borrow(cs).get();
 
-        // On CH569 the flag marks the crossing; read `CNT` first so a crossing
-        // in between only moves the answer forward.
-        #[cfg(systick_autoreload)]
-        {
-            let count = read_count();
-            if SYSTICK.cntfg().read().cntif() {
-                return base.wrapping_add(period);
-            }
-            return base.wrapping_add(period.wrapping_sub(count));
+        // Read `CNT` first: a crossing in between then only moves the answer
+        // forward. With the flag set the counter already holds the next period.
+        let ticks = base.wrapping_add(period.wrapping_sub(read_count()));
+        if SYSTICK.cntfg().read().cntif() {
+            return ticks.wrapping_add(period).wrapping_add(1);
         }
-        #[cfg(not(systick_autoreload))]
-        base.wrapping_add(period.wrapping_sub(read_count()))
+        ticks
     }
 
     #[inline]
