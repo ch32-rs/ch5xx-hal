@@ -5,13 +5,13 @@
 //! | Feature | Driver | Takes |
 //! | --- | --- | --- |
 //! | `time-driver-systick` | `time_driver_systick.rs` | the core SysTick counter |
-//! | `time-driver-systick` on CH573 | `time_driver_systick_ch573.rs` | the V3A down-counter SysTick |
+//! | `time-driver-systick` (down-counter) | `time_driver_systick_v3a.rs` | the 64-bit down-counter SysTick |
 //! | `time-driver-tmr0` … `time-driver-tmr3` | `time_driver_tmr.rs` | that TMR instance |
 //!
-//! CH573's SysTick is a 64-bit down-counter with a one-shot reload, so it
-//! cannot share the up-counter/auto-reload driver. `build.rs` emits
-//! `systick_downcounter` from the register metadata and the selection below
-//! picks the matching module; a chip cannot silently use the wrong model.
+//! The down-counter SysTick (CH569/CH573) cannot share the up-counter driver.
+//! `build.rs` emits `systick_downcounter` from the register metadata and the
+//! selection below picks the matching module; a chip cannot silently use the
+//! wrong model.
 //!
 //! `time-driver-systick` is the lowest-latency option and is what the examples
 //! use. It reprograms SysTick for its own reload model, which
@@ -103,12 +103,10 @@ compile_error!("time-driver-tmr2: this chip has no TMR2");
 #[cfg(all(feature = "time-driver-tmr3", not(tmr3)))]
 compile_error!("time-driver-tmr3: this chip has no TMR3");
 
-// CH573's V3A SysTick counts down and reloads from `CMP` only when software
-// pulses `STRELOAD`; the shared driver's up-counter/auto-reload model is wrong
-// there. Select the down-counter implementation from the capability cfg so a
-// new die with the same block picks it up automatically.
+// The V3A SysTick counts down, so the shared up-counter driver is wrong there.
+// Select the down-counter implementation from the capability cfg.
 #[cfg(all(feature = "time-driver-systick", systick_downcounter))]
-#[path = "time_driver_systick_ch573.rs"]
+#[path = "time_driver_systick_v3a.rs"]
 pub mod time_driver_impl;
 
 #[cfg(all(feature = "time-driver-systick", not(systick_downcounter)))]

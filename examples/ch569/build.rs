@@ -5,10 +5,15 @@ fn main() {
     // `USER_MEM` splits 0x20020000 into 32/64/96K of RAMX and the ROM area.
     println!("cargo:rerun-if-env-changed=CH569_USER_MEM");
     let requested = std::env::var("CH569_USER_MEM").ok();
-    let ramx_kb: u32 = requested
-        .as_deref()
-        .and_then(|v| v.trim().trim_end_matches(['k', 'K']).parse().ok())
-        .unwrap_or(32);
+    let ramx_kb: u32 = match requested.as_deref() {
+        None => 32,
+        // A typo must fail the build, not silently link the wrong window.
+        Some(raw) => raw
+            .trim()
+            .trim_end_matches(['k', 'K'])
+            .parse()
+            .unwrap_or_else(|_| panic!("CH569_USER_MEM must be 32, 64 or 96 (got {raw:?})")),
+    };
     assert!(
         matches!(ramx_kb, 32 | 64 | 96),
         "CH569_USER_MEM must be 32, 64 or 96 (got {ramx_kb})"

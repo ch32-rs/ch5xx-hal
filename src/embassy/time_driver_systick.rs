@@ -9,9 +9,9 @@
 //! have real high words, but this driver still uses the low 32-bit pair with
 //! the same up-counter/auto-reload model, and never writes `CMPHR`.
 //!
-//! CH573 is **not** one of these. Its V3A SysTick counts down and has a
-//! one-shot reload, so `super::time_driver_systick_ch573` implements that
-//! model instead; `time_driver_impl` selects between the two at compile time.
+//! The V3A dies (CH569/CH572/CH573) are **not** these: their SysTick counts
+//! down, so `super::time_driver_systick_v3a` implements that model instead;
+//! `time_driver_impl` selects between the two at compile time.
 //!
 //! Measured behaviour:
 //!

@@ -497,23 +497,29 @@ impl Config {
         HSI_1MHZ = Hsi16, Sys::Divided(16);
 
         /// 32 MHz, HSE undivided (`CLK_SOURCE_HSE_32MHz`). Needs the crystal.
-        /// CH572/CH573 have no undivided mode.
-        #[cfg(not(any(xtal480, ch572, ch573)))]
+        /// CH572/CH573 have no undivided mode; CH569's crystal is 30 MHz and
+        /// uses the `PLL_*` presets below.
+        #[cfg(not(any(xtal480, ch569, ch572, ch573)))]
         HSE_32MHZ = Hse32, Sys::Direct;
 
         /// 16 MHz, HSE / 2 (`CLK_SOURCE_HSE_16MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_16MHZ = Hse32, Sys::Divided(2);
 
         /// 8 MHz, HSE / 4 (`CLK_SOURCE_HSE_8MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_8MHZ = Hse32, Sys::Divided(4);
 
         /// 6.4 MHz, HSE / 5 (`CLK_SOURCE_HSE_6_4MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_6_4MHZ = Hse32, Sys::Divided(5);
 
         /// 4 MHz, HSE / 8 (`CLK_SOURCE_HSE_4MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_4MHZ = Hse32, Sys::Divided(8);
 
         /// 2 MHz, HSE / 16 (`CLK_SOURCE_HSE_2MHz`). Needs the crystal.
+        #[cfg(not(ch569))]
         HSE_2MHZ = Hse32, Sys::Divided(16);
 
         /// 78 MHz, PLL / 4 (`CLK_SOURCE_HSI_PLL_78MHz`).
@@ -763,24 +769,24 @@ pub fn clocks() -> Clocks {
 /// both config bytes carry a reserved-bit key, so they are written whole.
 #[cfg(ch569)]
 pub unsafe fn set_config(config: Config) -> Clocks {
+    validate(&config);
     let sysclk = config.sysclk();
     let (use_pll, div) = match config.sys {
         Sys::Direct => (true, 0u8),
-        Sys::Divided(div) => {
-            assert!((2..=15).contains(&div), "rcc: 30 MHz divider must be 2..=15");
-            (false, div)
-        }
-        Sys::Pll(div) => {
-            assert!((4..=15).contains(&div), "rcc: PLL divider must be 4..=15");
-            (true, div)
-        }
+        Sys::Divided(div) => (false, div),
+        Sys::Pll(div) => (true, div),
     };
 
     with_safe_access(|| {
-        pac::SYS.clk_pll_div().write(|w| w.0 = 0x40 | div);
-        pac::SYS
-            .clk_cfg_ctrl()
-            .write(|w| w.0 = 0x80 | if use_pll { 0x02 } else { 0 });
+        // Datasheet 3.4 orders the divider before the 480 MHz source; going
+        // the other way the source drops first, so no write runs the core at 240 MHz.
+        if use_pll {
+            pac::SYS.clk_pll_div().write(|w| w.0 = 0x40 | div);
+            pac::SYS.clk_cfg_ctrl().write(|w| w.0 = 0x80 | 0x02);
+        } else {
+            pac::SYS.clk_cfg_ctrl().write(|w| w.0 = 0x80);
+            pac::SYS.clk_pll_div().write(|w| w.0 = 0x40 | div);
+        }
     });
 
     // Let the new divider settle before SysTick and the flash prefetch see it.
@@ -1204,7 +1210,6 @@ unsafe fn ch58x_switch(clock: u32, flash: u32, pll: u32) {
 }
 
 /// Reject configurations the clock tree cannot produce.
-#[cfg(not(ch569))]
 fn validate(config: &Config) {
     #[cfg(xtal480)]
     {
@@ -1266,6 +1271,9 @@ fn validate(config: &Config) {
                     Osc::Hse32 => 32_000_000,
                 };
                 assert!(base / div as u32 >= 1_000_000, "rcc: Fsys below the 1 MHz minimum");
+                // CH569 divides 30 MHz; 16 would be below the 2 MHz minimum.
+                #[cfg(ch569)]
+                assert!((2..=15).contains(&div), "rcc: 30 MHz divider must be 2..=15");
                 #[cfg(ch573)]
                 assert!(
                     fsys_allowed_ble(base / div as u32),
@@ -1275,6 +1283,8 @@ fn validate(config: &Config) {
             Sys::Pll(div) => {
                 assert!((pll_first_div()..=32).contains(&div), "rcc: PLL divider out of range");
                 let freq = PLL_HZ / div as u32;
+                #[cfg(ch569)]
+                assert!((4..=15).contains(&div), "rcc: PLL divider must be 4..=15");
                 assert!(freq <= pll_max_hz(), "rcc: Fsys above the PLL maximum");
                 #[cfg(ch573)]
                 assert!(
