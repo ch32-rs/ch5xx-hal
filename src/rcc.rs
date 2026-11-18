@@ -178,7 +178,8 @@ pub enum Osc {
 /// How `Fsys` is derived from the oscillator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sys {
-    /// Undivided oscillator: 16 MHz on HSI, 32 MHz on HSE (`CLK_SYS_MOD = 10`).
+    /// Undivided oscillator: 16 MHz on HSI, 32 MHz on HSE (`CLK_SYS_MOD = 10`);
+    /// on CH569 it is the vendor's 30 MHz setting (`SEL_PLL = 1`, `DIV = 0`).
     ///
     /// CH592 has no undivided mode; it rejects this variant.
     Direct,
@@ -190,7 +191,8 @@ pub enum Sys {
     /// PLL divided by `div` (`CLK_SYS_MOD = 01`).
     ///
     /// CH585's PLL is 312 MHz: `div` in `4..=32`, or 9.75–78 MHz. CH592's PLL
-    /// is 480 MHz: `div` in `6..=32`, or 15–80 MHz.
+    /// is 480 MHz: `div` in `6..=32`, or 15–80 MHz. CH569's divider is 4 bits:
+    /// `div` in `4..=15`, or 32–120 MHz.
     Pll(u8),
 }
 
@@ -402,7 +404,7 @@ impl Config {
         }
 
         let mut div = pll_first_div();
-        while div <= 32 {
+        while div <= 15 {
             let freq = PLL_HZ / div as u32;
             if freq <= pll_max_hz() && closer(hz.0, freq, best) {
                 best = freq;
@@ -680,9 +682,9 @@ impl Config {
         #[cfg(ch569)]
         PLL_60MHZ = Hse32, Sys::Pll(8);
 
-        /// 30 MHz, USB PHY / 16.
+        /// 30 MHz, the vendor's `CLK_SOURCE_PLL_30MHz`.
         #[cfg(ch569)]
-        PLL_30MHZ = Hse32, Sys::Pll(16);
+        PLL_30MHZ = Hse32, Sys::Direct;
 
         /// 15 MHz, 30 MHz oscillator / 2. The reset default.
         #[cfg(ch569)]
@@ -769,7 +771,7 @@ pub unsafe fn set_config(config: Config) -> Clocks {
             (false, div)
         }
         Sys::Pll(div) => {
-            assert!((4..=32).contains(&div), "rcc: PLL divider must be 4..=32");
+            assert!((4..=15).contains(&div), "rcc: PLL divider must be 4..=15");
             (true, div)
         }
     };

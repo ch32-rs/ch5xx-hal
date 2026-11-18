@@ -53,14 +53,17 @@ pub fn reset_cause() -> ResetCause {
 
 /// Reset the chip. Does not return.
 pub fn software_reset() -> ! {
-    // `WDOG_INT_FLAG` is write-1-to-clear, so the written flag bit stays 0.
     rcc::with_safe_access(|| {
-        let ctrl = pac::SYSTEM_CONTROL.rst_wdog_ctrl();
-        let value = (ctrl.read().0 & 0x3e) | 0x01;
-        // CH569 takes [7:6] as a write key and drops the write without 01b.
-        #[cfg(ch569)]
-        let value = value | 0x40;
-        ctrl.write(|w| w.0 = value);
+        pac::SYSTEM_CONTROL.rst_wdog_ctrl().modify(|w| {
+            w.set_software_reset(true);
+            // `WDOG_INT_FLAG` is write-1-to-clear: write 0 to leave it alone.
+            w.set_wdog_int_flag(false);
+            // CH569 drops a write without the [7:6] key.
+            #[cfg(ch569)]
+            {
+                w.0 |= 0x40;
+            }
+        });
     });
     loop {
         core::hint::spin_loop();
@@ -100,15 +103,16 @@ impl<'d, T: Instance> Watchdog<'d, T> {
     }
 
     fn set_reset_enabled(&self, enabled: bool) {
-        // `WDOG_INT_FLAG` is write-1-to-clear. A read-modify-write that copies a
-        // set flag back would clear it, so the written flag bit stays 0.
         rcc::with_safe_access(|| {
-            let ctrl = pac::SYSTEM_CONTROL.rst_wdog_ctrl();
-            let value = ((ctrl.read().0 & 0x3e) & !0x02) | (u8::from(enabled) << 1);
-            // CH569 takes [7:6] as a write key and drops the write without 01b.
-            #[cfg(ch569)]
-            let value = value | 0x40;
-            ctrl.write(|w| w.0 = value);
+            pac::SYSTEM_CONTROL.rst_wdog_ctrl().modify(|w| {
+                w.set_wdog_rst_en(enabled);
+                w.set_wdog_int_flag(false);
+                // CH569 drops a write without the [7:6] key.
+                #[cfg(ch569)]
+                {
+                    w.0 |= 0x40;
+                }
+            });
         });
     }
 
