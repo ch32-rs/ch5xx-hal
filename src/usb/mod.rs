@@ -1135,7 +1135,7 @@ fn auto_toggle<T: Instance>(index: usize) {
 mod sealed {
     use super::pac;
 
-    #[cfg(usbfs_ch585)]
+    #[cfg(any(usbfs_ch585, usbfs_ch572))]
     pub type Regs = pac::usbfs::Usbfs;
     #[cfg(any(usb_ch592, usb_ch583))]
     pub type Regs = pac::usb::Usb;
@@ -1159,7 +1159,7 @@ mod sealed {
 #[allow(private_bounds)]
 pub trait Instance: sealed::Instance + PeripheralType {}
 
-#[cfg(usbfs_ch585)]
+#[cfg(any(usbfs_ch585, usbfs_ch572))]
 impl sealed::Instance for peripherals::USBFS {
     type Interrupt = interrupt::typelevel::USB;
 
@@ -1192,7 +1192,7 @@ impl sealed::Instance for peripherals::USBFS {
     }
 }
 
-#[cfg(usbfs_ch585)]
+#[cfg(any(usbfs_ch585, usbfs_ch572))]
 impl Instance for peripherals::USBFS {}
 
 // CH592 has one USB block and no high-speed controller. The register block is
@@ -1310,7 +1310,7 @@ mod tests {
     #[cfg(not(usb_ch583))]
     #[test]
     fn ep4_single_direction_uses_first_packet_after_ep0() {
-        #[cfg(usbfs_ch585)]
+        #[cfg(any(usbfs_ch585, usbfs_ch572))]
         type Usb = peripherals::USBFS;
         #[cfg(usb_ch592)]
         type Usb = peripherals::USB;

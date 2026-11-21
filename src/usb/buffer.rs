@@ -23,7 +23,16 @@ impl Buffer {
         }
     }
 
+    /// The value the DMA register takes: 4-byte aligned.
+    #[cfg(usbfs_ch585)]
+    pub(super) fn dma_address(&self) -> u32 {
+        let address = self.data.as_ptr() as usize;
+        debug_assert!(address % 4 == 0, "usb buffer is not 4-byte aligned");
+        (address & 0x1FFFF) as u32
+    }
+
     /// The value the DMA register takes: the low 16 bits, 4-byte aligned.
+    #[cfg(not(usbfs_ch585))]
     pub(super) fn dma_address(&self) -> u16 {
         let address = self.data.as_ptr() as usize;
         debug_assert!(address % 4 == 0, "usb buffer is not 4-byte aligned");

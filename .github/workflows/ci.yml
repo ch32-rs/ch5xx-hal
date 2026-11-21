@@ -50,6 +50,7 @@ jobs:
           - systick
           - tmr0
           - flash
+          - usb
     steps:
       - uses: actions/checkout@v4
       - name: Fetch ch5xx-data
@@ -71,6 +72,7 @@ jobs:
             systick) features="$features,embassy,time-driver-systick" ;;
             tmr0)    features="$features,embassy,time-driver-tmr0" ;;
             flash)   features="$features,flash" ;;
+            usb)     features="$features,embassy,time-driver-systick" ;;
           esac
           cargo check --lib --target "$target" --no-default-features --features "$features"
 
