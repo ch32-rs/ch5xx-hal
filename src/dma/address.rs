@@ -1,9 +1,10 @@
 //! Checked peripheral-local DMA descriptors, independent of MMIO.
 //!
 //! Every CH5xx DMA engine stores a 17-bit SRAM offset rather than a bus
-//! address, so a descriptor is a `[start, end)` byte range below the 128 KiB
-//! SRAM window. The window is the same for the timer, SPI, ADC and LED engines;
-//! only the transfer unit and the peripheral-side behaviour differ.
+//! address (18-bit on CH569), so a descriptor is a `[start, end)` byte range
+//! below the 128 KiB SRAM window. The window is the same for the timer, SPI,
+//! ADC and LED engines; only the transfer unit and the peripheral-side
+//! behaviour differ.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -45,7 +46,14 @@ impl Descriptor {
             return Err(Error::Unaligned);
         }
         let end = address.checked_add(bytes).ok_or(Error::Length)?;
-        if address < 0x2000_0000 || end >= 0x2002_0000 {
+        // CH569 splits SRAM into 16 KiB RAMS and up to 96 KiB RAMX (the
+        // USER_MEM option decides the real size); its 18-bit DMA offsets
+        // reach both, but not the unmapped hole in between.
+        #[cfg(ch569)]
+        let in_sram = (address >= 0x2000_0000 && end <= 0x2000_4000) || (address >= 0x2002_0000 && end <= 0x2003_8000);
+        #[cfg(not(ch569))]
+        let in_sram = address >= 0x2000_0000 && end < 0x2002_0000;
+        if !in_sram {
             return Err(Error::Address);
         }
         Ok(Self {
@@ -88,6 +96,7 @@ mod tests {
         assert_eq!(Descriptor::bytes(0x2001_fffc, 4), Err(Error::Address));
         assert_eq!(Descriptor::bytes(usize::MAX - 3, 8), Err(Error::Length));
     }
+    #[cfg(not(ch569))]
     #[test]
     fn complete_sram_boundary_sweep() {
         for offset in (0..0x20000).step_by(4) {
@@ -99,5 +108,22 @@ mod tests {
                 assert_eq!(d.end as usize, offset + 8);
             }
         }
+    }
+    #[cfg(ch569)]
+    #[test]
+    fn ch569_rams_and_ramx_windows() {
+        assert!(Descriptor::new(0x2000_0000, 1).is_ok());
+        let d = Descriptor::bytes(0x2000_3ffc, 4).unwrap();
+        assert_eq!(d.end, 0x4000);
+        assert_eq!(Descriptor::bytes(0x2000_3ffc, 8), Err(Error::Address));
+        assert_eq!(Descriptor::new(0x2000_4000, 1), Err(Error::Address));
+        assert_eq!(Descriptor::new(0x2001_0000, 1), Err(Error::Address));
+        assert_eq!(Descriptor::new(0x2001_fffc, 1), Err(Error::Address));
+        let d = Descriptor::bytes(0x2002_0000, 16).unwrap();
+        assert_eq!(d.start, 0x20000);
+        assert_eq!(d.end, 0x20010);
+        assert!(Descriptor::bytes(0x2003_7ffc, 4).is_ok());
+        assert_eq!(Descriptor::bytes(0x2003_7ffc, 8), Err(Error::Address));
+        assert_eq!(Descriptor::new(0x2003_8000, 1), Err(Error::Address));
     }
 }
