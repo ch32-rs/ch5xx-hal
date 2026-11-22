@@ -50,7 +50,8 @@ use crate::{impl_peripheral, pac, peripherals, Peri};
 /// Output drive strength.
 ///
 /// CH5xx folds the drive strength into `Px_PD_DRV`: for an output, a 0 selects
-/// 5 mA and a 1 selects 20 mA.
+/// 5 mA and a 1 selects 20 mA. CH569 has a separate `Px_DRV` register instead,
+/// where a 1 selects 16 mA.
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Default)]
 pub enum Speed {
     /// 5 mA
@@ -258,12 +259,18 @@ pub(crate) trait SealedPin {
         match self._port() {
             Port::A => {
                 gpio.pa_pu().modify(|w| w.set_pa_pu(n, pull == Pull::Up));
+                #[cfg(gpio_split_pd_drv)]
+                gpio.pa_pd().modify(|w| w.set_pa_pd(n, matches!(pull, Pull::Down)));
+                #[cfg(not(gpio_split_pd_drv))]
                 gpio.pa_pd_drv()
                     .modify(|w| w.set_pa_pd_drv(n, matches!(pull, Pull::Down)));
             }
             #[cfg(gpio_port_b)]
             Port::B => {
                 gpio.pb_pu().modify(|w| w.set_pb_pu(n, pull == Pull::Up));
+                #[cfg(gpio_split_pd_drv)]
+                gpio.pb_pd().modify(|w| w.set_pb_pd(n, matches!(pull, Pull::Down)));
+                #[cfg(not(gpio_split_pd_drv))]
                 gpio.pb_pd_drv()
                     .modify(|w| w.set_pb_pd_drv(n, matches!(pull, Pull::Down)));
             }
@@ -277,9 +284,32 @@ pub(crate) trait SealedPin {
         let high = speed == Speed::High;
         let gpio = self.block();
         match self._port() {
-            Port::A => gpio.pa_pd_drv().modify(|w| w.set_pa_pd_drv(n, high)),
+            Port::A => {
+                #[cfg(gpio_split_pd_drv)]
+                gpio.pa_drv().modify(|w| w.set_pa_drv(n, high));
+                #[cfg(not(gpio_split_pd_drv))]
+                gpio.pa_pd_drv().modify(|w| w.set_pa_pd_drv(n, high));
+            }
             #[cfg(gpio_port_b)]
-            Port::B => gpio.pb_pd_drv().modify(|w| w.set_pb_pd_drv(n, high)),
+            Port::B => {
+                #[cfg(gpio_split_pd_drv)]
+                gpio.pb_drv().modify(|w| w.set_pb_drv(n, high));
+                #[cfg(not(gpio_split_pd_drv))]
+                gpio.pb_pd_drv().modify(|w| w.set_pb_pd_drv(n, high));
+            }
+        }
+    }
+
+    /// Clear `Px_PD`, which selects open-drain in output mode on CH569.
+    #[cfg(gpio_split_pd_drv)]
+    #[inline]
+    fn set_push_pull(&self) {
+        let n = self._pin() as usize;
+        let gpio = self.block();
+        match self._port() {
+            Port::A => gpio.pa_pd().modify(|w| w.set_pa_pd(n, false)),
+            #[cfg(gpio_port_b)]
+            Port::B => gpio.pb_pd().modify(|w| w.set_pb_pd(n, false)),
         }
     }
 
@@ -290,6 +320,7 @@ pub(crate) trait SealedPin {
     /// level or the falling edge. The vendor routine writes `Px_OUT` for the high
     /// polarity and `Px_CLR` for the low one; both are used here so a polarity
     /// change never reads back a write-1-to-clear register.
+    #[cfg(not(gpio_single_irq))]
     #[inline]
     fn set_interrupt_polarity(&self, high: bool) {
         // `Px_OUT` holds the polarity while the pad is an input. Writing the
@@ -390,6 +421,8 @@ impl<'d> Flex<'d> {
     pub fn set_as_output(&mut self, speed: Speed) {
         critical_section::with(|_| {
             self.pin.set_speed(speed);
+            #[cfg(gpio_split_pd_drv)]
+            self.pin.set_push_pull();
             self.pin.set_direction(true);
         });
     }
@@ -609,13 +642,21 @@ pub(crate) unsafe fn init(_cs: CriticalSection) {
     #[cfg(feature = "embassy")]
     {
         use crate::interrupt::InterruptExt;
-        pac::Interrupt::GPIO_A.set_priority(PORT_INTERRUPT_PRIORITY);
-        #[cfg(gpio_port_b)]
-        pac::Interrupt::GPIO_B.set_priority(PORT_INTERRUPT_PRIORITY);
-        unsafe {
-            pac::Interrupt::GPIO_A.enable();
+        #[cfg(gpio_single_irq)]
+        {
+            pac::Interrupt::GPIO.set_priority(PORT_INTERRUPT_PRIORITY);
+            unsafe { pac::Interrupt::GPIO.enable() };
+        }
+        #[cfg(not(gpio_single_irq))]
+        {
+            pac::Interrupt::GPIO_A.set_priority(PORT_INTERRUPT_PRIORITY);
             #[cfg(gpio_port_b)]
-            pac::Interrupt::GPIO_B.enable();
+            pac::Interrupt::GPIO_B.set_priority(PORT_INTERRUPT_PRIORITY);
+            unsafe {
+                pac::Interrupt::GPIO_A.enable();
+                #[cfg(gpio_port_b)]
+                pac::Interrupt::GPIO_B.enable();
+            }
         }
     }
 }
@@ -633,14 +674,22 @@ const PORT_INTERRUPT_PRIORITY: qingke::interrupt::Priority = qingke::interrupt::
 /// `#[interrupt]`, which the HAL re-exports.
 #[cfg(feature = "embassy")]
 mod irq {
+    #[cfg(not(gpio_single_irq))]
     use super::{on_port, Port};
 
+    #[cfg(gpio_single_irq)]
+    #[crate::interrupt]
+    fn GPIO() {
+        super::on_gpio_irq();
+    }
+
+    #[cfg(not(gpio_single_irq))]
     #[crate::interrupt]
     fn GPIO_A() {
         on_port(Port::A);
     }
 
-    #[cfg(gpio_port_b)]
+    #[cfg(all(gpio_port_b, not(gpio_single_irq)))]
     #[crate::interrupt]
     fn GPIO_B() {
         on_port(Port::B);
@@ -648,12 +697,12 @@ mod irq {
 }
 
 /// Pins of one port waiting on its shared interrupt, indexed by the flag bit.
-#[cfg(feature = "embassy")]
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
 struct PortWakers {
     wakers: [AtomicWaker; INT_BITS],
 }
 
-#[cfg(feature = "embassy")]
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
 impl PortWakers {
     const fn new() -> Self {
         Self {
@@ -662,20 +711,22 @@ impl PortWakers {
     }
 }
 
-#[cfg(feature = "embassy")]
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
 static PORT_WAKERS: [PortWakers; PORT_COUNT] = [const { PortWakers::new() }; PORT_COUNT];
 
 /// One waker table per port the die actually bonds.
-#[cfg(feature = "embassy")]
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
 const PORT_COUNT: usize = if cfg!(gpio_port_b) { 2 } else { 1 };
 
 /// Width of `Px_INT_EN`, `Px_INT_MODE` and `Px_INT_IF`.
+#[cfg(not(gpio_single_irq))]
 const INT_BITS: usize = 16;
 
 /// Where a pin's interrupt is programmed.
 ///
 /// `bit` is the index in the 16-bit port registers. It equals the pad number
 /// except for the one documented alias below.
+#[cfg(not(gpio_single_irq))]
 struct InterruptLine {
     port: Port,
     bit: u8,
@@ -690,6 +741,7 @@ struct InterruptLine {
 /// `PIN_INTX` chooses which pair bits 9:8 follow, and only a die that has the
 /// field can aim it at the high pair. `PIN_CONFIG.PB16_8_SEL` is a different
 /// select and is not touched.
+#[cfg(not(gpio_single_irq))]
 fn interrupt_line(port: Port, pin: u8) -> Option<InterruptLine> {
     let (bit, remap) = match (port, pin) {
         (_, 0..=15) => (pin, false),
@@ -700,11 +752,40 @@ fn interrupt_line(port: Port, pin: u8) -> Option<InterruptLine> {
     Some(InterruptLine { port, bit, remap })
 }
 
+/// Where a single-vector die's pin interrupt is programmed: the flag-bit
+/// index, not the pad number.
+#[cfg(gpio_single_irq)]
+struct InterruptLine {
+    bit: u8,
+}
+
+#[cfg(gpio_single_irq)]
+fn interrupt_line(port: Port, pin: u8) -> Option<InterruptLine> {
+    let bit = match (port, pin) {
+        (Port::A, 2) => 0,
+        (Port::A, 3) => 1,
+        (Port::A, 4) => 2,
+        #[cfg(gpio_port_b)]
+        (Port::B, 3) => 3,
+        #[cfg(gpio_port_b)]
+        (Port::B, 4) => 4,
+        #[cfg(gpio_port_b)]
+        (Port::B, 11) => 5,
+        #[cfg(gpio_port_b)]
+        (Port::B, 12) => 6,
+        #[cfg(gpio_port_b)]
+        (Port::B, 15) => 7,
+        _ => return None,
+    };
+    Some(InterruptLine { bit })
+}
+
 /// Run `$body` against one port's interrupt mode, flag and enable registers.
 ///
 /// Each register is touched once. A die with no port B has no `B` arm. The two
 /// ports have different register types, so the body is expanded per port rather
 /// than passed as a closure generic over them.
+#[cfg(not(gpio_single_irq))]
 macro_rules! with_port_irq {
     ($port:expr, |$mode:ident, $flag:ident, $enable:ident| $body:expr) => {
         match $port {
@@ -740,6 +821,7 @@ fn level_already_met(pin: &AnyPin, trigger: InterruptTrigger) -> bool {
 /// `PIN_INTX` is shared by PB8/PB9 and PB22/PB23, so it is only written for the
 /// pair that needs it. `PIN_ALTERNATE` is a plain read/write register, same as
 /// the UART remap bit, and does not need the safe-access window.
+#[cfg(not(gpio_single_irq))]
 fn arm(pin: &AnyPin, line: &InterruptLine, trigger: InterruptTrigger) {
     let (edge, high) = match trigger {
         InterruptTrigger::LowLevel => (false, false),
@@ -764,6 +846,7 @@ fn arm(pin: &AnyPin, line: &InterruptLine, trigger: InterruptTrigger) {
     });
 }
 
+#[cfg(not(gpio_single_irq))]
 fn disarm(line: &InterruptLine) {
     critical_section::with(|_| {
         with_port_irq!(line.port, |_mode, _flag, enable| {
@@ -772,10 +855,39 @@ fn disarm(line: &InterruptLine) {
     });
 }
 
+/// Arm a single-vector die's pin: mode, polarity, stale flag, enable.
+#[cfg(gpio_single_irq)]
+fn arm(_pin: &AnyPin, line: &InterruptLine, trigger: InterruptTrigger) {
+    let (edge, high) = match trigger {
+        InterruptTrigger::LowLevel => (false, false),
+        InterruptTrigger::HighLevel => (false, true),
+        InterruptTrigger::FallingEdge => (true, false),
+        InterruptTrigger::RisingEdge => (true, true),
+    };
+    let mask = 1u8 << line.bit;
+    critical_section::with(|_| {
+        let gpio = pac::GPIO;
+        gpio.int_mode()
+            .modify(|w| if edge { w.0 |= mask } else { w.0 &= !mask });
+        gpio.int_polar()
+            .modify(|w| if high { w.0 |= mask } else { w.0 &= !mask });
+        gpio.int_flag().write(|w| w.0 = mask);
+        gpio.int_enable().modify(|w| w.0 |= mask);
+    });
+}
+
+#[cfg(gpio_single_irq)]
+fn disarm(line: &InterruptLine) {
+    critical_section::with(|_| {
+        pac::GPIO.int_enable().modify(|w| w.0 &= !(1 << line.bit));
+    });
+}
+
 /// Set or clear one bit of a 16-bit interrupt register value.
 ///
 /// The PAC exposes these registers as one field covering the whole halfword, so
 /// there is no per-pin setter to call.
+#[cfg(not(gpio_single_irq))]
 fn set_bit16(reg: &mut impl HalfWord, bit: u8, value: bool) {
     let mut raw = reg.half();
     if value {
@@ -786,11 +898,13 @@ fn set_bit16(reg: &mut impl HalfWord, bit: u8, value: bool) {
     reg.set_half(raw);
 }
 
+#[cfg(not(gpio_single_irq))]
 trait HalfWord {
     fn half(&self) -> u16;
     fn set_half(&mut self, value: u16);
 }
 
+#[cfg(not(gpio_single_irq))]
 macro_rules! impl_half_word {
     ($($reg:ident),*) => {$( impl_half_word!(@one $reg); )*};
     (@one $reg:ident) => {
@@ -806,11 +920,12 @@ macro_rules! impl_half_word {
 }
 
 // Mode, flag and enable share the halfword layout on every covered die.
+#[cfg(not(gpio_single_irq))]
 impl_half_word!(PaIntMode, PaIntIf, PaIntEn);
-#[cfg(gpio_port_b)]
+#[cfg(all(gpio_port_b, not(gpio_single_irq)))]
 impl_half_word!(PbIntMode, PbIntIf, PbIntEn);
 
-#[cfg(feature = "embassy")]
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
 fn on_port(port: Port) {
     // Only pins this driver armed. A flag left set by something else must not
     // turn its enable bit back off. Enable and flag are read once each.
@@ -831,15 +946,38 @@ fn on_port(port: Port) {
     }
 }
 
+/// Wakers for the single-vector dies, indexed by flag bit.
+#[cfg(all(feature = "embassy", gpio_single_irq))]
+static LINE_WAKERS: [AtomicWaker; 8] = [const { AtomicWaker::new() }; 8];
+
+/// One `GPIO` vector for both ports on CH565/CH569; same handshake as
+/// [`on_port`].
+#[cfg(all(feature = "embassy", gpio_single_irq))]
+fn on_gpio_irq() {
+    let gpio = pac::GPIO;
+    let fired = gpio.int_enable().read().0 & gpio.int_flag().read().0;
+    if fired == 0 {
+        return;
+    }
+    gpio.int_enable().modify(|w| w.0 &= !fired);
+
+    let mut pending = fired;
+    while pending != 0 {
+        let bit = pending.trailing_zeros() as usize;
+        pending &= !(1 << bit);
+        LINE_WAKERS[bit].wake();
+    }
+}
+
 /// One armed pin. Dropping it masks the pin again, so a cancelled wait cannot
 /// leave the port interrupt asserting.
-#[cfg(feature = "embassy")]
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
 struct PinWait<'a> {
     line: InterruptLine,
     _pin: PhantomData<&'a mut AnyPin>,
 }
 
-#[cfg(feature = "embassy")]
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
 impl<'a> PinWait<'a> {
     fn new(pin: &'a AnyPin, trigger: InterruptTrigger) -> Self {
         let line = interrupt_line(pin.port, pin.pin).unwrap_or_else(|| {
@@ -857,14 +995,66 @@ impl<'a> PinWait<'a> {
     }
 }
 
-#[cfg(feature = "embassy")]
+/// Single-vector variant of [`PinWait`], keyed by flag bit instead of port.
+#[cfg(all(feature = "embassy", gpio_single_irq))]
+struct PinWait<'a> {
+    line: InterruptLine,
+    _pin: PhantomData<&'a mut AnyPin>,
+}
+
+#[cfg(all(feature = "embassy", gpio_single_irq))]
+impl<'a> PinWait<'a> {
+    fn new(pin: &'a AnyPin, trigger: InterruptTrigger) -> Self {
+        let line = interrupt_line(pin.port, pin.pin).unwrap_or_else(|| {
+            panic!(
+                "gpio: P{}{} has no port-interrupt source",
+                port_letter(pin.port),
+                pin.pin
+            )
+        });
+        arm(pin, &line, trigger);
+        Self {
+            line,
+            _pin: PhantomData,
+        }
+    }
+}
+
+#[cfg(all(feature = "embassy", gpio_single_irq))]
 impl Drop for PinWait<'_> {
     fn drop(&mut self) {
         disarm(&self.line);
     }
 }
 
-#[cfg(feature = "embassy")]
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
+impl Drop for PinWait<'_> {
+    fn drop(&mut self) {
+        disarm(&self.line);
+    }
+}
+
+#[cfg(all(feature = "embassy", gpio_single_irq))]
+impl Future for PinWait<'_> {
+    type Output = ();
+
+    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<()> {
+        let mask = 1u8 << self.line.bit;
+        LINE_WAKERS[self.line.bit as usize].register(cx.waker());
+
+        let gpio = pac::GPIO;
+        let enabled = gpio.int_enable().read().0;
+        let flags = gpio.int_flag().read().0;
+        if flags & mask != 0 && enabled & mask == 0 {
+            gpio.int_flag().write(|w| w.0 = mask);
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+#[cfg(all(feature = "embassy", not(gpio_single_irq)))]
 impl Future for PinWait<'_> {
     type Output = ();
 

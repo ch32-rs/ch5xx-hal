@@ -3,11 +3,11 @@
 Rust HAL for WCH CH5xx BLE microcontrollers, with blocking APIs and optional
 Embassy support.
 
-[API docs](https://docs.rs/ch5xx-hal) · [CH585 examples](examples/ch585) · [CH592 examples](examples/ch592) · [CH582 examples](examples/ch582) · [register metadata](https://github.com/ch32-rs/ch5xx-data)
+[API docs](https://docs.rs/ch5xx-hal) · [CH585 examples](examples/ch585) · [CH592 examples](examples/ch592) · [CH582 examples](examples/ch582) · [CH569 examples](examples/ch569) · [register metadata](https://github.com/ch32-rs/ch5xx-data)
 
 > **Note**
-> Under development; the API may change. CH585, CH592 and CH582 are the chips
-> exercised on hardware so far.
+> Under development; the API may change. CH585, CH592, CH582 and CH569 are the
+> chips exercised on hardware so far.
 
 ## Supported devices
 
@@ -23,9 +23,10 @@ Embassy support.
 | CH573 | QingKe V3A | Builds; no board validation |
 | CH572 | QingKe V3A | Builds; no board validation |
 | CH570 | QingKe V3A | Builds; no board validation |
+| CH569 | QingKe V3A | Board-tested: GPIO, UART, TMR, SysTick time driver, PWMX, watchdog; USB, DMA, flash and high-speed peripherals pending |
 
-CH571, CH584X and CH591 are not selectable yet; CH564, CH565 and CH569 are
-outside this HAL.
+CH571, CH584X and CH591 are not selectable yet; CH564 and CH565 are outside
+this HAL.
 
 ## Driver status
 
@@ -38,7 +39,7 @@ outside this HAL.
 | `spi` | SPI0/SPI1 master, blocking and async, SPI0 local DMA |
 | `adc` | Single conversion, temperature, battery, DMA scan, timed auto-DMA |
 | `touchkey` | Polled charge-transfer touch keys |
-| `pwm` | PWM4–PWM11; PWM1–PWM5 on CH572/CH570 |
+| `pwm` | PWM4–PWM11; PWM1–PWM5 on CH572/CH570, PWM0–PWM3 on CH569 |
 | `rtc` | Calendar, one-shot alarm, interval timer |
 | `watchdog` | Window watchdog, reset cause, battery detector |
 | `delay` | SysTick or the Embassy timebase |

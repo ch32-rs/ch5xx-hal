@@ -28,28 +28,27 @@ jobs:
           rustup default stable
       - run: cargo fmt --check
 
-  hal:
-    name: HAL (${{ matrix.chip }}, ${{ matrix.driver }})
+  # One job per core family: registry and toolchain setup dominate the cost of
+  # a chip/driver matrix, so the checks run as a loop inside the job.
+  family:
+    name: ${{ matrix.family }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        chip:
-          - ch570
-          - ch572
-          - ch573
-          - ch581
-          - ch582
-          - ch583
-          - ch584
-          - ch585
-          - ch592
-          - ch595
-        driver:
-          - base
-          - systick
-          - tmr0
-          - flash
+        include:
+          - family: V3A (CH569/570/572/573)
+            chips: "ch569 ch570 ch572 ch573"
+            examples: "ch569 ch572"
+            target: riscv32imac-unknown-none-elf
+          - family: V3C (CH581/584/585/592/595)
+            chips: "ch581 ch584 ch585 ch592 ch595"
+            examples: "ch585 ch592"
+            target: riscv32imc-unknown-none-elf
+          - family: V4A (CH582/583)
+            chips: "ch582 ch583"
+            examples: "ch582"
+            target: riscv32imac-unknown-none-elf
     steps:
       - uses: actions/checkout@v4
       - name: Fetch ch5xx-data
@@ -57,58 +56,45 @@ jobs:
         run: git clone --depth 1 https://github.com/ch32-rs/ch5xx-data.git ../ch5xx-data
       - name: Setup Rust
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install stable nightly --profile minimal
           rustup default stable
-          rustup target add riscv32imc-unknown-none-elf riscv32imac-unknown-none-elf
-      - name: Check
+          rustup component add rust-src --toolchain nightly
+          rustup target add ${{ matrix.target }} --toolchain stable
+          rustup target add ${{ matrix.target }} --toolchain nightly
+      - name: Check the HAL
         run: |
-          case "${{ matrix.chip }}" in
-            ch581|ch584|ch585|ch592|ch595) target=riscv32imc-unknown-none-elf ;;
-            *) target=riscv32imac-unknown-none-elf ;;
-          esac
-          features="${{ matrix.chip }},rt"
-          case "${{ matrix.driver }}" in
-            systick) features="$features,embassy,time-driver-systick" ;;
-            tmr0)    features="$features,embassy,time-driver-tmr0" ;;
-            flash)   features="$features,flash" ;;
-          esac
-          cargo check --lib --target "$target" --no-default-features --features "$features"
-
-  examples:
-    name: Examples (${{ matrix.example }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - example: ch572
-            target: riscv32imac-unknown-none-elf
-            features: ""
-          # The async SPI and USB examples are behind `required-features`.
-          - example: ch582
-            target: riscv32imac-unknown-none-elf
-            features: "--features spi-async,usb-cdc"
-          # `embassy_time_tmr` needs a TMR driver, so build every bin against
-          # TMR0 instead of the default SysTick driver.
-          - example: ch585
-            target: riscv32imc-unknown-none-elf
-            features: "--no-default-features --features time-driver-tmr0,flash"
-          - example: ch592
-            target: riscv32imc-unknown-none-elf
-            features: "--features flash"
-    steps:
-      - uses: actions/checkout@v4
-      - name: Fetch ch5xx-data
-        run: git clone --depth 1 https://github.com/ch32-rs/ch5xx-data.git ../ch5xx-data
-      - name: Setup Rust
+          set -e
+          for chip in ${{ matrix.chips }}; do
+            for driver in base systick tmr0 flash; do
+              # CH569's controller lives in SYS and is not modeled yet.
+              if [ "$chip/$driver" = ch569/flash ]; then continue; fi
+              features="$chip,rt"
+              case "$driver" in
+                systick) features="$features,embassy,time-driver-systick" ;;
+                tmr0)    features="$features,embassy,time-driver-tmr0" ;;
+                flash)   features="$features,flash" ;;
+              esac
+              echo "::group::$chip ($driver)"
+              cargo check --lib --target "${{ matrix.target }}" --no-default-features --features "$features"
+              echo "::endgroup::"
+            done
+          done
+      - name: Build the examples
         run: |
-          rustup toolchain install nightly --profile minimal
-          rustup default nightly
-          rustup component add rust-src
-          rustup target add ${{ matrix.target }}
-      - name: Build every example
-        working-directory: examples/${{ matrix.example }}
-        run: cargo build --release --bins ${{ matrix.features }}
+          set -e
+          for example in ${{ matrix.examples }}; do
+            case "$example" in
+              # The async SPI and USB examples are behind `required-features`.
+              ch582) features="--features spi-async,usb-cdc" ;;
+              # `embassy_time_tmr` needs a TMR driver for the whole workspace.
+              ch585) features="--no-default-features --features time-driver-tmr0,flash" ;;
+              ch592) features="--features flash" ;;
+              *) features="" ;;
+            esac
+            echo "::group::examples/$example"
+            ( cd examples/"$example" && cargo +nightly build --release --bins $features )
+            echo "::endgroup::"
+          done
 
   msrv:
     name: MSRV 1.95
