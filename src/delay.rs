@@ -363,7 +363,8 @@ impl embedded_hal::delay::DelayNs for Delay {
     }
 }
 
-/// CH569 has no RTC counter to measure against, so the nominal rate stands.
+/// CH569 has no RTC counter to measure against; the nominal rate stands
+/// because SysTick counts the same HCLK the `clocks()` tree describes.
 #[cfg(delay_no_rtc)]
 unsafe fn calibrate() -> u32 {
     crate::rcc::clocks().sysclk.0

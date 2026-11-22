@@ -42,19 +42,6 @@ nor clears it and the buffer must tolerate the previous contents.
 `platform-spin`: the idle path of the default RISC-V platform calls `wfi` inside
 a critical section, and on this core `wfi` never returns while `mstatus.MIE = 0`.
 
-## Collecting results
-
-The demos that have no other output stage their results in RAMX from
-`0x20021000` and park. **Never attach to a running core**: a debugger halt or
-memory read corrupts the register file and the PC on this die. Flash, leave the
-chip alone for the measurement window, then read once:
-
-```console
-wlink -d 1a86:8010:<SERIAL> flash -e target/riscv32imac-unknown-none-elf/release/<bin>
-sleep 60
-probe-rs read --chip CH569 --probe 1a86:8010:<SERIAL> b32 0x20021000 8
-```
-
 ## Binaries
 
 | Binary | Description |
@@ -62,12 +49,11 @@ probe-rs read --chip CH569 --probe 1a86:8010:<SERIAL> b32 0x20021000 8
 | `blinky` | LED0/LED1/LED2 on PB24/PB22/PB23 |
 | `uart_loopback` | UART0 internal loopback (`MCR.LOOP`), log over defmt |
 | `embassy_time` | `Timer` on the SysTick time driver, log over defmt |
-| `spi_flash_probe` | SPI0 JEDEC ID, status and SFDP from the board's W25Q32JV |
-| `pwmx_probe` | PWMX duty read back from the pad on PA4/PB1/PB2; no wiring |
-| `wdg_probe` | Watchdog overflow reset and the recorded cause |
-| `swreset_probe` | `watchdog::software_reset` cause flag and reset keep |
 | `clk_hal` | `Sys::Pll(4)` 120 MHz through the HAL, plus a 1 s delay check |
 
-The bring-up diagnostics (atomics and AMOs, memory and register probes, xip,
-misaligned access, the SysTick crossing probe, executor fault logs) were used
-during the port and are not shipped.
+**Never attach to a running core**: a debugger halt or memory read corrupts
+the register file and the PC on this die. The bring-up diagnostics (atomics
+and AMOs, memory and register probes, xip, misaligned access, the SysTick
+crossing probe, executor fault logs, and the watchdog/PWMX/SPI-flash/reset
+probes) staged their results in RAMX instead and were read once after a
+measurement window; they are not shipped.
