@@ -1,42 +1,16 @@
-//! Embassy time driver on the V3A SysTick counter.
+//! Embassy time driver on the V3A SysTick (CH569/CH573): a 64-bit
+//! down-counter whose `CMP` is a reload value, not a compare. The datasheet
+//! calls `STRELOAD` one-shot, but both boards reload from `CMP` at every
+//! crossing.
 //!
-//! # Why V3A needs its own driver
+//! Arming records `base` and `period`; `now = base + period - CNT` (wrapping).
+//! A crossing reloads `CNT` from `CMP`, so a set `CNTIF` pins `now` to
+//! `base + period + 1`: a missed crossing loses a period instead of rewinding
+//! the clock. The zero-crossing interrupt advances the anchor to the observed
+//! `now`, and a deadline beyond [`MAX_PERIOD`] is armed in several periods.
 //!
-//! The V3A core timer (CH569/CH573) is a **64-bit descending** counter
-//! (`CNTL`/`CNTH`) whose flag (`CNTFG.CNTIF`) is set at zero, with `CMP` as the
-//! reload value rather than a compare value.
-//!
-//! The datasheet (CH573/CH571, section 3.4.2) calls `CTLR.STRELOAD` a one-shot
-//! load, but board records on CH569 and CH573 both show hardware reloading from
-//! `CMP` at every crossing. The shared [`super::time_driver_systick`] driver
-//! assumes an up-counter, so this module handles the down-counter instead.
-//!
-//! # Timebase
-//!
-//! Each arm loads `CNT` with the period and records two values under a
-//! critical section: `base` (the tick time at the load) and `period` (the
-//! loaded value). The current tick is
-//!
-//! ```text
-//! now = base + period - CNT   (wrapping, 64-bit)
-//! ```
-//!
-//! while the counter runs down. A crossing reloads `CNT` from `CMP`, so the
-//! counter no longer says when it happened: a set `CNTIF` pins the answer to
-//! `base + period + 1`. Each crossing the interrupt misses therefore loses a
-//! period rather than rewinding the clock.
-//!
-//! The zero-crossing interrupt advances the anchor to the observed `now` and
-//! reloads the counter for the next deadline, mirroring
-//! [`super::reload_timer`]'s rule that the hardware decides the period
-//! boundary. A deadline farther than [`MAX_PERIOD`] is armed in several
-//! periods; when the queue is empty the same happens with no waker due.
-//!
-//! # No atomic read-modify-write
-//!
-//! As everywhere else in this HAL, `fetch_add`/`compare_exchange` must not be
-//! used on the V3A/V3C cores. The shared state uses plain loads/stores or a
-//! [`critical_section`].
+//! No `fetch_add`/`compare_exchange` on V3A/V3C: shared state uses plain
+//! loads/stores or a [`critical_section`].
 
 use core::cell::{Cell, RefCell};
 

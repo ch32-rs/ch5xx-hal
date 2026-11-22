@@ -780,6 +780,8 @@ pub unsafe fn set_config(config: Config) -> Clocks {
     with_safe_access(|| {
         // Datasheet 3.4 orders the divider before the 480 MHz source; going
         // the other way the source drops first, so no write runs the core at 240 MHz.
+        // The whole-byte `0x80` writes also clear `CLK_PLL_SLEEP` (bit 0),
+        // matching the vendor `SystemInit()` sequence.
         if use_pll {
             pac::SYS.clk_pll_div().write(|w| w.0 = 0x40 | div);
             pac::SYS.clk_cfg_ctrl().write(|w| w.0 = 0x80 | 0x02);

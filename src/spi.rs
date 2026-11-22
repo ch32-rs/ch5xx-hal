@@ -1,4 +1,5 @@
-//! SPI master for the FIFO-layout controllers (CH569, CH581-CH585, CH592).
+//! SPI master for the FIFO-layout controllers (CH569, CH570, CH572, CH573,
+//! CH581-CH585, CH592, CH595).
 //!
 //! `SPI0` defaults to PA13/PA14/PA15 (SCK/MOSI/MISO); `SPI1` is master-only and
 //! has no DMA where the `SPI_NODMA` block is used. Chip select is driven from

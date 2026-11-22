@@ -1229,9 +1229,7 @@ fn configure<T: Instance, const REMAP: u8>(config: &Config, enable_tx: bool) -> 
         w.set_lcr_par_mod(par_mod);
     });
 
-    // The full and no-modem blocks name this byte differently; it is the
-    // whole prescaler either way.
-    r.div().write(|w| w.0 = 1);
+    r.div().write(|w| w.set_div(1));
     r.dl().write(|w| w.set_dl(dl as u16));
 
     Ok(())
