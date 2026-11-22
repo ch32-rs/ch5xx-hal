@@ -3,8 +3,9 @@
 //! CH585's USBFS is the WCH device controller, not the STM32 endpoint-table
 //! peripheral. Each endpoint has its own DMA address, length and handshake
 //! register, and the controller reads and writes the buffer in SRAM itself.
-//! Buffers are 4-byte aligned and the DMA register takes the low 16 bits of the
-//! address, which is how the vendor code programs it.
+//! Buffers are 4-byte aligned. The DMA register takes the low 17 bits of the
+//! address on CH581/CH584/CH585 (128 KiB SRAM) and the low 16 bits on the
+//! smaller-SRAM dies, which is how the vendor code programs it.
 //!
 //! On CH585 and CH592, the driver covers endpoints 0 to 7. Endpoint 4 has no
 //! DMA address of its own; its single-direction buffer follows endpoint 0's.
