@@ -306,6 +306,10 @@ fn main() {
     if register_version_opt(&chip_name, "usbfs").as_deref() == Some("ch585") {
         println!("cargo:rustc-cfg=usbfs_ch585");
     }
+    // CH572/CH570/CH595 keep the 16-bit DMA address block.
+    if register_version_opt(&chip_name, "usbfs").as_deref() == Some("ch572") {
+        println!("cargo:rustc-cfg=usbfs_ch572");
+    }
     // CH592 records the same device controller as kind `usb`, version `ch592`.
     // The device-mode register offsets and field names match the CH585 block;
     // this layout has no host-mode aliases, which the driver does not use.

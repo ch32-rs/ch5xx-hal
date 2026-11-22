@@ -3,8 +3,9 @@
 //! CH585's USBFS is the WCH device controller, not the STM32 endpoint-table
 //! peripheral. Each endpoint has its own DMA address, length and handshake
 //! register, and the controller reads and writes the buffer in SRAM itself.
-//! Buffers are 4-byte aligned and the DMA register takes the low 16 bits of the
-//! address, which is how the vendor code programs it.
+//! Buffers are 4-byte aligned. The DMA register takes the low 17 bits of the
+//! address on CH581/CH584/CH585 (128 KiB SRAM) and the low 16 bits on the
+//! smaller-SRAM dies, which is how the vendor code programs it.
 //!
 //! On CH585 and CH592, the driver covers endpoints 0 to 7. Endpoint 4 has no
 //! DMA address of its own; its single-direction buffer follows endpoint 0's.
@@ -1135,7 +1136,7 @@ fn auto_toggle<T: Instance>(index: usize) {
 mod sealed {
     use super::pac;
 
-    #[cfg(usbfs_ch585)]
+    #[cfg(any(usbfs_ch585, usbfs_ch572))]
     pub type Regs = pac::usbfs::Usbfs;
     #[cfg(any(usb_ch592, usb_ch583))]
     pub type Regs = pac::usb::Usb;
@@ -1159,7 +1160,7 @@ mod sealed {
 #[allow(private_bounds)]
 pub trait Instance: sealed::Instance + PeripheralType {}
 
-#[cfg(usbfs_ch585)]
+#[cfg(any(usbfs_ch585, usbfs_ch572))]
 impl sealed::Instance for peripherals::USBFS {
     type Interrupt = interrupt::typelevel::USB;
 
@@ -1192,7 +1193,7 @@ impl sealed::Instance for peripherals::USBFS {
     }
 }
 
-#[cfg(usbfs_ch585)]
+#[cfg(any(usbfs_ch585, usbfs_ch572))]
 impl Instance for peripherals::USBFS {}
 
 // CH592 has one USB block and no high-speed controller. The register block is
@@ -1310,7 +1311,7 @@ mod tests {
     #[cfg(not(usb_ch583))]
     #[test]
     fn ep4_single_direction_uses_first_packet_after_ep0() {
-        #[cfg(usbfs_ch585)]
+        #[cfg(any(usbfs_ch585, usbfs_ch572))]
         type Usb = peripherals::USBFS;
         #[cfg(usb_ch592)]
         type Usb = peripherals::USB;

@@ -114,7 +114,7 @@ pub mod timer;
 #[cfg(all(touchkey_charge, any(adc_ch573, adc_ch583, adc_ch585, adc_ch592)))]
 pub mod touchkey;
 pub mod uart;
-#[cfg(all(feature = "embassy", any(usbfs_ch585, usb_ch592, usb_ch583)))]
+#[cfg(all(feature = "embassy", any(usbfs_ch585, usbfs_ch572, usb_ch592, usb_ch583)))]
 pub mod usb;
 #[cfg(all(feature = "embassy", usbhs_ch585))]
 pub mod usbhs;
